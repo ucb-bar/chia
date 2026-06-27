@@ -54,6 +54,13 @@ received thorough testing. Bugs throughout CHIA are likely.
 ..    case-studies/timing-optimization
 
 .. toctree::
+   :hidden:
+
+   case-studies/gem5-alignment
+   case-studies/circt-issue-solving
+   case-studies/timing-optimization
+
+.. toctree::
    :maxdepth: 2
    :caption: CLI Reference
 
@@ -73,7 +80,7 @@ received thorough testing. Bugs throughout CHIA are likely.
    api/aws
    api/simulators
    api/analysis
-   library_nodes/agents_models
+   api/agents_models
 
 Indices and tables
 ==================
