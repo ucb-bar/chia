@@ -1,0 +1,4 @@
+DB/
+fpga_builds/
+__pycache__/
+*.pyc

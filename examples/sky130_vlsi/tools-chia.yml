@@ -1,0 +1,9 @@
+vlsi.core.build_system: make
+# Genus options (synthesis is the only commercial-tool step this flow runs)
+vlsi.core.synthesis_tool: "hammer.synthesis.genus"
+synthesis.genus.version: "211"
+synthesis.genus.genus_bin: "/path/to/cadence/GENUS"
+
+# Commercial tool licenses/paths
+cadence.cadence_home: "/path/to/cadence"
+cadence.CDS_LIC_FILE:

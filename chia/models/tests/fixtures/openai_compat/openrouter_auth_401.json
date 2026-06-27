@@ -1,0 +1,19 @@
+{
+  "label": "auth_401",
+  "how_produced": "Bogus API key (no real key sent)",
+  "provider": "openrouter (https://openrouter.ai/api/v1)",
+  "captured": "2026-06-01, opencode-style real capture",
+  "request_model": "liquid/lfm-2.5-1.2b-instruct:free",
+  "status": 401,
+  "openai_exc_type": "AuthenticationError",
+  "headers": {
+    "date": "Mon, 01 Jun 2026 20:00:17 GMT"
+  },
+  "body": {
+    "error": {
+      "message": "User not found.",
+      "code": 401
+    }
+  },
+  "expected_chia": "AuthenticationError"
+}

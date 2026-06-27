@@ -1,0 +1,3 @@
+[submodule "examples/benchmarks"]
+	path = examples/benchmarks
+	url = https://github.com/ucb-bar/chia_benchmarks.git

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "chia"
+version = "0.1.0"
+description = "The Chia agentic AI flow for hardware"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-genai>=1.64.0",
+    "ray[default]==2.54.0",
+    "mcp==1.27.1",
+    "pydantic==2.12.4",
+    "fastapi==0.121.0",
+    "pyyaml==6.0.3",
+    "pytest==9.0.3",
+    "graphviz==0.21",
+    "boto3>=1.28.0",
+    "google-cloud-compute>=1.19.0",
+    "requests>=2.31.0"
+]
+
+[project.scripts]
+chia = "chia.cli.main:main"
+
+[project.optional-dependencies]
+tensorboard = ["tensorboardX>=2.6", "tensorboard>=2.14"]
+wandb = ["wandb>=0.15"]
+metrics = ["tensorboardX>=2.6", "wandb>=0.15"]
+postgres = ["psycopg[binary]>=3.2"]
+docs = [
+    "sphinx",
+    "sphinx_rtd_theme",
+    "sphinx-tabs",
+    "sphinx-copybutton",
+    "sphinx-substitution-extensions",
+    "sphinx-autobuild"
+]
+
+[tool.pytest.ini_options]
+# importlib mode uses full package paths (test.trace.test_profiler_integration)
+# so Ray workers can import test modules shipped via working_dir.
+addopts = "--import-mode=importlib"
+
+[tool.setuptools.package-data]
+"chia.trace" = ["*.html"]
+
+[tool.setuptools.packages.find]
+exclude = ["gem5align*", "memcpy*", "dockerfiles*"]

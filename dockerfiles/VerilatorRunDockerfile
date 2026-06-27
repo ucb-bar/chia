@@ -1,0 +1,66 @@
+# Dockerfile for VerilatorRunNode workers.
+# chipyard verilator + FireSim metasim runtime.
+#
+# Builds ON TOP of ghcr.io/ucb-bar/chia (rayproject/ray + the chia package),
+# so chia is already installed.
+#
+# Installs runtime dependencies for running compiled verilator simulator
+# binaries: DRAMSim2, spike-dasm, libstdc++6, etc.
+#
+#   docker build -f dockerfiles/VerilatorRunDockerfile \
+#       -t ghcr.io/ucb-bar/chia-verilator-run:latest .
+#
+FROM ghcr.io/ucb-bar/chia:latest
+
+USER root
+
+# Build tools + runtime deps for chipyard verilator and FireSim metasim binaries
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    git \
+    openssh-client \
+    software-properties-common \
+    device-tree-compiler \
+    libboost-regex-dev \
+    libboost-system-dev \
+    libatomic1 \
+    libdwarf-dev \
+    libelf-dev \
+    libgmp-dev \
+    numactl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ubuntu 22.04 libstdc++ only goes up to GLIBCXX_3.4.30; chipyard simulator
+# binaries require GLIBCXX_3.4.32+. Pull a newer libstdc++6 from the
+# ubuntu-toolchain-r PPA (provides GCC 13 libs).
+RUN add-apt-repository -y ppa:ubuntu-toolchain-r/test \
+    && apt-get update \
+    && apt-get install -y libstdc++6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# PRINCIPLE: build and run dependencies must stay aligned. Simulator binaries
+# are linked in the chisel-build image against shared libs from the chipyard
+# base image (libriscv.so, libdramsim.so — verify with `ldd` on a sim binary);
+# at run time this image must provide the IDENTICAL files, so we COPY them
+# from that same chipyard base image — lockstep by construction. Never build
+# these independently here (the old `git clone` of unpinned upstream
+# riscv-isa-sim/DRAMSim2 did exactly that): a skewed spike can crash sims or,
+# worse, silently diverge from the one embedded in cospike simulators —
+# libriscv.so IS the golden model.
+COPY --from=ghcr.io/ucb-bar/chia-chisel-build:latest \
+    /home/ray/chipyard/.conda-env/riscv-tools/lib/libriscv.so \
+    /home/ray/chipyard/.conda-env/riscv-tools/lib/libsoftfloat.so \
+    /home/ray/chipyard/.conda-env/riscv-tools/lib/libdramsim.so \
+    /home/ray/chipyard/.conda-env/riscv-tools/lib/libcustomext.so \
+    /home/ray/chipyard/.conda-env/riscv-tools/lib/libspikedevices.so \
+    /usr/local/lib/
+COPY --from=ghcr.io/ucb-bar/chia-chisel-build:latest \
+    /home/ray/chipyard/.conda-env/riscv-tools/bin/spike \
+    /home/ray/chipyard/.conda-env/riscv-tools/bin/spike-dasm \
+    /usr/local/bin/
+
+RUN ldconfig
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray

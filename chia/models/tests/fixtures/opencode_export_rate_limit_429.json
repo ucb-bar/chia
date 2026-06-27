@@ -1,0 +1,49 @@
+{
+  "info": {
+    "id": "ses_synthetic",
+    "directory": "/tmp"
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "hi"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "cost": 0.0,
+        "error": {
+          "name": "APIError",
+          "data": {
+            "message": "Rate limit exceeded",
+            "statusCode": 429,
+            "isRetryable": true,
+            "responseHeaders": {
+              "retry-after": "30"
+            },
+            "responseBody": "{\"error\":{\"message\":\"rate limit\"}}"
+          }
+        }
+      },
+      "parts": [
+        {
+          "type": "step-start"
+        },
+        {
+          "type": "step-finish"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,88 @@
+# Dockerfile for RiscvBuildNode workers (flattened, single-file).
+#
+# Builds ON TOP of ghcr.io/ucb-bar/chia (rayproject/ray + the chia package),
+# so chia is already installed — no COPY + pip install step here. This file
+# replaces the former RiscvCrossBaseDockerfile + RiscvCrossDockerfile split:
+# the RISC-V cross toolchain (the rarely-changing layer) now lives in one image.
+#
+# Cross-compiles C/asm into RISC-V baremetal ELFs (`.riscv`) that
+# VerilatorRunNode loads into our chipyard/MegaBoom simulator via
+# `+permissive-off <bin>`. The toolchain comes from chipyard's own conda
+# channel (`ucb-bar :: riscv-tools=1.0.6`) plus a pinned build of
+# libgloss-htif, so the produced ELFs match chipyard/tests/ output
+# byte-for-byte: rv64imafd_zicsr_zifencei / lp64d / medany, linked with
+# libgloss_htif via -specs=htif_nano.specs.
+#
+#   docker build -f dockerfiles/RiscvCrossDockerfile \
+#       -t ghcr.io/ucb-bar/chia-riscv-cross:latest .
+FROM ghcr.io/ucb-bar/chia:latest
+
+USER root
+
+# Build tools required by libgloss-htif's autotools build, plus runtime
+# libs the conda riscv64-unknown-elf-ar depends on (libfl.so.2).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        make \
+        git \
+        curl \
+        ca-certificates \
+        libfl2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Switch to ray user for the conda + toolchain setup so everything under
+# /home/ray is owned by ray. Mirrors ChiselBuildDockerfile.
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray
+
+# Install conda into /home/ray/conda (kept separate from the chia base's
+# anaconda3, which carries the chia worker interpreter). Miniforge gives us
+# conda-forge defaults with no Anaconda ToS friction.
+RUN curl -fsSL -o /tmp/miniforge.sh \
+        https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
+    && bash /tmp/miniforge.sh -b -p /home/ray/conda \
+    && rm /tmp/miniforge.sh \
+    && /home/ray/conda/bin/conda config --system --set always_yes true \
+    && /home/ray/conda/bin/conda config --system --set channel_priority strict
+
+# Install chipyard's riscv-tools meta-package. Ships:
+#   - riscv64-unknown-elf-gcc (13.2.0) + binutils + newlib
+#   - spike (riscv-isa-sim)
+# Channels match chipyard/conda-reqs/riscv-tools.yaml exactly.
+# (Note: libgloss-htif is installed separately below, mirroring
+# chipyard's build-setup.sh -s 4.)
+RUN /home/ray/conda/bin/conda create -n riscv-tools \
+        -c ucb-bar -c conda-forge \
+        riscv-tools=1.0.6 \
+    && /home/ray/conda/bin/conda clean -afy
+
+# Put the toolchain on PATH for the rest of this build and for any process
+# the Ray worker spawns (subprocess.run inherits the worker's environment).
+# The conda riscv-tools meta-package installs its binaries under a nested
+# `riscv-tools/bin` rather than the conda env's `bin/`.
+ENV PATH=/home/ray/conda/envs/riscv-tools/riscv-tools/bin:$PATH
+
+# Build & install libgloss-htif into the toolchain sysroot. This provides
+# htif.ld, htif_nano.specs, and libgloss_htif.a — the bits that make
+# -specs=htif_nano.specs work. Pinned to chipyard's submodule SHA so the
+# output matches chipyard/tests/ byte-for-byte.
+ARG LIBGLOSS_HTIF_SHA=39234a16247ab1fa234821b251f1f1870c3de343
+ENV RISCV=/home/ray/conda/envs/riscv-tools/riscv-tools
+RUN git clone https://github.com/ucb-bar/libgloss-htif.git /tmp/libgloss-htif \
+    && cd /tmp/libgloss-htif \
+    && git checkout $LIBGLOSS_HTIF_SHA \
+    && mkdir build && cd build \
+    && ../configure --prefix=$RISCV/riscv64-unknown-elf --host=riscv64-unknown-elf \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf /tmp/libgloss-htif
+
+# Vendored harness — single source of truth in the repo. COPY runs on every
+# build, so changes under dockerfiles/riscv-harness/ are guaranteed to land
+# in the image.
+COPY --chown=ray:ray dockerfiles/riscv-harness/ /opt/riscv-harness/
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray

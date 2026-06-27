@@ -1,0 +1,17 @@
+{
+  "label": "billing_429_insufficient_quota",
+  "how_produced": "SYNTHETIC (no real capture) \u2014 OpenAI-style quota exhaustion",
+  "provider": "synthetic (OpenAI convention)",
+  "request_model": "gpt-4o-mini",
+  "status": 429,
+  "openai_exc_type": "RateLimitError",
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "You exceeded your current quota, please check your plan and billing details.",
+      "type": "insufficient_quota",
+      "code": "insufficient_quota"
+    }
+  },
+  "expected_chia": "BillingError"
+}

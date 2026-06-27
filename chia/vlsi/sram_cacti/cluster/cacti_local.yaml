@@ -1,0 +1,68 @@
+# Single-machine (localhost) Chia cluster for exercising the SRAM/CACTI
+# pipeline against a REAL cacti binary, plus OpenROAD/OpenSTA validation of the
+# generated Liberty/LEF.
+#
+# Topology:
+#   - head:   runs on the host (no docker) — just `ray start --head`. Needs SOME
+#             env with ray + chia active (yours — not a hardcoded one); see
+#             head_env_commands / CHIA_HEAD_ENV_SETUP below.
+#   - worker: one `ghcr.io/ucb-bar/chia-cacti` container on the same host
+#             (chia runs containers with --net=host, so it reaches the head's
+#             Ray at 127.0.0.1). The image ships the cacti binary (/scratch/cacti)
+#             and OpenROAD (which embeds the OpenSTA engine) for read_liberty/
+#             read_lef. It advertises the "cacti" resource that
+#             run_cacti / characterize_*_with_cacti require.
+#
+# Prerequisites on the host:
+#   - any conda/venv with ray (2.54.0) + chia, ACTIVATED before you run
+#   - passwordless SSH to 127.0.0.1 (`ssh 127.0.0.1` must not prompt)
+#   - `docker login ghcr.io` (the ucb-chia image may be private)
+#
+# Bring up / tear down (activate your env first; the wrapper passes it through):
+#   ./chia/vlsi/sram_cacti/cluster/cacti_cluster.sh up
+#   ./chia/vlsi/sram_cacti/cluster/cacti_cluster.sh down
+#
+# Then run the smoke driver (see cacti_smoke_test.py in this directory).
+
+cluster_name: chia-cacti-local
+
+provider:
+    head_ip: 127.0.0.1
+
+auth:
+    ssh_user: ${USER}
+
+available_node_types:
+    # One cacti worker container. `resources.cacti` is the pool the
+    # @ChiaFunction(resources={"cacti": 1}) tasks schedule against; 4 lets a few
+    # SRAM characterizations / validations run in parallel on this machine.
+    cacti:
+        resources: {"cacti": 4}
+        num_workers: 1
+        compatible_ips: [127.0.0.1]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-cacti:latest"
+            container_name: "chia_cacti"
+            pull_before_run: true
+
+# The head runs on the host via a fresh SSH shell that does NOT inherit your
+# interactive env, so it must re-activate one with ray + chia. Rather than
+# hardcode a path, we bake in whatever activation you pass via the
+# CHIA_HEAD_ENV_SETUP env var (expanded at load time). The cacti_cluster.sh
+# wrapper sets this automatically from your currently-active venv/conda env;
+# if you invoke chia directly, `export CHIA_HEAD_ENV_SETUP="<your activate cmd>"`
+# first. head_env_commands run on both `up` and `down`.
+head_env_commands:
+    - "${CHIA_HEAD_ENV_SETUP}"
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+# Inside the container ray + chia + cacti + openroad are already on PATH; the
+# provisioner injects --resources={"cacti":4} into this start command.
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+
+file_mounts: {}

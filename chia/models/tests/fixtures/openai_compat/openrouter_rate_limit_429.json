@@ -1,0 +1,28 @@
+{
+  "label": "rate_limit_429",
+  "how_produced": "Free model temporarily rate-limited upstream",
+  "provider": "openrouter (https://openrouter.ai/api/v1)",
+  "captured": "2026-06-01, opencode-style real capture",
+  "request_model": "meta-llama/llama-3.2-3b-instruct:free",
+  "status": 429,
+  "openai_exc_type": "RateLimitError",
+  "headers": {
+    "date": "Mon, 01 Jun 2026 20:00:22 GMT",
+    "retry-after": "11"
+  },
+  "body": {
+    "error": {
+      "message": "Provider returned error",
+      "code": 429,
+      "metadata": {
+        "raw": "meta-llama/llama-3.2-3b-instruct:free is temporarily rate-limited upstream. Please retry shortly, or add your own key to accumulate your rate limits: https://openrouter.ai/settings/integrations",
+        "provider_name": "Venice",
+        "is_byok": false,
+        "retry_after_seconds": 11,
+        "retry_after_seconds_raw": 10.617
+      }
+    }
+  },
+  "expected_chia": "RateLimitError",
+  "expected_reset_after_seconds": 11
+}

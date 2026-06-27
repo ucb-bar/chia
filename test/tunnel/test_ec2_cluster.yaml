@@ -1,0 +1,77 @@
+cluster_name: ec2_test
+
+aws_nodes:
+    region: us-east-1
+    ec2_worker:
+        KeyName: jack
+        InstanceType: t2.micro
+        count: 2
+        ImageId: ami-0ea87431b78a82070
+        ssh_user: ec2-user
+        skip_default_setup: false # defaults to false, included here as demonstration
+        InstanceMarketOptions:
+            MarketType: spot
+            SpotOptions:
+                SpotInstanceType: one-time
+
+    ec2_verilator:
+        KeyName: jack
+        InstanceType: t3.2xlarge
+        count: 2
+        ImageId: ami-0ec10929233384c7f
+        ssh_user: ubuntu
+        skip_default_setup: false # defaults to false, included here as demonstration
+        setup_commands:
+            - "echo ${WORK_DIR}WORK_DIR}GITHUB_TOKEN} | docker login ghcr.io -u ${WORK_DIR}WORK_DIR}USER} --password-stdin"
+        InstanceMarketOptions:
+            MarketType: spot
+            SpotOptions:
+                SpotInstanceType: one-time
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 128
+                  VolumeType: gp3
+
+available_node_types:
+
+    ec2_worker:
+        resources: {"ec2": 1}
+        num_workers: 3
+        compatible_ips: ["@ec2_verilator:0", "@ec2_worker:0", "@ec2_worker:1"]
+        worker_env_commands:
+            - "conda activate chia_env"
+
+    verilator_run:
+        resources: {"verilator_run": 8}
+        min_workers: 4
+        max_workers: 4
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${WORK_DIR}WORK_DIR}USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: ["@ec2_verilator:0", "@ec2_verilator:1"]
+
+    local_worker:
+        resources: {"local": 1}
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env && cd ${WORK_DIR}/"]
+        min_workers: 1
+        max_workers: 1
+        compatible_ips: #FILL
+
+provider:
+    head_ip: ${HEAD_IP}
+
+auth:
+    ssh_user: ${USER}
+
+head_env_commands: ["source ~/.bashrc && conda activate chia && source ${WORK_DIR}/chia/.venv/bin/activate"]
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379

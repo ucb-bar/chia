@@ -1,0 +1,9 @@
+{
+  "label": "bedrock_validation_over_context",
+  "provider": "bedrock-runtime converse",
+  "how_produced": "REAL capture (Nova Lite, us-east-1) \u2014 ~2MB prompt over the context window",
+  "code": "ValidationException",
+  "message": "The model returned the following errors: Input Tokens Exceeded: Number of input tokens exceeds maximum length. Please update the input to try again.",
+  "http_status": 400,
+  "expected_chia": "InvalidRequestError"
+}

@@ -1,0 +1,78 @@
+# Minimal cluster for the parallel chisel+riscv -> verilator integration test
+# (test/test_chisel_riscv_verilator_e2e.py and test/test_riscv_build_failure.py).
+#
+# Head also hosts the chisel_build + riscv_build containers; verilator worker hosts
+# the verilator_run container — same head+worker split pattern as the canonical
+# /scratch/ferran/chia-v0/test.yaml.
+#
+# TODO: merge this into the general tester cluster (../test.yaml) once that
+# config grows a `riscv_build` node-type entry. There's no reason to maintain
+# a duplicate cluster definition per test suite — the only thing this file
+# adds today is the `riscv_build` stanza pointing at chia-riscv-cross.
+cluster_name: chisel_riscv_verilator_test
+
+available_node_types:
+    chisel_build:
+        resources: {"chipyard": 1}
+        num_workers: 1
+        worker_setup_commands: ["source /home/ray/chipyard/env.sh"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:0.1"
+            container_name: "chia-chisel-build-${USER}"
+            pull_before_run: True
+            pull_timeout: 1200
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: #FILL
+
+    riscv_build:
+        resources: {"riscv_build": 1}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-cross:latest"
+            container_name: "chia-riscv-build-${USER}"
+            pull_before_run: True
+        compatible_ips: #FILL
+
+    verilator_run:
+        resources: {"verilator_run": 1}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:0.1"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: #FILL
+
+provider:
+    head_ip: #FILL
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: /home/eecs/${USER}/.ssh/${USER}
+
+file_mounts: {}
+
+rsync_exclude:
+    - "**/.git"
+    - "**/.git/**"
+
+rsync_filter:
+    - ".gitignore"
+
+initialization_commands: []
+setup_commands: []
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379

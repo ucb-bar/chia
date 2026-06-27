@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chia Profile</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'Courier New', monospace;
+  font-size: 12px;
+  background: #12121f;
+  color: #d0d0e8;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  user-select: none;
+}
+#header {
+  padding: 7px 14px;
+  background: #1a1a30;
+  border-bottom: 1px solid #2a2a50;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-shrink: 0;
+  min-height: 36px;
+}
+#header h1 { font-size: 13px; color: #e05070; white-space: nowrap; }
+.stat { font-size: 11px; color: #8080a0; white-space: nowrap; }
+.stat b { color: #d0d0e8; }
+.hint { margin-left: auto; font-size: 10px; color: #404060; white-space: nowrap; }
+#body { display: flex; flex: 1; overflow: hidden; }
+#sidebar {
+  width: 190px;
+  background: #1a1a30;
+  border-right: 1px solid #2a2a50;
+  overflow-y: auto;
+  padding: 10px 8px;
+  flex-shrink: 0;
+}
+#sidebar h3 {
+  font-size: 10px;
+  color: #6060a0;
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.node-filter {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 5px;
+  cursor: pointer;
+  padding: 2px 3px;
+  border-radius: 3px;
+}
+.node-filter:hover { background: rgba(255,255,255,0.05); }
+.node-filter input[type=checkbox] { cursor: pointer; flex-shrink: 0; }
+.color-dot {
+  width: 10px; height: 10px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  border: 1px solid rgba(0,0,0,0.3);
+}
+.node-label {
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #b0b0d0;
+}
+#sidebar-sep {
+  border: none;
+  border-top: 1px solid #2a2a50;
+  margin: 10px 0;
+}
+.legend-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: #8080a0;
+}
+.legend-line {
+  width: 24px; height: 2px;
+  flex-shrink: 0;
+}
+#canvas-wrapper {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+canvas { position: absolute; top: 0; left: 0; display: block; }
+#tooltip {
+  position: fixed;
+  background: rgba(20,20,40,0.96);
+  border: 1px solid #3a3a70;
+  padding: 7px 10px;
+  border-radius: 5px;
+  font-size: 11px;
+  pointer-events: none;
+  display: none;
+  max-width: 300px;
+  z-index: 200;
+  line-height: 1.65;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+}
+#tooltip .tt-head { font-weight: bold; color: #e0a0c0; margin-bottom: 3px; }
+#tooltip .tt-kv { color: #8080a0; }
+#tooltip .tt-kv b { color: #c0c0e0; font-weight: normal; }
+#detail {
+  position: absolute;
+  right: 0; top: 0; bottom: 0;
+  width: 270px;
+  background: #1a1a30;
+  border-left: 1px solid #2a2a50;
+  overflow-y: auto;
+  padding: 12px;
+  display: none;
+  font-size: 11px;
+  line-height: 1.8;
+  z-index: 10;
+  box-shadow: -4px 0 16px rgba(0,0,0,0.4);
+}
+#detail-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+#detail-func { color: #e05070; font-size: 13px; font-weight: bold; word-break: break-all; }
+#detail-close {
+  cursor: pointer;
+  color: #6060a0;
+  font-size: 18px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-left: 8px;
+  padding: 0 2px;
+}
+#detail-close:hover { color: #e05070; }
+.dkv { margin-bottom: 1px; }
+.dk { color: #6060a0; }
+.dv { color: #c0c0e0; word-break: break-all; }
+.dsep { border: none; border-top: 1px solid #2a2a50; margin: 6px 0; }
+</style>
+</head>
+<body>
+<div id="header">
+  <h1 id="title">Chia Profile</h1>
+  <div class="stat">Calls: <b id="s-calls">-</b></div>
+  <div class="stat">Duration: <b id="s-dur">-</b></div>
+  <div class="stat">LLM Cost: <b id="s-cost">-</b></div>
+  <div class="stat">Tokens: <b id="s-tok">-</b></div>
+  <div class="hint">scroll=up/down &nbsp; shift+scroll=left/right &nbsp; &#8984;/ctrl+scroll=zoom &nbsp; drag=pan &nbsp; click=details &nbsp; r=collapse groups</div>
+</div>
+<div id="body">
+  <div id="sidebar">
+    <h3>Nodes</h3>
+    <div id="node-filters"></div>
+    <hr id="sidebar-sep">
+    <h3>Legend</h3>
+    <div class="legend-row">
+      <div class="legend-line" style="background:#aaaaaa;"></div>
+      data dependency
+    </div>
+    <div class="legend-row">
+      <div class="legend-line" style="background:#4a90d9; border-top: 2px dashed #4a90d9; height:0;"></div>
+      spawns (nesting)
+    </div>
+  </div>
+  <div id="canvas-wrapper">
+    <canvas id="cv"></canvas>
+    <div id="detail">
+      <div id="detail-header">
+        <div id="detail-func"></div>
+        <div id="detail-close" onclick="closeDetail()">&#10005;</div>
+      </div>
+      <div id="detail-content"></div>
+    </div>
+  </div>
+</div>
+<div id="tooltip"></div>
+
+<script id="profile-data" type="application/json">{{DATA_JSON}}</script>
+
+<script>
+(function() {
+'use strict';
+
+// ── Data ──────────────────────────────────────────────────────────────────────
+const D = JSON.parse(document.getElementById('profile-data').textContent);
+const { meta, calls, data_edges, nesting_edges, node_colors, groups } = D;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const RULER_H  = 28;
+const ROW_H    = 40;
+const ROW_PAD  = 5;
+const MIN_PX   = 3;     // minimum box width in pixels
+const CORNER_R = 3;     // box corner radius
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let pxPerSec    = 100;
+let viewStartT  = 0;   // leftmost visible time (relative seconds)
+let scrollY     = 0;
+let hoveredUid  = null;
+let selectedUid = null;
+const hiddenNodes = new Set();
+let groupsCollapsed = false;
+
+// Build set of group child UIDs (non-root members) for collapse.
+const _groupChildUids = new Set();
+if (groups) {
+  const _rootUids = new Set(groups.map(g => g.root_uid));
+  for (const [pu, cu] of nesting_edges) {
+    // BFS: anything reachable from a root via nesting is a child
+    if (!_rootUids.has(cu)) _groupChildUids.add(cu);
+  }
+}
+function isHidden(c) {
+  return hiddenNodes.has(c.node_id) || (groupsCollapsed && _groupChildUids.has(c.uid));
+}
+
+// ── Lookup maps ───────────────────────────────────────────────────────────────
+const byUid = Object.fromEntries(calls.map(c => [c.uid, c]));
+const numRowsExpanded  = calls.length ? Math.max(...calls.map(c => c.row)) + 1 : 1;
+const numRowsCollapsed = calls.length
+  ? Math.max(...calls.filter(c => c.collapsed_row >= 0).map(c => c.collapsed_row)) + 1 : 1;
+const totalDur = meta.time_range[1] - meta.time_range[0] || 1;
+
+function callName(c) { return c.display_name || c.func; }
+function curNumRows() { return groupsCollapsed ? numRowsCollapsed : numRowsExpanded; }
+function effectiveRow(c) { return groupsCollapsed ? c.collapsed_row : c.row; }
+
+// Aggregate stats
+let totalCost = 0, totalIn = 0, totalOut = 0;
+for (const c of calls) {
+  if (c.extra.cost_usd)       totalCost += c.extra.cost_usd;
+  if (c.extra.input_tokens)   totalIn   += c.extra.input_tokens;
+  if (c.extra.output_tokens)  totalOut  += c.extra.output_tokens;
+}
+
+// ── Header stats ──────────────────────────────────────────────────────────────
+const filename = meta.log_file.split('/').pop();
+document.getElementById('title').textContent =
+  `Chia Profile \u2014 run ${meta.run_index}/${meta.num_runs - 1} \u00b7 ${filename}`;
+document.getElementById('s-calls').textContent = meta.total_calls;
+document.getElementById('s-dur').textContent   = fmtDur(totalDur);
+document.getElementById('s-cost').textContent  = totalCost > 0 ? `$${totalCost.toFixed(4)}` : '\u2014';
+document.getElementById('s-tok').textContent   = (totalIn + totalOut) > 0
+  ? `${(totalIn + totalOut).toLocaleString()}` : '\u2014';
+
+// ── Node filter sidebar ───────────────────────────────────────────────────────
+const filterEl = document.getElementById('node-filters');
+for (const [nid, color] of Object.entries(node_colors)) {
+  const label = document.createElement('label');
+  label.className = 'node-filter';
+  label.innerHTML =
+    `<input type="checkbox" checked data-nid="${nid}">` +
+    `<span class="color-dot" style="background:${color}"></span>` +
+    `<span class="node-label" title="${nid}">${nid.substring(0, 14)}</span>`;
+  label.querySelector('input').addEventListener('change', e => {
+    if (e.target.checked) hiddenNodes.delete(nid); else hiddenNodes.add(nid);
+    redraw();
+  });
+  filterEl.appendChild(label);
+}
+
+// ── Canvas setup ─────────────────────────────────────────────────────────────
+const wrapper = document.getElementById('canvas-wrapper');
+const cv  = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+
+function resize() {
+  cv.width  = wrapper.clientWidth;
+  cv.height = wrapper.clientHeight;
+  redraw();
+}
+
+function initView() {
+  cv.width  = wrapper.clientWidth;
+  cv.height = wrapper.clientHeight;
+  pxPerSec   = cv.width / totalDur * 0.92;
+  viewStartT = -totalDur * 0.04;
+  scrollY    = 0;
+}
+
+// ── Coordinate helpers ────────────────────────────────────────────────────────
+const tToX = t  => (t - viewStartT) * pxPerSec;
+const xToT = x  => x / pxPerSec + viewStartT;
+const rowY = row => RULER_H + row * ROW_H - scrollY;
+
+// ── View clamping ─────────────────────────────────────────────────────────────
+const minT = meta.time_range[0];
+const maxT = meta.time_range[1];
+function totalContentH() { return curNumRows() * ROW_H; }
+
+function clampView() {
+  // Don't let the visible window scroll past the data bounds.
+  const visW = cv.width / pxPerSec;  // visible duration in seconds
+  // Horizontal: left edge can't go past maxT, right edge can't go before minT
+  viewStartT = Math.max(minT - visW, Math.min(viewStartT, maxT));
+  // Vertical: top can't go below 0, bottom can't go past last row
+  const maxScrollY = Math.max(0, totalContentH() - (cv.height - RULER_H));
+  scrollY = Math.max(0, Math.min(scrollY, maxScrollY));
+}
+
+// ── Hit testing ───────────────────────────────────────────────────────────────
+function callAt(mx, my) {
+  if (my < RULER_H) return null;
+  for (const c of calls) {
+    if (isHidden(c)) continue;
+    const x = tToX(c.dispatch_ts);
+    const w = Math.max(MIN_PX, c.exec_time_s * pxPerSec);
+    const y = rowY(effectiveRow(c));
+    if (mx >= x && mx <= x + w && my >= y + ROW_PAD && my <= y + ROW_H - ROW_PAD)
+      return c;
+  }
+  return null;
+}
+
+// ── Drawing helpers ───────────────────────────────────────────────────────────
+function rrect(x, y, w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.lineTo(x + w - r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.lineTo(x + w, y + h - r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.lineTo(x + r, y + h);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.lineTo(x, y + r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function arrowAt(x2, y2, x1, y1, sz) {
+  const a = Math.atan2(y2 - y1, x2 - x1);
+  ctx.beginPath();
+  ctx.moveTo(x2, y2);
+  ctx.lineTo(x2 - sz * Math.cos(a - 0.42), y2 - sz * Math.sin(a - 0.42));
+  ctx.lineTo(x2 - sz * Math.cos(a + 0.42), y2 - sz * Math.sin(a + 0.42));
+  ctx.closePath();
+  ctx.fill();
+}
+
+// ── Ruler ─────────────────────────────────────────────────────────────────────
+function drawRuler() {
+  const W = cv.width;
+  ctx.fillStyle = '#0e0e20';
+  ctx.fillRect(0, 0, W, RULER_H);
+  ctx.strokeStyle = '#2a2a50';
+  ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(0, RULER_H); ctx.lineTo(W, RULER_H); ctx.stroke();
+
+  const visEnd = xToT(W);
+  const span   = visEnd - viewStartT;
+  const mag    = Math.pow(10, Math.floor(Math.log10(span / 6)));
+  const norm   = (span / 6) / mag;
+  const step   = norm < 1.5 ? mag : norm < 3.5 ? 2 * mag : norm < 7.5 ? 5 * mag : 10 * mag;
+  const first  = Math.ceil(viewStartT / step) * step;
+
+  ctx.fillStyle   = '#5050a0';
+  ctx.font        = '10px monospace';
+  ctx.textAlign   = 'center';
+  ctx.strokeStyle = 'rgba(80,80,160,0.15)';
+  ctx.lineWidth   = 1;
+
+  for (let t = first; t <= visEnd + step * 0.01; t += step) {
+    const x = tToX(t);
+    ctx.beginPath(); ctx.moveTo(x, RULER_H); ctx.lineTo(x, cv.height); ctx.stroke();
+    const lbl = step >= 1 ? `${t.toFixed(0)}s`
+              : step >= 0.1 ? `${t.toFixed(1)}s`
+              : `${(t * 1000).toFixed(0)}ms`;
+    ctx.fillText(lbl, x, RULER_H - 7);
+  }
+}
+
+// ── Edges ─────────────────────────────────────────────────────────────────────
+function drawEdge(src, dst) {
+  const W = cv.width, H = cv.height;
+  const x1 = tToX(src.complete_ts);
+  const y1 = rowY(effectiveRow(src)) + ROW_H / 2;
+  const x2 = tToX(dst.dispatch_ts);
+  const y2 = rowY(effectiveRow(dst)) + ROW_H / 2;
+  if (x1 > W + 20 || x2 < -20) return;
+  if ((y1 < RULER_H && y2 < RULER_H) || (y1 > H + 20 && y2 > H + 20)) return;
+  const cpx = (x1 + x2) / 2;
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.bezierCurveTo(cpx, y1, cpx, y2, x2, y2);
+  ctx.stroke();
+  arrowAt(x2, y2, cpx, y2, 6);
+}
+
+function drawEdges() {
+  // Data edges
+  ctx.strokeStyle = 'rgba(160,160,160,0.35)';
+  ctx.fillStyle   = 'rgba(160,160,160,0.35)';
+  ctx.lineWidth   = 1;
+  ctx.setLineDash([]);
+  for (const [su, du] of data_edges) {
+    const s = byUid[su], d = byUid[du];
+    if (!s || !d || isHidden(s) || isHidden(d)) continue;
+    drawEdge(s, d);
+  }
+  // Nesting edges
+  ctx.strokeStyle = 'rgba(74,144,217,0.45)';
+  ctx.fillStyle   = 'rgba(74,144,217,0.45)';
+  ctx.setLineDash([4, 3]);
+  for (const [pu, cu] of nesting_edges) {
+    const p = byUid[pu], c = byUid[cu];
+    if (!p || !c || isHidden(p) || isHidden(c)) continue;
+    drawEdge(p, c);
+  }
+  ctx.setLineDash([]);
+}
+
+// ── Call boxes ────────────────────────────────────────────────────────────────
+function drawBox(c) {
+  const W = cv.width, H = cv.height;
+  const x = tToX(c.dispatch_ts);
+  const w = Math.max(MIN_PX, c.exec_time_s * pxPerSec);
+  const y = rowY(effectiveRow(c)) + ROW_PAD;
+  const h = ROW_H - ROW_PAD * 2;
+  if (x + w < 0 || x > W || y + h < RULER_H || y > H) return;
+
+  const col = node_colors[c.node_id] || '#888888';
+  ctx.fillStyle = col;
+  rrect(x, y, w, h, CORNER_R);
+  ctx.fill();
+
+  // Selected ring
+  if (c.uid === selectedUid) {
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 2;
+    rrect(x, y, w, h, CORNER_R);
+    ctx.stroke();
+  }
+
+  // Label
+  if (w > 22) {
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x + 3, y + 1, w - 6, h - 2); ctx.clip();
+    ctx.fillStyle = 'rgba(0,0,0,0.75)';
+    ctx.font = `bold 10px monospace`;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    let lbl = c.extra.test_binary || callName(c);
+    if (w > 90) lbl += '  ' + fmtDur(c.exec_time_s);
+    ctx.fillText(lbl, x + 4, y + h / 2);
+    ctx.restore();
+  }
+}
+
+// ── Hover highlight ───────────────────────────────────────────────────────────
+function drawHover(c) {
+  const x = tToX(c.dispatch_ts);
+  const w = Math.max(MIN_PX, c.exec_time_s * pxPerSec);
+  const y = rowY(effectiveRow(c)) + ROW_PAD;
+  const h = ROW_H - ROW_PAD * 2;
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 1.5;
+  rrect(x, y, w, h, CORNER_R);
+  ctx.stroke();
+}
+
+// ── Main redraw ───────────────────────────────────────────────────────────────
+function redraw() {
+  const W = cv.width, H = cv.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.fillStyle = '#12121f';
+  ctx.fillRect(0, 0, W, H);
+
+  // Row backgrounds, group tints, dividers, row indices, and group labels
+  const GROUP_TINTS = ['rgba(60,60,120,0.10)', 'rgba(90,60,90,0.10)'];
+  // Build row->group lookup
+  const _nr = curNumRows();
+  const _rowGroup = new Int32Array(_nr).fill(-1);
+  if (groups && !groupsCollapsed) for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    for (let r = g.start_row; r <= g.end_row && r < _nr; r++) _rowGroup[r] = gi;
+  }
+  for (let r = 0; r < _nr; r++) {
+    const y = rowY(r);
+    if (y + ROW_H < RULER_H || y > H) continue;
+    const clampY = Math.max(y, RULER_H);
+    const gi = _rowGroup[r];
+    if (gi >= 0) {
+      ctx.fillStyle = GROUP_TINTS[gi % GROUP_TINTS.length];
+    } else {
+      ctx.fillStyle = r % 2 === 0 ? 'rgba(255,255,255,0.015)' : 'rgba(0,0,0,0.08)';
+    }
+    ctx.fillRect(0, clampY, W, Math.min(ROW_H, y + ROW_H - clampY));
+    // Subtle row divider
+    if (r > 0 && y > RULER_H) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.04)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
+    }
+    // Row index
+    if (clampY + 10 < y + ROW_H) {
+      ctx.fillStyle = 'rgba(100,100,160,0.35)';
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'top';
+      ctx.fillText(String(r), 4, clampY + 3);
+    }
+  }
+  // Group labels (drawn once per group, at top-right of first row)
+  if (groups && !groupsCollapsed) for (let gi = 0; gi < groups.length; gi++) {
+    const g = groups[gi];
+    const y = rowY(g.start_row);
+    if (!g.label || y + ROW_H < RULER_H || y > H) continue;
+    const clampY = Math.max(y, RULER_H);
+    ctx.save();
+    ctx.fillStyle = 'rgba(180,140,200,0.5)';
+    ctx.font = 'bold 9px monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillText(g.label, W - 6, clampY + 2);
+    ctx.restore();
+  }
+
+  drawEdges();
+
+  for (const c of calls) {
+    if (!isHidden(c)) drawBox(c);
+  }
+
+  if (hoveredUid && byUid[hoveredUid] && !isHidden(byUid[hoveredUid]))
+    drawHover(byUid[hoveredUid]);
+
+  drawRuler();
+  drawScrollbars();
+}
+
+// ── Scrollbars ────────────────────────────────────────────────────────────────
+const SBAR_W = 6;       // thickness
+const SBAR_PAD = 2;     // padding from edge
+const SBAR_MIN = 20;    // minimum thumb length
+
+function drawScrollbars() {
+  const W = cv.width, H = cv.height;
+  const viewH = H - RULER_H;
+
+  // Horizontal scrollbar (bottom edge)
+  const totalTRange = maxT - minT || 1;
+  const visibleT = W / pxPerSec;
+  if (visibleT < totalTRange) {
+    const trackL = 0, trackW = W - SBAR_W;
+    const thumbFrac = Math.min(1, visibleT / totalTRange);
+    const thumbW = Math.max(SBAR_MIN, trackW * thumbFrac);
+    const scrollFrac = (viewStartT - minT) / (totalTRange - visibleT);
+    const thumbX = trackL + Math.max(0, Math.min(1, scrollFrac)) * (trackW - thumbW);
+    const thumbY = H - SBAR_W - SBAR_PAD;
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    rrect(thumbX, thumbY, thumbW, SBAR_W, 3);
+    ctx.fill();
+  }
+
+  // Vertical scrollbar (right edge)
+  const maxScrollY = Math.max(0, totalContentH() - viewH);
+  if (maxScrollY > 0) {
+    const trackT = RULER_H, trackH = viewH - SBAR_W;
+    const thumbFrac = Math.min(1, viewH / totalContentH());
+    const thumbH = Math.max(SBAR_MIN, trackH * thumbFrac);
+    const scrollFrac = scrollY / maxScrollY;
+    const thumbY = trackT + Math.max(0, Math.min(1, scrollFrac)) * (trackH - thumbH);
+    const thumbX = W - SBAR_W - SBAR_PAD;
+    ctx.fillStyle = 'rgba(255,255,255,0.12)';
+    rrect(thumbX, thumbY, SBAR_W, thumbH, 3);
+    ctx.fill();
+  }
+}
+
+// ── Tooltip ───────────────────────────────────────────────────────────────────
+const ttEl = document.getElementById('tooltip');
+
+function showTooltip(c, cx, cy) {
+  const deps = data_edges
+    .filter(([, d]) => d === c.uid)
+    .map(([s]) => byUid[s] ? callName(byUid[s]) : s);
+  const lines = [`<div class="tt-head">${callName(c)}</div>`];
+  const kv = (k, v) => `<div class="tt-kv">${k}: <b>${v}</b></div>`;
+  if (c.display_name && c.display_name !== c.func) lines.push(kv('function', c.func));
+  lines.push(kv('start', `+${c.dispatch_ts.toFixed(3)}s`));
+  lines.push(kv('dur',   fmtDur(c.exec_time_s)));
+  lines.push(kv('worker', c.worker_ip));
+  lines.push(kv('node', c.node_id.substring(0, 16) + '\u2026'));
+  if (!c.is_remote) lines.push(kv('mode', 'local'));
+  if (deps.length)  lines.push(kv('needs', deps.join(', ')));
+  for (const [k, v] of Object.entries(c.extra)) {
+    if (v != null) lines.push(kv(k, typeof v === 'number' ? v.toLocaleString() : v));
+  }
+  ttEl.innerHTML = lines.join('');
+  ttEl.style.display = 'block';
+  // Keep tooltip within viewport
+  const tw = 300, th = ttEl.offsetHeight || 120;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  ttEl.style.left = Math.min(cx + 14, vw - tw - 8) + 'px';
+  ttEl.style.top  = Math.min(cy - 10, vh - th - 8) + 'px';
+}
+
+function hideTooltip() { ttEl.style.display = 'none'; }
+
+// ── Detail panel ──────────────────────────────────────────────────────────────
+function showDetail(c) {
+  selectedUid = c.uid;
+  document.getElementById('detail-func').textContent = callName(c);
+  const lines = [];
+  const kv  = (k, v) => `<div class="dkv"><span class="dk">${k}: </span><span class="dv">${v}</span></div>`;
+  const sep = () => '<hr class="dsep">';
+  lines.push(kv('uid',       c.uid));
+  lines.push(kv('call_id',   c.call_id));
+  if (c.display_name && c.display_name !== c.func) lines.push(kv('function', c.func));
+  lines.push(kv('mode',      c.is_remote ? 'remote' : 'local'));
+  lines.push(kv('start',     `+${c.dispatch_ts.toFixed(4)}s`));
+  lines.push(kv('duration',  fmtDur(c.exec_time_s)));
+  lines.push(sep());
+  lines.push(kv('worker_ip', c.worker_ip));
+  lines.push(kv('worker_id', c.worker_id.substring(0, 22) + '\u2026'));
+  lines.push(kv('node_id',   c.node_id.substring(0, 22) + '\u2026'));
+  if (Object.keys(c.resources).length)
+    lines.push(kv('resources', JSON.stringify(c.resources)));
+
+  if (c.tools.length) {
+    lines.push(sep());
+    for (const t of c.tools) {
+      const loc = t.hostname || (t.node_id || '').substring(0, 14);
+      lines.push(kv('tool', `${t.name} @ ${loc}`));
+    }
+  }
+
+  if (Object.keys(c.extra).length) {
+    lines.push(sep());
+    for (const [k, v] of Object.entries(c.extra)) {
+      if (v != null) lines.push(kv(k, typeof v === 'number' ? v.toLocaleString() : v));
+    }
+  }
+
+  // Dependency relationships
+  const incoming = data_edges.filter(([, d]) => d === c.uid).map(([s]) => byUid[s] ? callName(byUid[s]) : s);
+  const outgoing = data_edges.filter(([s]) => s === c.uid).map(([, d]) => byUid[d] ? callName(byUid[d]) : d);
+  const parent   = nesting_edges.find(([, ch]) => ch === c.uid);
+  const children = nesting_edges.filter(([p]) => p === c.uid).map(([, ch]) => byUid[ch] ? callName(byUid[ch]) : ch);
+
+  if (incoming.length || outgoing.length || parent || children.length) {
+    lines.push(sep());
+    if (incoming.length) lines.push(kv('data from', incoming.join(', ')));
+    if (outgoing.length) lines.push(kv('data to',   outgoing.join(', ')));
+    if (parent)          lines.push(kv('spawned by', byUid[parent[0]] ? callName(byUid[parent[0]]) : parent[0]));
+    if (children.length) lines.push(kv('spawns',    children.join(', ')));
+  }
+
+  document.getElementById('detail-content').innerHTML = lines.join('');
+  document.getElementById('detail').style.display = 'block';
+  redraw();
+}
+
+function closeDetail() {
+  document.getElementById('detail').style.display = 'none';
+  selectedUid = null;
+  redraw();
+}
+window.closeDetail = closeDetail;
+
+// ── Pan / zoom event handlers ─────────────────────────────────────────────────
+let dragging = false, dragX0 = 0, dragY0 = 0, dragT0 = 0, dragSY0 = 0;
+
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  hideTooltip();
+  if (e.metaKey || e.ctrlKey) {
+    // Cmd/Ctrl+scroll: zoom
+    const mx      = e.offsetX;
+    const tCursor = xToT(mx);
+    pxPerSec     *= e.deltaY < 0 ? 1.18 : 1 / 1.18;
+    viewStartT    = tCursor - mx / pxPerSec;
+  } else if (e.shiftKey || e.deltaX !== 0) {
+    // Shift+scroll: pan left/right (macOS swaps deltaY into deltaX when shift held)
+    const dx = e.deltaX || e.deltaY;
+    viewStartT += dx / pxPerSec;
+  } else {
+    // Plain scroll: pan up/down
+    scrollY += e.deltaY;
+  }
+  clampView();
+  redraw();
+}, { passive: false });
+
+cv.addEventListener('mousedown', e => {
+  if (e.button !== 0) return;
+  dragging = true;
+  dragX0   = e.offsetX;
+  dragY0   = e.offsetY;
+  dragT0   = viewStartT;
+  dragSY0  = scrollY;
+  cv.style.cursor = 'grabbing';
+});
+
+window.addEventListener('mousemove', e => {
+  const rect = cv.getBoundingClientRect();
+  const mx = e.clientX - rect.left;
+  const my = e.clientY - rect.top;
+
+  if (dragging) {
+    const dx = mx - dragX0, dy = my - dragY0;
+    viewStartT = dragT0 - dx / pxPerSec;
+    scrollY    = dragSY0 - dy;
+    clampView();
+    hideTooltip();
+    redraw();
+    return;
+  }
+
+  const c = callAt(mx, my);
+  if (c) {
+    if (hoveredUid !== c.uid) { hoveredUid = c.uid; redraw(); }
+    cv.style.cursor = 'pointer';
+    showTooltip(c, e.clientX, e.clientY);
+  } else {
+    if (hoveredUid !== null) { hoveredUid = null; redraw(); }
+    cv.style.cursor = 'crosshair';
+    hideTooltip();
+  }
+});
+
+window.addEventListener('mouseup', e => {
+  if (!dragging) return;
+  const rect = cv.getBoundingClientRect();
+  const dx = Math.abs((e.clientX - rect.left) - dragX0);
+  const dy = Math.abs((e.clientY - rect.top)  - dragY0);
+  dragging = false;
+  cv.style.cursor = 'crosshair';
+  if (dx < 5 && dy < 5) {
+    const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+    const c = callAt(mx, my);
+    if (c) showDetail(c); else closeDetail();
+  }
+});
+
+cv.addEventListener('mouseleave', () => {
+  hoveredUid = null;
+  hideTooltip();
+  redraw();
+});
+
+window.addEventListener('resize', resize);
+
+window.addEventListener('keydown', e => {
+  if (e.key === 'r' && !e.metaKey && !e.ctrlKey && !e.altKey) {
+    groupsCollapsed = !groupsCollapsed;
+    clampView();
+    redraw();
+  }
+});
+
+// ── Utilities ─────────────────────────────────────────────────────────────────
+function fmtDur(s) {
+  if (s >= 1)       return `${s.toFixed(3)}s`;
+  if (s >= 0.001)   return `${(s * 1000).toFixed(1)}ms`;
+  return `${(s * 1e6).toFixed(0)}\u00b5s`;
+}
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+initView();
+redraw();
+
+})();
+</script>
+</body>
+</html>

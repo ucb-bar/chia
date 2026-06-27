@@ -1,0 +1,9 @@
+{
+  "label": "vertex_resource_exhausted_429",
+  "provider": "vertex gemini (google-genai generate_content)",
+  "how_produced": "SYNTHETIC \u2014 quota/rate exhaustion (can't trigger deterministically here)",
+  "code": 429,
+  "status": "RESOURCE_EXHAUSTED",
+  "message": "Resource exhausted. Please try again later.",
+  "expected_chia": "RateLimitError"
+}

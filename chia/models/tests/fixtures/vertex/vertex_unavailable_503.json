@@ -1,0 +1,9 @@
+{
+  "label": "vertex_unavailable_503",
+  "provider": "vertex gemini (google-genai generate_content)",
+  "how_produced": "SYNTHETIC \u2014 service temporarily unavailable",
+  "code": 503,
+  "status": "UNAVAILABLE",
+  "message": "The service is currently unavailable.",
+  "expected_chia": "ServerError"
+}

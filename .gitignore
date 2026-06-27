@@ -1,0 +1,39 @@
+__pycache__/
+*.pyc
+.venv/
+.vscode/
+.metals/
+.scala-build/
+*.egg-info/
+build/
+dist/
+tmp/
+outputs/
+
+# Secrets
+*.apikey
+*.pem
+.env
+
+# Claude Code
+.claude/
+
+# PDFs / docs not part of source
+*.pdf
+# ...but spec PDFs must ship in the job working-dir so the LLM can Read them
+!vext/specs/**/*.pdf
+
+# Source overlays (large, user-specific chipyard modifications)
+chipyard-tma/
+
+# Compiled binaries and dumps
+test/simulator-*
+*.dump
+
+# Sphinx build output
+docs/_build/
+
+# OS
+.DS_Store
+
+out/

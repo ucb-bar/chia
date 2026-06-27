@@ -1,0 +1,72 @@
+# CACTI SRAM-characterization worker image.
+#
+# Builds CACTI plus OpenROAD (no Genus, no Hammer). This is the worker image for
+# chia's SRAM pipeline (chia/vlsi/sram_cacti/): that code shells out to the
+# CACTI binary (cloned + built at /scratch/cacti), and OpenROAD (which bundles
+# the OpenSTA engine) validates the generated .lib/.lef files standalone via
+# read_liberty / read_lef (no synthesis run) — see
+# chia/vlsi/sram_cacti/test/test_file_validation.py.
+#
+# Build (from the chia repo root):
+#
+#   docker build -f dockerfiles/CactiDockerfile \
+#       -t ghcr.io/ucb-bar/chia-cacti:latest .
+#
+# syntax=docker/dockerfile:1
+FROM ghcr.io/ucb-bar/chia:latest
+
+USER root
+
+SHELL ["/bin/bash", "-cl"]
+
+# CACTI is a plain C++ tool built with make; build-essential gives us the
+# compiler + make, and git is needed to clone the (public) CACTI repo.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build CACTI under /scratch/cacti. 1777 mirrors the Genus base so the runtime
+# ray user can also write under /scratch.
+RUN mkdir -p /scratch && chmod 1777 /scratch
+
+# Clone the public CACTI 7.0 repo over plain HTTPS (no auth required). Kept as
+# its own step (separate from the build) so a clone failure is unambiguous in
+# the logs. GIT_TERMINAL_PROMPT=0 fails fast instead of hanging on a prompt.
+RUN GIT_TERMINAL_PROMPT=0 git clone \
+        https://github.com/ucb-bar/cacti.git /scratch/cacti
+
+# CACTI is a small C++ make build (no submodules). Build it, then hand the tree
+# to the ray user so the runtime worker owns the binary and any scratch files
+# CACTI writes beside it.
+# NOTE: on the stock rayproject/ray base the ray user's primary group is
+# `users` (gid 100) — there is no `ray` group — so chown to ray:users.
+RUN cd /scratch/cacti \
+ && make -j"$(nproc)" \
+ && chown -R ray:users /scratch/cacti
+
+# Put the CACTI binary on PATH so `cacti` is invokable directly by any user
+# (the ray default user included). chia itself shells out via an absolute
+# path, so this is purely for interactive / ad-hoc convenience.
+ENV PATH="/scratch/cacti:${PATH}"
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray
+
+# ---------------------------------------------------------------------------
+# OpenROAD — used purely as a standalone format validator for the .lib/.lef
+# files the sram_cacti pipeline emits: its `read_liberty` / `read_lef` accept
+# the files without a synthesis/P&R run. OpenROAD bundles the OpenSTA engine,
+# so this one package covers both the Liberty and LEF checks.
+#
+# There is no standalone OpenSTA conda package on litex-hub, and a source build
+# fights this conda base for tcl/zlib/flex and needs CUDD — so we pull the
+# prebuilt `openroad` package (which embeds OpenSTA) instead. It's large, but
+# prebuilt (no build step). Installed in its OWN env ("eda") so it can't
+# perturb the pinned ray base env; we append just that env's bin to PATH so
+# base python/pip stay ahead of it.
+# ---------------------------------------------------------------------------
+RUN conda create -y -n eda -c litex-hub -c conda-forge openroad \
+ && conda clean -afy
+ENV PATH="${PATH}:/home/ray/anaconda3/envs/eda/bin"

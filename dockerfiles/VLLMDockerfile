@@ -1,0 +1,164 @@
+# syntax=docker/dockerfile:1
+# Dockerfile for a chia vLLM serving worker.
+#
+# Builds on vLLM's official OpenAI-server image (vllm/vllm-openai), then layers a
+# conda Python env with Ray + the chia package on top — so the same container
+# both (a) serves an open-weight model over vLLM's OpenAI-compatible endpoint on
+# :8000 and (b) joins the chia Ray cluster as a worker. Pair it with
+# chia.models.vllm.VLLMLLM, whose `prompt` is gated on the `vllm_creds` resource
+# so calls land on a node running this image.
+#
+# Ray/chia are installed in their OWN conda env (py_worker) so they cannot
+# perturb the base image's pinned torch/vllm/transformers stack — vLLM keeps
+# running on the image's python; only the Ray worker uses py_worker.
+#
+# ---------------------------------------------------------------------------
+# GPU support
+# ---------------------------------------------------------------------------
+# vLLM is GPU-first. The default base (vllm/vllm-openai) is CUDA/NVIDIA; AMD uses
+# a different ROCm image, so we parameterize VLLM_BASE. There is no practical CPU
+# path (unlike Ollama). Run with `--gpus all` (NVIDIA).
+#
+#   NVIDIA:  --build-arg VLLM_BASE=vllm/vllm-openai:latest   (default)
+#   AMD:     --build-arg VLLM_BASE=rocm/vllm:latest          (ROCm; verify tag)
+#
+# ---------------------------------------------------------------------------
+# Build (from the chia repo root)
+# ---------------------------------------------------------------------------
+#   docker build -f dockerfiles/VLLMDockerfile -t ghcr.io/ucb-bar/chia-vllm:latest .
+#
+# ---------------------------------------------------------------------------
+# Run (GPU required)
+# ---------------------------------------------------------------------------
+# Standalone server, serving an ungated model (no HF token needed):
+#   docker run --rm --gpus all -p 8200:8200 \
+#       --shm-size=16g \
+#       -e VLLM_MODEL="Qwen/Qwen2.5-3B-Instruct" \
+#       -e VLLM_SERVE_ARGS="--max-model-len 8192" \
+#       -v ${HOME}/.cache/huggingface:/root/.cache/huggingface \
+#       ghcr.io/ucb-bar/chia-vllm:latest
+#
+# As a chia Ray worker that also serves vLLM (entrypoint backgrounds
+# `vllm serve`, then execs the command chia passes):
+#   docker run -d --gpus all --net=host --shm-size=16g \
+#       -e VLLM_MODEL="Qwen/Qwen2.5-3B-Instruct" \
+#       ghcr.io/ucb-bar/chia-vllm:latest \
+#       ray start --address=<head-ip>:6379 \
+#                 --resources='{"vllm_creds": 1}' --block
+#
+# Gated models (e.g. meta-llama/*) additionally need `-e HF_TOKEN=<token>`.
+#
+# Knobs (env vars):
+#   VLLM_MODEL        HF model id to serve (REQUIRED to auto-serve), e.g.
+#                     "Qwen/Qwen2.5-3B-Instruct"
+#   VLLM_SERVE_ARGS   extra args appended to `vllm serve`, e.g.
+#                     "--max-model-len 8192 --enable-auto-tool-choice
+#                      --tool-call-parser hermes" (tool-call-parser must match
+#                      the model family: hermes for Qwen, llama3_json for Llama 3)
+#   VLLM_SERVE        set to 0 to skip launching the server (pure Ray worker)
+#   VLLM_PORT         port the server listens on (default 8200). NOT 8000: on
+#                     tunneled chia workers (AWS) chia's SSH tunnels reserve
+#                     8000-8010, and the container is --net=host, so 8000 collides.
+#   HF_TOKEN          HuggingFace token for gated models
+#   HF_HOME           weight cache dir (default $HOME/.cache/huggingface, resolved
+#                     at runtime; created if missing)
+
+ARG VLLM_BASE=vllm/vllm-openai:latest
+FROM ${VLLM_BASE}
+
+SHELL ["/bin/bash", "-c"]
+
+# Python + Ray versions for the Ray-worker env. Pinned to the canonical chia env
+# (3.10.19). Ray must match the head node. This env is isolated from vLLM's.
+ARG PYTHON_VERSION=3.10.19
+ARG RAY_VERSION=2.54.0
+
+# Tooling: curl (health checks + miniforge download), git (chia deps),
+# bzip2 (miniforge installer), ca-certificates.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git bzip2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Miniforge — a controlled interpreter for the Ray worker, isolated from the
+# base image's python/torch/vllm. conda-forge default avoids the Anaconda
+# default-channel Terms-of-Service gate that blocks a fresh Miniconda.
+RUN curl -fsSL "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh" \
+        -o /tmp/miniforge.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda \
+    && rm /tmp/miniforge.sh
+
+# A dedicated env with matching Python + Ray, plus `openai` (the SDK
+# OpenAICompatLLM/VLLMLLM import lazily — it is NOT a declared chia dep). Kept
+# OUT of the base image's python so it can't disturb the vllm/torch versions.
+RUN /opt/conda/bin/conda create -n py_worker python=${PYTHON_VERSION} -y -q \
+    && /opt/conda/envs/py_worker/bin/pip install --no-cache-dir -q \
+        "ray[default]==${RAY_VERSION}" openai \
+    && /opt/conda/bin/conda clean -afy
+
+# Install the chia package into py_worker from local source.
+COPY . /tmp/chia
+RUN /opt/conda/envs/py_worker/bin/pip install --no-cache-dir /tmp/chia \
+    && rm -rf /tmp/chia
+
+# NOTE: we deliberately do NOT prepend py_worker to PATH globally — that would
+# shadow the base image's python that `vllm` runs under. The entrypoint launches
+# `vllm` (which resolves to the base image's console script) directly, and the
+# Ray worker activates py_worker explicitly via its absolute path / the cluster's
+# worker_start_ray_commands.
+ENV PATH="/opt/conda/envs/py_worker/bin:${PATH}"
+
+EXPOSE 8200
+
+# Entrypoint: background `vllm serve $VLLM_MODEL $VLLM_SERVE_ARGS`, best-effort
+# wait for it to come up, then exec the passed command (e.g. `ray start ...`).
+# With no command, keep the server in the foreground. Overrides the base image's
+# vLLM ENTRYPOINT.
+COPY --chmod=755 <<'EOF' /usr/local/bin/chia-vllm-entrypoint.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Cache weights under the invoking user's HOME (Apptainer-friendly: read-only
+# image, runs as you). Overridable via HF_HOME.
+export HF_HOME="${HF_HOME:-${HOME:-/root}/.cache/huggingface}"
+mkdir -p "$HF_HOME"
+
+# Serve on 8200 by default, NOT 8000: on tunneled chia workers (AWS) chia's SSH
+# tunnels reserve 8000-8010, and the container is --net=host, so 8000 collides.
+VLLM_PORT="${VLLM_PORT:-8200}"
+
+if [ "${VLLM_SERVE:-1}" = "1" ]; then
+    if [ -z "${VLLM_MODEL:-}" ]; then
+        echo "[chia-vllm] VLLM_MODEL not set; skipping 'vllm serve'. Set VLLM_MODEL" \
+             "(a HF model id) to auto-serve, or VLLM_SERVE=0 to silence this." >&2
+    else
+        echo "[chia-vllm] starting: vllm serve ${VLLM_MODEL} --port ${VLLM_PORT} ${VLLM_SERVE_ARGS:-}"
+        # shellcheck disable=SC2086 - VLLM_SERVE_ARGS is intentionally word-split.
+        vllm serve "${VLLM_MODEL}" --port "${VLLM_PORT}" ${VLLM_SERVE_ARGS:-} &
+        VLLM_PID=$!
+        # Best-effort wait (~120s) so obvious config errors surface in the logs.
+        # Full readiness (weight download + load) can take much longer; consumers
+        # poll /health themselves, so we don't block the worker indefinitely.
+        for _ in $(seq 1 60); do
+            if curl -fsS "http://127.0.0.1:${VLLM_PORT}/health" >/dev/null 2>&1; then
+                echo "[chia-vllm] server healthy"
+                break
+            fi
+            if ! kill -0 "$VLLM_PID" 2>/dev/null; then
+                echo "[chia-vllm] WARN: 'vllm serve' exited during startup" >&2
+                break
+            fi
+            sleep 2
+        done
+    fi
+fi
+
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+else
+    # No command given: keep the vLLM server in the foreground.
+    wait "${VLLM_PID:-}"
+fi
+EOF
+
+ENTRYPOINT ["/usr/local/bin/chia-vllm-entrypoint.sh"]
+CMD []

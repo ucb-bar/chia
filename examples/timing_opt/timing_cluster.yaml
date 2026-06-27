@@ -1,0 +1,168 @@
+# Ray cluster config for the timing-improvement flow.
+#
+# Sized for two concurrent improve_timing runs (two seed_flow / parent→child
+# passes in parallel) plus each LLM's optional sub-block synth experiments
+# via TimingExperimentTool.
+cluster_name: timing_cluster
+
+available_node_types:
+    verilator_run:
+        resources: {"verilator_run": 32}
+        min_workers: 2
+        max_workers: 2
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips:
+            - "@verilator_run_aws:0" # Can be changed to on-premise machines
+            - "@verilator_run_aws:1"
+
+    chisel_build:
+        resources: {"chipyard": 1}
+        min_workers: 2
+        max_workers: 2
+        worker_setup_commands: ["cd /home/ray/chipyard/sims/firesim && source sourceme-manager.sh"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "chia-chisel-build-${USER}"
+            pull_before_run: False
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+            run_setup_commands:
+                - cd /home/ray/chipyard
+                - git -c submodule.recurse=false pull || true
+                - git submodule update --init generators/ || true
+        compatible_ips:
+            - "@chisel_build_aws:0"
+            - "@chisel_build_aws:1"
+
+    llm_1:
+        # `llm`: requested 1.0/call by debug_failure, which overrides
+        # chia.models.claude's default resource so it schedules on these nodes.
+        # `claude_creds`: the resource chia.models.claude's `prompt` requests by
+        # default (0.01/call) — the timing flow's improve_timing_llm runs here
+        # directly via it.
+        resources: {"llm": 4, "claude_creds": 4}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "chia-claude-code-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "--user $(id -u):$(id -g)"
+                # Mount the .claude directory for credentials
+                - "-v /scratch/${USER}/claude_config_dir/.claude:/home/ray/.claude"
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                # Empty working directory the Claude Code process chdirs into.
+                - mkdir -p /home/ray/llm_env
+        compatible_ips: # FILL
+    vlsi:
+        # Synthesis worker(s). run_boom_tile_synthesis (Steps 6/7) and the LLM's
+        # sub-block `synth_module` A/B experiments run here, requesting the
+        # VLSI / Syn resources below — one main pass uses 1 VLSI slot plus up
+        # to 2 more for experiments, so VLSI:4 fits a run on a single node.
+        #
+        # STUB: our runs used Cadence Genus (sky130 PDK) as the synthesizer.
+        # Provide a worker (docker image or bare node) that satisfies these
+        # resources, then point compatible_ips at the host(s) that run it.
+        resources: {"VLSI": 4, "Syn": 1, "cacti": 4}
+        min_workers: 2
+        max_workers: 2
+        # docker:
+        #     image: "<your synthesis-worker image>"
+        #     ...
+        # compatible_ips: [ "<your synthesis host(s)>" ]
+
+aws_nodes:
+    region: us-east-1
+    verilator_run_aws:
+        KeyName: CHANGE_ME_ec2_key   # TODO: set to your EC2 key-pair name
+        InstanceType: c5.9xlarge       # 36 vCPUs, 72 GB, ~$0.60/hr spot
+        count: 2
+        ImageId: ami-0ec10929233384c7f
+        ssh_user: ubuntu
+        setup_commands:
+            - "echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${GHCR_USER} --password-stdin"
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 500
+                  VolumeType: gp3
+    chisel_build_aws:
+        KeyName: CHANGE_ME_ec2_key   # TODO: set to your EC2 key-pair name
+        InstanceType: c5.9xlarge       # 36 vCPUs, 72 GB, <5% interrupt, ~$0.60/hr spot
+        count: 2
+        ImageId: ami-0ec10929233384c7f
+        ssh_user: ubuntu
+        setup_commands:
+            - "echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${GHCR_USER} --password-stdin"
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 500
+                  VolumeType: gp3
+
+
+provider:
+    head_ip: ${HEAD_IP}
+
+# How Ray will authenticate with newly launched nodes.
+auth:
+    ssh_user: ${USER}
+    # ssh_private_key: /home/eecs/${USER}/.ssh/${USER}
+
+# 2 verilator_run + 2 chisel_build + 1 llm + 2 vlsi = 7 workers.
+min_workers: 7
+max_workers: 7
+
+
+# Custom commands that will be run on the head node after common setup.
+# Head node + any Ray worker that lands on it run under the `timing_loop`
+# conda env (defined in examples/timing_opt/env.yml): Python 3.10.19 with chia
+# installed editable from your chia checkout. If a new node_type is later
+# configured to land on the head, replicate the same `conda activate
+# timing_loop` prefix in its worker_env_commands.
+#
+# NOTE: if your synthesis tool needs license-server reachability on the
+# synthesis (`vlsi`) workers — commercial EDA tools typically do — set that up
+# here (e.g. SSH tunnels or a VPN from the head to your license server, plus a
+# matching teardown). The mechanism is operator- and tool-specific and is
+# intentionally omitted.
+head_setup_commands:
+    - "source ~/.bashrc && conda activate timing_loop"
+    # - "<your synthesis-tool license reachability setup>"
+head_teardown_commands: []
+
+# Custom commands that will be run on worker nodes after common setup.
+worker_setup_commands: []
+
+# Command to start ray on the head node. We re-`conda activate timing_loop`
+# here because ray-up runs each command in a fresh shell — the activation
+# from head_setup_commands does not persist, and ray's head daemon (plus the
+# raylet worker processes it spawns on the head, e.g. our head-pinned
+# ExperimentLogger actor) must run under this env to import chia / db / ...
+head_start_ray_commands:
+    - "source ~/.bashrc && conda activate timing_loop && ray stop"
+    - "source ~/.bashrc && conda activate timing_loop && ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0"
+
+# Command to start ray on worker nodes. These run on llm_1 and the AWS
+# nodes — none of which currently land on the head, and the AWS ones use
+# docker with their own Python. If you later add a node_type whose
+# compatible_ips includes the head, add `source ~/.bashrc && conda
+# activate timing_loop &&` before `ray start` in that node_type's setup.
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

@@ -1,0 +1,44 @@
+
+
+provider:
+    head_ip: ${THIS_MACHINE}
+
+auth:
+    ssh_user: ${USER}
+    # ssh_private_key: ~/.ssh/<ssh_key_name>
+
+available_node_types:
+    hello_chipyard:
+        resources: {"chipyard": 1}
+        num_workers: 1
+        compatible_ips: ["${THIS_MACHINE}"]
+        worker_setup_commands: ["source /home/ray/chipyard/env.sh"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "chia-chipyard-${USER}"
+            run_options:
+                - --shm-size=10.24gb
+            pull_timeout: 7200 # default value for this is 600 seconds but chia-chisel-build is large
+
+    hello_verilator:
+        resources: {"verilator_run": 1}
+        num_workers: 1
+        compatible_ips: ["${THIS_MACHINE}"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-${USER}"
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_start_ray_commands: 
+    - "source ~/.bashrc && conda activate chia_env && ray stop"
+    - "source ~/.bashrc && conda activate chia_env && \
+        ray start --head --port=6379 \
+        --include-dashboard=True --dashboard-agent-listen-port=0"
+
+worker_start_ray_commands:
+    - "ray stop"
+    - "ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0"

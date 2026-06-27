@@ -1,0 +1,96 @@
+# Ray cluster for the CIRCT GitHub-issue solving example — a SINGLE-MACHINE,
+# config (4 containers total, all on one host):
+#   circt_llm    : 2 chia-claude-code containers, llm:2 each (2 concurrent
+#                  prompts).
+#   circt_worker : 2 chia-circt containers, circt:1 each -> 2 concurrent issues.
+#                  Each owns its own /workspace/circt checkout (firtool-1.148.0)
+#                  + baked build dir, warmed once and idempotently by
+#                  circt_warm_build (no build bind-mount, since 2 containers on
+#                  one host can't share one build path).
+#
+# Everything runs on ONE machine — head + all 4 workers. The host is read from
+# the CHIA_HEAD environment variable (fills head_ip and both
+# compatible_ips): `export CHIA_HEAD=$(hostname)` before `chia up`.
+#
+# The head driver (circt_issue_loop.py) runs on head under the example's conda
+# env; triage uses the read-only GithubIssuesNode (needs GITHUB_TOKEN set).
+#
+# Port note: default GCS 6379 / dashboard 8265 — bring only one chia cluster up
+# per host at a time.
+cluster_name: circt_issue_solver
+
+available_node_types:
+    circt_llm:
+        resources: {"llm": 2}
+        balance_level: cluster
+        min_workers: 2
+        max_workers: 2
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "circt_issue_solver_llm_${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "--user $(id -u):$(id -g)"
+                - "-v ~/.claude:/home/ray/.claude" # Mount claude configuration dir to container
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                - mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+                - cp /home/ray/.claude/.claude.json /home/ray/.claude.json
+                - mkdir -p ~/.claude && python3 -c "import json,os; p=os.path.expanduser('~/.claude/settings.json'); d=json.load(open(p)) if os.path.exists(p) else {}; d['skipDangerousModePermissionPrompt']=True; json.dump(d,open(p,'w'))"
+        compatible_ips: ["${CHIA_HEAD}"]
+
+    circt_worker:
+        resources: {"circt": 1}
+        balance_level: cluster
+        min_workers: 2
+        max_workers: 2
+        docker:
+            image: "ghcr.io/ucb-bar/chia-circt:latest"
+            container_name: "circt_issue_solver_worker_${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                - git config --global user.email 'circt_issue_solver@chia' || true
+                - git config --global user.name  'circt_issue_solver'       || true
+                - git config --global --add safe.directory /workspace/circt || true
+                - /home/ray/anaconda3/envs/py_worker/bin/pip install --quiet lit || true
+        compatible_ips: ["${CHIA_HEAD}"]
+
+provider:
+    head_ip: ${CHIA_HEAD}
+
+auth:
+    ssh_user: ${USER}
+
+# 2 llm + 2 circt = 4 workers, all on the one machine.
+min_workers: 4
+max_workers: 4
+upscaling_speed: 1.0
+idle_timeout_minutes: 5
+
+file_mounts: {}
+cluster_synced_files: []
+file_mounts_sync_continuously: False
+rsync_exclude: ["**/.git", "**/.git/**"]
+rsync_filter: [".gitignore"]
+initialization_commands: []
+setup_commands: []
+worker_setup_commands: []
+
+head_setup_commands:
+    - "source ~/.bashrc && conda activate circtissues"
+head_start_ray_commands:
+    - "source ~/.bashrc && conda activate circtissues && ray stop"
+    - "source ~/.bashrc && conda activate circtissues && ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0"
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

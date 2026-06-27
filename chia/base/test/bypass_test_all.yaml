@@ -1,0 +1,7 @@
+# Test YAML for test_bypass_tags.py test 8.
+# Bypasses simple_add and simple_multiply (the test functions).
+bypass:
+  simple_add:
+    bypass: true
+  simple_multiply:
+    bypass: true

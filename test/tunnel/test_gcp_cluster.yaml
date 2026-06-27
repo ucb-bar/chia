@@ -1,0 +1,82 @@
+cluster_name: gcp_test
+
+# GCP analog of test_ec2_cluster.yaml. Provisions Compute Engine instances and
+# reverse-tunnels them into the head's Ray cluster exactly like the AWS path.
+#
+# Prerequisites for a live run:
+#   * Application Default Credentials: `gcloud auth application-default login`
+#   * Replace `project:` and the image paths below with your own.
+#   * An SSH keypair; the public key is injected via instance metadata (default
+#     auth mode). Set ssh_public_key per node type (or use_os_login: true).
+gcp_nodes:
+    project: chia-488101          # <-- replace
+    zone: us-central1-a
+
+    gcp_worker:
+        machine_type: n1-standard-1
+        count: 2
+        # Default image is debian-12; override per node type as needed.
+        ssh_user: ${USER}
+        # ssh_public_key: ${HOME}/.ssh/<key>
+        use_os_login: true
+        spot: true
+
+    gcp_verilator:
+        machine_type: n2-standard-8     # 8 vCPU to match verilator_run: 8
+        count: 2
+        ssh_user: ${USER}
+        # ssh_public_key: ${HOME}/.ssh/<key>
+        use_os_login: true
+        spot: true
+        disk_size_gb: 128
+        skip_default_setup: false
+        setup_commands:
+            - "echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${USER} --password-stdin"
+
+available_node_types:
+
+    # Plain workers — give them both a `gcp` marker resource (for the smoke
+    # test) so a task can target a tunnelled GCP node specifically.
+    gcp_worker:
+        resources: {"gcp": 1}
+        num_workers: 3
+        compatible_ips: ["@gcp_verilator:0", "@gcp_worker:0", "@gcp_worker:1"]
+        worker_env_commands:
+            - "conda activate chia_env"
+
+    # Same resources as the EC2 verilator nodes so the existing tunnel suite
+    # (test_ec2_concurrency::test_verilator_run_worker_port_capacity,
+    #  test_ec2_tool) runs unchanged against the GCP cluster.
+    verilator_run:
+        resources: {"verilator_run": 8}
+        min_workers: 4
+        max_workers: 4
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: ["@gcp_verilator:0", "@gcp_verilator:1"]
+
+    local_worker:
+        resources: {"local": 1}
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env && cd ${WORK_DIR}/"]
+        min_workers: 1
+        max_workers: 1
+        compatible_ips: #FILL
+
+provider:
+    head_ip: ${HEAD_IP}
+
+auth:
+    ssh_user: ${USER}
+
+head_env_commands: ["source ~/.bashrc && conda activate chia && source ${WORK_DIR}/chia/.venv/bin/activate"]
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379

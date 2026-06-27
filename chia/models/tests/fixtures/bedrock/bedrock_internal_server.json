@@ -1,0 +1,9 @@
+{
+  "label": "bedrock_internal_server",
+  "provider": "bedrock-runtime converse",
+  "how_produced": "SYNTHETIC \u2014 InternalServerException",
+  "code": "InternalServerException",
+  "message": "An internal server error occurred. Retry your request.",
+  "http_status": 500,
+  "expected_chia": "ServerError"
+}

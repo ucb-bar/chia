@@ -1,0 +1,9 @@
+{
+  "label": "vertex_permission_denied_403",
+  "provider": "vertex gemini (google-genai generate_content)",
+  "how_produced": "SYNTHETIC \u2014 model present but not enabled for the project",
+  "code": 403,
+  "status": "PERMISSION_DENIED",
+  "message": "Permission denied on resource (or it may not exist).",
+  "expected_chia": "AuthenticationError"
+}

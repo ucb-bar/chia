@@ -1,0 +1,101 @@
+# Single-machine (localhost) Chia cluster for exercising the vLLM worker image
+# (chia-vllm) against a REAL vLLM server over its OpenAI-compatible endpoint.
+#
+# Mirrors ollama_local.yaml. The worker advertises the "vllm_creds" resource that
+# chia.models.vllm.VLLMLLM.prompt is gated on (@ChiaFunction(resources=
+# {"vllm_creds": 0.01})), so prompts dispatched via .chia_remote land on this
+# container. Because chia runs containers with --net=host, the prompt task —
+# running inside this same container — reaches the local vLLM server at the
+# VLLMLLM default base_url http://localhost:8000/v1.
+#
+# GPU REQUIRED: vLLM is GPU-first (no practical CPU path). This config is meant
+# for a machine with an NVIDIA GPU + docker (e.g. an AWS g5/g6 instance). The
+# `--gpus all` run option exposes the GPU to the container.
+#
+# Topology:
+#   - head:   runs on the host (no docker) — just `ray start --head`. Needs SOME
+#             env with ray + chia active (yours); see head_env_commands /
+#             CHIA_HEAD_ENV_SETUP below.
+#   - worker: one chia-vllm container on the same host. Its entrypoint starts
+#             `vllm serve $VLLM_MODEL $VLLM_SERVE_ARGS` in the background, then
+#             execs the `sleep infinity` chia gives it; Ray is then started inside
+#             it via `docker exec`. It advertises "vllm_creds".
+#
+# Prerequisites on the host:
+#   - any conda/venv with ray (2.54.0) + chia, ACTIVATED before you run
+#   - an NVIDIA GPU with a working driver + the NVIDIA container toolkit
+#     (`docker run --gpus all ...` must work)
+#   - passwordless SSH to 127.0.0.1 (`ssh 127.0.0.1` must not prompt)
+#   - the chia-vllm:test image built locally (dockerfiles/VLLMDockerfile), or
+#     switch `image` to the GHCR tag + set pull_before_run: true (and log in).
+#
+# Bring up / tear down (activate your env first; the wrapper passes it through):
+#   ./chia/models/tests/cluster/vllm_cluster.sh up
+#   ./chia/models/tests/cluster/vllm_cluster.sh down
+#
+# Then run the e2e driver (see vllm_e2e_test.py in this directory).
+
+cluster_name: chia-vllm-local
+
+provider:
+    head_ip: 127.0.0.1
+
+auth:
+    ssh_user: ${USER}
+
+available_node_types:
+    # One vLLM worker container. `resources.vllm_creds` is the pool the
+    # VLLMLLM.prompt task schedules against. The prompt requests only 0.01
+    # (gates on presence without throttling), so advertising 1 unit lets many
+    # prompts run concurrently against the single local server.
+    vllm:
+        resources: {"vllm_creds": 1}
+        num_workers: 1
+        compatible_ips: [127.0.0.1]
+        docker:
+            image: "chia-vllm:test"
+            container_name: "chia_vllm"
+            # Locally-built image (not pushed to a registry) -> do not pull.
+            # Switch to ghcr.io/ucb-bar/chia-vllm:latest + true to use the
+            # nightly image instead (requires `docker login ghcr.io`).
+            pull_before_run: false
+            run_options:
+                # Expose the NVIDIA GPU(s) to the container (REQUIRED for vLLM).
+                - "--gpus all"
+                # vLLM needs ample shared memory (NCCL / tensor parallel).
+                - "--shm-size=16g"
+                # Model to serve (must match VLLM_E2E_MODEL in the driver).
+                # Qwen2.5-3B is ungated (no HF token) + a reliable tool-caller and
+                # fits a single small GPU. The tool-call flags enable the MCP tool
+                # loop (hermes parser matches the Qwen family).
+                - "-e VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct"
+                # NOTE: VLLM_SERVE_ARGS has spaces, and chia joins run_options into
+                # a shell command — so the value MUST be quoted here, or the shell
+                # word-splits it and the extra flags leak as stray `docker run`
+                # args. The embedded double-quotes keep it a single `-e` value.
+                - '-e "VLLM_SERVE_ARGS=--max-model-len 8192 --enable-auto-tool-choice --tool-call-parser hermes"'
+                # Persist downloaded weights on the HOST so re-runs are warm.
+                # (Root-owned, since the container runs as root.)
+                - "-v ${HOME}/.cache/huggingface:/root/.cache/huggingface"
+                # For GATED models (meta-llama/*, etc.) also pass a token, e.g.:
+                # - "-e HF_TOKEN=hf_xxx"   (do NOT commit a real token)
+
+# The head runs on the host via a fresh SSH shell that does NOT inherit your
+# interactive env, so it must re-activate one with ray + chia. The
+# vllm_cluster.sh wrapper sets CHIA_HEAD_ENV_SETUP automatically from your
+# currently-active venv/conda env. head_env_commands run on both `up` and `down`.
+head_env_commands:
+    - "${CHIA_HEAD_ENV_SETUP}"
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+# Inside the chia-vllm container, the Ray worker env (ray + chia + openai) lives
+# in the py_worker conda env at /opt/conda/envs/py_worker/bin (first on PATH); the
+# provisioner injects --resources={"vllm_creds":1} into this start command.
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+
+file_mounts: {}

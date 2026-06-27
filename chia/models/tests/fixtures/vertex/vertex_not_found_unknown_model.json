@@ -1,0 +1,9 @@
+{
+  "label": "vertex_not_found_unknown_model",
+  "provider": "vertex gemini (google-genai generate_content)",
+  "how_produced": "REAL capture (gemini-2.5-flash, us-central1) \u2014 generate_content with model='gemini-nonexistent-v99'",
+  "code": 404,
+  "status": "NOT_FOUND",
+  "message": "Publisher Model `projects/<PROJECT>/locations/<LOCATION>/publishers/google/models/gemini-nonexistent-v99` was not found or your project does not have access to it.",
+  "expected_chia": "InvalidRequestError"
+}

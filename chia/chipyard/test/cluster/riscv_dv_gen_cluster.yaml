@@ -1,0 +1,55 @@
+# Cluster for the riscv-dv generator (chia/chipyard/test/riscv_dv_gen_e2e_driver.py).
+#
+# One chia-riscv-dv worker on ${WORKER_IP} exposes two resources: `dv` (the generator
+# role, used by both flows) and `xcelium` (an SV-flow license seat). The worker
+# mounts /ecad and the node sources vlsi.bashrc for the CAD tools + FlexLM env;
+# --net=host reaches the license servers. Build the image first
+# (riscv-dv-base.yml -> riscv-dv.yml).
+#
+#   chia up   chia/chipyard/test/cluster/riscv_dv_gen_cluster.yaml -y
+#   chia down chia/chipyard/test/cluster/riscv_dv_gen_cluster.yaml -y
+cluster_name: riscv_dv_gen
+
+available_node_types:
+    riscv_dv:
+        resources: {"dv": 1, "xcelium": 1}   # dv = generator role; xcelium = license seat
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-dv:latest"
+            container_name: "chia-riscv-dv-${USER}"
+            pull_before_run: True
+            pull_timeout: 1800
+            run_options:
+                - -v /ecad:/ecad:ro          # CAD tools for the SV flow
+        compatible_ips: [${WORKER_IP}]
+
+provider:
+    head_ip: ${HEAD_IP}
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: /home/eecs/${USER}/.ssh/${USER}
+
+file_mounts: {}
+
+rsync_exclude:
+    - "**/.git"
+    - "**/.git/**"
+
+rsync_filter:
+    - ".gitignore"
+
+initialization_commands:
+    - ls /ecad/tools/synopsys >/dev/null 2>&1 || true   # trigger autofs before bind
+setup_commands: []
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

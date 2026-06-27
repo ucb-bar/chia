@@ -1,0 +1,58 @@
+# Self-contained cluster for the lockstep co-simulation example
+# (chia/chipyard/test/spike_cosim_e2e_driver.py).
+#
+# The test takes a PREBUILT cospike sim (COSIM_SIM): spike is compiled into
+# the binary, and the chia-verilator-run image carries the matching spike libs
+# (copied from the chipyard base image — lockstep by construction).
+#
+# Head on $HEAD_IP; one chia-verilator-run worker on $WORKER_IP.
+#
+#   chia up   chia/chipyard/test/cluster/spike_cosim_cluster.yaml -y
+#   chia down chia/chipyard/test/cluster/spike_cosim_cluster.yaml -y
+cluster_name: spike_cosim
+
+available_node_types:
+    cosim_run:
+        resources: {"verilator_run": 1}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: [${WORKER_IP}]
+
+provider:
+    head_ip: ${HEAD_IP}
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: /home/eecs/${USER}/.ssh/${USER}
+
+file_mounts: {}
+
+rsync_exclude:
+    - "**/.git"
+    - "**/.git/**"
+
+rsync_filter:
+    - ".gitignore"
+
+initialization_commands: []
+setup_commands: []
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+
+head_start_ray_commands:
+    - ray stop
+    # --dashboard-agent-listen-port=0 -> let Ray pick any free agent port; the
+    # default 52365 is often taken by another user on these shared hosts, which
+    # otherwise breaks `ray job submit` ("failed to get head node agent").
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

@@ -1,0 +1,193 @@
+Reduce the critical path of an implementation of the BOOM out of order processor core.
+
+## Arguments
+
+`$ARGUMENTS` = `[config_name]`
+
+- **config_name** (optional) — chipyard config to target. Defaults to `MegaBoomChiaBigCacheConfig` if omitted.
+
+**Target config:** If `$1` is provided and is a valid config name (contains "Config"), use it. Otherwise default to `MegaBoomChiaBigCacheConfig`.
+
+Later, we will build, run, and synthesize the target config to test your changes. Make sure that the changes you make are reflected in this config. Chipyard configs live in `generators/chipyard/src/main/scala/config/`.
+
+## Input
+
+You will receive a timing report. This timing report will contain the longest critical paths in an implementation of the BOOM core.
+
+## Goal
+
+Maximize **iron-law performance** of the BOOM core: minimize the product
+`CPI × cycle_time` (equivalently, maximize `IPC × frequency`) on representative
+workloads. **IPC loss is fully acceptable** — even substantial IPC loss — as
+long as the frequency improvement more than pays for it. A microarchitectural
+change that drops IPC by 10% but lets the design close ~25% more frequency is
+a clear win; one that drops IPC by 25% for ~5% more frequency is a loss.
+
+You are explicitly allowed to consider IPC-affecting moves: extra pipeline
+stages, reduced issue/dispatch width, smaller queues, simpler schedulers,
+retimed wakeup paths that delay producer→consumer by a cycle, etc. Pick
+whichever level of intervention buys the most iron-law throughput on the
+critical structures — even if it changes the architectural surface a little.
+
+## Available Tools
+
+You have two MCP tools. Use `chipyard_bash` for all source editing; use `timing_experiment` to validate your edit on a sub-block before committing to a 3-hour full-tile synth.
+
+### `chipyard_bash` — bash on the chipyard build node
+
+Runs bash commands on a worker that has the BOOM source checked out. The BOOM v3 Scala sources are at:
+
+    /home/ray/chipyard/generators/boom/src/main/scala/v3/
+
+The preliminary Verilog (already elaborated from the unmodified baseline) is at:
+
+    /home/ray/chipyard/preliminary-generated-src/
+
+### `timing_experiment` — fast sub-block synthesis (use for validation)
+
+Six methods that let you re-elaborate Chisel and then synthesize a *specific* sub-module — on either your edited (child) RTL or the parent branch's unmodified RTL — to confirm your edit actually shrank the critical path. A sub-block synth is **minutes**, not the **3+ hours** the surrounding pipeline pays for the full BoomTile. Use it between Phase 3 (Implement) and Phase 4 (Verify) to catch broken or ineffective edits early.
+
+The synth methods are **async, start-then-poll**: each `start_synth_*` call returns a short handle immediately, the Genus run happens in the background, and you call `synth_status(handle, max_wait_seconds=180)` to check progress. This is deliberate — sub-block Genus runs typically take 5-30 min, which exceeds MCP HTTP timeouts; an async surface survives.
+
+- **`rebuild_verilog()`** — re-runs Chipyard's `make verilog` target with your edits, refreshing the generated Verilog and the module list for the *child* side. Call this once after your edits, before any `start_synth_child` calls. Returns a short summary (n files, elapsed seconds) or the stderr tail on failure. No effect on the parent side.
+- **`list_modules()`** — returns module names from the most recent `rebuild_verilog()` (child side). Use this to pick a `vlsi_top` that scopes the synth to the structure you actually edited (e.g. `IssueUnitCollapsing`, `RegisterFileSynthesizable`, `Rob`, etc.). Picking too high a vlsi_top defeats the speedup; picking a leaf module misses inter-module paths.
+- **`list_modules_parent()`** — same, but for the *parent* branch's unmodified RTL. Available immediately without `rebuild_verilog()`. Use this in Phase 1 to ground your understanding of what modules exist before you start editing. After editing, diff `list_modules()` against `list_modules_parent()` to spot structural drift you introduced (renames, splits, new modules).
+- **`start_synth_child(vlsi_top, timeout_seconds=5400)`** — dispatch a sub-block synth on the *child* RTL. Returns instantly (sub-second) with a handle string like `started: handle=abc12345, side=child, vlsi_top=X, ...`. The full pipeline — CACTI prep (~2 min) + MacroCompiler remap + Genus synth (~5-30 min) — runs in the background. Save the handle, then poll via `synth_status`.
+- **`start_synth_parent(vlsi_top, timeout_seconds=5400)`** — same, but on the *parent* RTL. No `rebuild_verilog` precondition. **Call in parallel with `start_synth_child`** for the A/B; both background pipelines proceed concurrently on the VLSI worker.
+- **`synth_status(handle, max_wait_seconds=180)`** — poll an in-flight handle. `max_wait_seconds` lets the call block opportunistically up to that long (cap 240; recommended 180 = 3 min, fits inside the MCP timeout). Returns either `status: running\nelapsed_seconds: X` (re-call to keep waiting) or the full structured summary. Once a handle is polled to completion successfully, it's dropped — calling `synth_status` on it again will error.
+
+**Why async**: a sync `synth_module` would block the MCP HTTP request for the full Genus runtime. For sub-blocks taking >5 min, Claude's MCP client times out before the tool returns, leaving the actor stuck and the LLM unable to dispatch follow-up calls. The async surface gives you arbitrarily long synths without disconnect risk.
+
+**Strategy**: after Phase 3, pick the smallest `vlsi_top` that contains the bottleneck cluster you targeted, call `rebuild_verilog()` once, then issue `start_synth_child(vlsi_top)` and `start_synth_parent(vlsi_top)` together as **parallel tool calls in a single turn**. You'll get two handles back, almost immediately. Then issue `synth_status` polls (also in parallel — one per handle) with `max_wait_seconds=180`. Re-poll any still-running handles each subsequent turn. When both complete, compare `worst_slack` on parent vs child to compute the delta. If your edit improved slack by less than ~10% of your target reduction, iterate. If your edit touched multiple structures, run the A/B on each candidate top.
+
+**Sizing the `vlsi_top` (observed runtimes):**
+- **Pick a single sub-block of the issue-queue / ROB / register-file scale.** `IssueUnitCollapsing` (40-entry int IQ, ~5-6 input files into Genus) synthesized in **~28-30 min per side** in past runs.
+- **Do NOT pick `BoomCore` or `BoomTile` as the experiment top.** `BoomCore` (~100 input files) **timed out at the 7200s tool cap on both parent and child** in a past run — you get no signal, just a hard fail. `BoomTile` is the main pipeline's 3-hour target and is even bigger.
+- **Multi-module critical paths are real but hard to A/B from a single top.** If the bottleneck is a register-to-register path that spans two sub-blocks (e.g. a wakeup broadcast from one IQ feeding another), you can either (a) pick the smallest common parent that still contains both endpoints and accept a longer synth, or (b) A/B each piece independently and reason about the combined effect — recognizing the per-piece result may understate the win, since the inter-module wire/buffer chain is only modeled when both pieces are inside the same `vlsi_top`. Prefer (a) when feasible; fall back to (b) and document the caveat.
+
+### Editing rules
+
+**Edit files directly in-place** using targeted bash commands:
+
+- **Read a file:** `cat .../v3/ifu/fetch-buffer.scala`
+- **Read a line range:** `sed -n '10,50p' .../v3/common/parameters.scala`
+- **Search:** `grep -rn 'class FetchBuffer' .../v3/`
+- **Insert lines after a match:** `sed -i '/pattern/a\  new_line_here' file.scala`
+- **Replace a line:** `sed -i 's/old_pattern/new_pattern/' file.scala`
+- **Insert a block after a line number:** `sed -i '42a\  line1\n  line2' file.scala`
+- **Append to a file:** `cat >> file.scala <<'EOF' ... EOF`
+- **Create a new file:** `cat > .../v3/subdir/new_module.scala <<'EOF' ... EOF`
+- **Verify your edit:** After each edit, use `sed -n 'start,endp' file.scala` to confirm the change is correct.
+
+**IMPORTANT: Edit files in-place. Do NOT write complete file copies.** Make targeted insertions, replacements, and additions. The system will automatically detect which files you changed by diffing against the baseline.
+
+---
+
+## Phase 1: Read timing report and locate critical paths in BOOM core
+
+1. Read through the timing report. Do not worry about the specific target clock period, as it is intentionally significantly overconstrained (note: the target frequency has been increased — the period is now 5 ns / 200 MHz, tighter than prior iterations). The goal is **iron-law throughput**: minimize `CPI × cycle_time`. A change that adds a pipeline stage (CPI goes up by some fraction of a cycle on dependent ops) but pulls a wide carry-chain off the critical path can easily be a net win. Compute the rough break-even — "how much IPC am I willing to give up for this much frequency?" — before deciding the move is worth it.
+2. Categorize the listed critical paths by the structures they touch
+3. Find and study the verilog implementations of these structures/paths using the `chipyard_bash` tool at path /home/ray/chipyard/preliminary-generated-src/
+4. Find and study the Chisel implementations of these structures/paths in the BOOM core in /home/ray/chipyard/generators/boom/src/main/scala/v3/
+5. Optionally call `timing_experiment.list_modules_parent()` to see the parent's full elaborated module hierarchy. Cross-reference the endpoint names in the timing report against this list — it'll surface the smallest sub-module that contains each bottleneck cluster, which is the right `vlsi_top` to use later in Phase 4b.
+
+---
+
+## Phase 2: Plan 
+
+Reason about how to refactor the structures with critical paths. Decide on a way to modify the structure so that the critical path is not as long as it was before.
+
+This may require using clever hardware techniques to reduce the length of long paths, or to eliminate the need for long logic chains entirely. Prefer no-hardware logic like shifts and low-hardware logic like bitwise operations for long logic chains over arithmetic blocks.
+
+In some cases the easiest solution will be to add pipelining. If this is the case, then make sure that the pipelining is propogated to all structures which are affected by the pipelining.
+
+**Details**
+- The processor must still be **functionally correct**. ISA-visible behavior, memory ordering, exception semantics, and architectural register state all have to be preserved.
+- IPC loss is allowed when it's earned by a larger frequency gain. **Justify each IPC-affecting move with a rough iron-law estimate** in your final response (target endpoint, expected slack improvement, expected IPC cost, why the product wins).
+- Smaller structures (fewer entries, narrower issue/dispatch width, fewer ALUs) **are on the table** if the iron-law math works out — but they're the bluntest tool and often lose more IPC than the frequency they buy. Try a logic-depth restructuring first, fall back to pipelining, and only then consider shrinking a structure.
+- Pipelining is a first-class option here. If you add a pipeline stage, **propagate the latency through every consumer** of the affected signal (wakeup mask, bypass, scoreboard, branch resolution, etc.) so behavior remains correct even if it stretches by a cycle.
+
+## Phase 3: Implement
+
+Implement the changes that you planned in phase 2 into the Boom core. Edit files directly on the chipyard node using `chipyard_bash`.
+
+**If creating a new module** (new `.scala` file):
+   - Use `cat >` to create the file
+   - Use the same package as related modules
+   - Extend `BoomModule` with `HasBoomCoreParameters`
+
+### Chisel Guidelines
+
+1. **Connection operators**: Use `:=` for all connections. Only use `<>` when BOTH sides are `DecoupledIO` or `ValidIO`.
+2. **Bundles**: BOOM Bundles require implicit `Parameters`.
+3. **Hardware vs elaboration conditionals**: Use `when`/`.elsewhen`/`.otherwise` for hardware mux. Use Scala `if` for elaboration-time gating.
+4. **Registers**: Use `RegInit(value)` when a known reset value is needed.
+5. **Imports**: Preserve ALL original imports. Add new ones as needed.
+6. **Unconnected ports**: Use `:= DontCare` for unconnected Bundle fields.
+
+---
+
+## Phase 4: Verify
+
+After editing, verify your changes compile structurally:
+
+1. **Check each edited file** with `sed -n` to review the modified sections.
+2. **Package and imports**: confirm they are intact (`head -20 file.scala`).
+3. **New IO ports**: verify both the module and its parent have matching connections.
+
+In addition, sanity check your changes, make improvements, and fix any bugs you find.
+
+## Phase 4b: Sub-block synth validation (do this before you finish)
+
+Don't trust the edit until a synth has confirmed it shortened the critical path. The surrounding pipeline will run a 3-hour BoomTile synth on what you produce — use `timing_experiment` to catch problems in minutes:
+
+1. **`timing_experiment.rebuild_verilog()`** — elaborates your edits into Verilog. If this errors, your Chisel didn't compile — read the error, fix it, repeat.
+
+2. **`timing_experiment.list_modules()`** — read the module list to pick a `vlsi_top`. Choose the **smallest** module that contains the endpoint family you targeted in Phase 1. Examples: `IssueUnitCollapsing` for issue-queue ready paths, `Rob` for ROB rollback paths, `RegisterFileSynthesizable` for register-file read mux paths. Smaller = faster Genus runtime per experiment.
+
+3. **Kick off the A/B in parallel — `start_synth_child(vlsi_top=X)` and `start_synth_parent(vlsi_top=X)` in a single turn**. Each call returns instantly with a handle (the first call of each side blocks ~2 min for CACTI prep; subsequent calls return sub-second). The two handles will look like:
+   ```
+   started: handle=abc12345, side=child, vlsi_top=IssueUnitCollapsing, timeout_seconds=5400
+   started: handle=def67890, side=parent, vlsi_top=IssueUnitCollapsing, timeout_seconds=5400
+   ```
+
+4. **Poll until done — `synth_status(handle="abc12345", max_wait_seconds=180)` and `synth_status(handle="def67890", max_wait_seconds=180)` in parallel.** Each `synth_status` call blocks up to 3 min waiting for completion. If still running you get `status: running\nelapsed_seconds: X\nretry: ...` — re-issue in the next turn. If complete, you get the full summary including `worst_slack: Path 1: VIOLATED (-X ps) ...` and a `timing_report` path. **Keep both polls live across turns** until both report `status: ok`; ~5-30 min total per side, in parallel.
+
+5. **Grep for detail via chipyard_bash** if needed (the `timing_report` path is in the synth_status response):
+   ```
+   grep -E '^Path [0-9]+:' /tmp/improve_timing/experiments/<exp_id>/final_constrained.rpt | head -30
+   awk '/^Path 1:/,/^Path 6:/' /tmp/improve_timing/experiments/<exp_id>/final_constrained.rpt
+   ```
+
+6. **Compute the delta**: `delta_ns = child.worst_slack_ns − parent.worst_slack_ns`. Positive = your edit improved slack. Cluster the new top paths by endpoint family the same way you did for the parent report — that's how you confirm your edit actually moved the bottleneck instead of just renaming it.
+
+7. **Iterate**: if the slack improved by less than ~10% of your target reduction, the edit isn't working as planned. Use `chipyard_bash` to adjust the design and re-run from step 1 (`rebuild_verilog()` + a fresh `start_synth_child` poll; the parent result is fixed across iterations — you can keep its `exp_id` and don't need to re-synthesize the parent). Don't exit until either the sub-block slack moved meaningfully *or* you've established that the original critical path was inherent to the structure (e.g. it shrank but a parallel path now dominates — that's fine, document it briefly in your final response).
+
+Use shorter `timeout_seconds` (e.g. 600-1800) on small blocks to fail fast; larger blocks may need the default 90 min. Sizing reminder: an IQ-class sub-block (`IssueUnitCollapsing`, `Rob`, `RegisterFileSynthesizable`) typically lands in 25-30 min. **Do not pick `BoomCore` or `BoomTile` as a `vlsi_top`** — they exceed the tool's 7200s cap and you'll get no signal back, just a hard fail on both sides.
+
+---
+
+# Timing Report
+
+The timing report has been staged on the chipyard build node at:
+
+    $TIMING_REPORT_PATH
+
+Use the `chipyard_bash` MCP tool to read it. The report can be large (often
+hundreds of KB to several MB, with up to 500 timing paths) — **do NOT cat the
+whole file** in one tool call. Instead, target only what you need:
+
+- **Count paths:** `grep -c '^Path [0-9]' $TIMING_REPORT_PATH`
+- **Top-N paths' headers (slack + endpoint at a glance):**
+  `grep -E '^(Path [0-9]+:|Endpoint:|Slack)' $TIMING_REPORT_PATH | head -90`
+- **Walk the top 10 paths' full detail:**
+  `awk '/^Path 1:/,/^Path 11:/' $TIMING_REPORT_PATH`
+- **Drill into a specific path:**
+  `sed -n '/^Path 5:/,/^Path 6:/p' $TIMING_REPORT_PATH`
+- **Find paths matching an endpoint pattern (e.g., a particular register):**
+  `grep -B2 -A1 'tma_ctr_backend_bound' $TIMING_REPORT_PATH | head -30`
+
+Cluster paths by endpoint family before recommending fixes — multiple paths
+ending at the same register class (e.g., `int_issue_unit/slots_*/p[123]_reg`,
+`tma_ctr_*_reg`) usually share a structural bottleneck and one targeted edit
+can take them all out at once.

@@ -1,0 +1,63 @@
+vlsi.core.technology: "hammer.technology.sky130"
+
+vlsi.core.max_threads: 32
+
+# Technology paths
+technology.sky130:
+  basepath: "/path/to/base/"
+  # sky130A: "${technology.sky130.basepath}/sky130_col/open_pdks-2022.10/share/pdk/sky130A"
+  sky130A: "${technology.sky130.basepath}/sky130_col/open_pdks-2022.10/share/pdk/sky130A" # patched version for voltus run, otherwise no difference
+  sram22_sky130_macros: "${technology.sky130.basepath}/sky130_col/sram22_sky130_macros"
+
+  # for caravel collateral pulled in by this design
+  caravel: ${technology.sky130.basepath}/sky130_col/caravel/v6.0
+
+  lvs_blackbox_srams: true
+  sky130_scl: "${technology.sky130.basepath}/sky130_col/sky130_scl_9T_0.1.2"
+  sky130_cds: "${technology.sky130.basepath}/sky130_col/sky130_release_0.0.9"
+  # seal ring layout and layouts for creating a die ID
+  sky130_cds_die_collateral: "${technology.sky130.basepath}/sky130_col/sky130_die_collateral_1.0"
+  drc_deck_sources: [
+    "$SKY130_CDS/Sky130_DRC/sky130_rev_0.0_2.10.drc.pvl",
+  ]
+  stdcell_library: "sky130_scl"
+  #stdcell_library: "sky130_fd_sc_hd"
+  
+technology.core.stackup: "sky130_scl"
+vlsi.technology.placement_site: "CoreSite"
+
+# SRAM Compiler compiler options
+vlsi.core.sram_generator_tool: "hammer.technology.sky130.sram_compiler"
+
+par.power_straps_mode: generate # Power Straps
+par.generate_power_straps_method: by_tracks
+par.blockage_spacing: 2.0
+par.blockage_spacing_top_layer: met4
+par.generate_power_straps_options:
+  by_tracks:
+    generate_rail_layer: false # sky130_scl has a hook for rails
+    strap_layers:
+      - met4
+      - met5
+    pin_layers:
+      - met5
+    blockage_spacing_met2: 4.0
+    track_width: 6
+    track_width_met5: 2
+    track_spacing: 1
+    track_start: 10
+    track_start_met5: 1
+    power_utilization: 0.1
+    power_utilization_met2: 0.05
+    power_utilization_met4: 0.15
+    power_utilization_met5: 0.5
+
+# Library stuff
+.local.library.sky130_fd_sc_hvl__lsbufhv2lv: &lib__sky130_fd_sc_hvl__lsbufhv2lv
+  gds_file: ${technology.sky130.basepath}/sky130_col/stac_misc_collat/sky130_fd_sc_hvl__lsbufhv2lv_1.gds
+  lef_file: cache/fd_sc_hvl__lef/sky130_fd_sc_hvl__lsbufhv2lv_1.lef
+  spice_file: ${technology.sky130.basepath}/sky130_col/io_lvs/sky130_fd_sc_hvl.cdl
+  verilog_sim: ${technology.sky130.sky130A}/libs.ref/sky130_fd_sc_hvl/verilog/sky130_fd_sc_hvl__lsbufhv2lv.functional.v
+  provides:
+    - lib_type: lvlshift
+      vt: RVT

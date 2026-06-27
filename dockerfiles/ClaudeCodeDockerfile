@@ -1,0 +1,62 @@
+# Standalone Claude Code CLI image for non-interactive (--print) usage.
+#
+# Builds ON TOP of ghcr.io/ucb-bar/chia (rayproject/ray + the chia package),
+# so chia is already installed — no COPY + pip install step here. Layers the
+# Claude Code Node.js CLI on top.
+#
+# Build (from the chia repo root; no secrets needed):
+#
+#   docker buildx build \
+#       -f dockerfiles/ClaudeCodeDockerfile -t ghcr.io/ucb-bar/chia-claude-code:latest .
+#
+# Run with OAuth credentials (mounted read-only from host):
+#   docker run --rm --user $(id -u):$(id -g) \
+#       -v ~/.claude/.credentials.json:/home/ray/.claude/.credentials.json:ro \
+#       ghcr.io/ucb-bar/chia-claude-code:latest \
+#       -p "Your prompt here"
+#
+# Run with API key:
+#   docker run --rm \
+#       -e ANTHROPIC_API_KEY \
+#       ghcr.io/ucb-bar/chia-claude-code:latest \
+#       -p "Your prompt here"
+#
+# Mount a working directory for file-editing tasks:
+#   docker run --rm \
+#       -e ANTHROPIC_API_KEY \
+#       -v /path/to/project:/workspace -w /workspace \
+#       ghcr.io/ucb-bar/chia-claude-code:latest \
+#       -p --dangerously-skip-permissions "Review the code in this directory"
+FROM ghcr.io/ucb-bar/chia:latest
+
+USER root
+
+# Install git, SSH client, and Node.js (required for Claude Code)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git ca-certificates openssh-client curl && \
+    curl -fsSL https://deb.nodesource.com/setup_22.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Claude Code globally
+RUN npm install -g @anthropic-ai/claude-code
+
+# Use the existing ray user (UID 1000) from the base image
+USER ray
+WORKDIR /home/ray
+
+# Pre-create the .claude directory so the mount target exists
+RUN mkdir -p /home/ray/.claude
+
+# Empty working directory the Claude Code process runs in (the flows chdir into
+# it at runtime). Nothing needs to live here — all prompts are sent inline.
+RUN mkdir -p /home/ray/llm_env
+
+WORKDIR /home/ray/llm_env
+
+# Make home dir and /etc/passwd writable for any UID (needed when running with --user)
+USER root
+RUN chmod -R a+rwX /home/ray && chmod a+rw /etc/passwd
+USER ray
+
+USER ray

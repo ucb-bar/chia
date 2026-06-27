@@ -1,0 +1,136 @@
+{
+  "info": {
+    "id": "ses_17b83e420ffeIQEUh8xMPzzUBr",
+    "slug": "playful-mountain",
+    "projectID": "global",
+    "directory": "/tmp",
+    "path": "tmp",
+    "title": "New session - 2026-06-01T18:39:46.655Z",
+    "agent": "build",
+    "model": {
+      "id": "gpt-4o",
+      "providerID": "github-copilot",
+      "variant": "default"
+    },
+    "version": "1.15.13",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 0,
+      "output": 0,
+      "reasoning": 0,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "permission": [
+      {
+        "permission": "question",
+        "pattern": "*",
+        "action": "deny"
+      },
+      {
+        "permission": "plan_enter",
+        "pattern": "*",
+        "action": "deny"
+      },
+      {
+        "permission": "plan_exit",
+        "pattern": "*",
+        "action": "deny"
+      }
+    ],
+    "time": {
+      "created": 1780339186655,
+      "updated": 1780339187272
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1780339186808
+        },
+        "agent": "build",
+        "model": {
+          "providerID": "github-copilot",
+          "modelID": "gpt-4o"
+        },
+        "summary": {
+          "diffs": []
+        },
+        "id": "msg_e847c1c78001ebYbmBb5H0po87",
+        "sessionID": "ses_17b83e420ffeIQEUh8xMPzzUBr"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "\"Reply with PONG\"",
+          "id": "prt_e847c1c9f001VUy9azj3b9dZBw",
+          "sessionID": "ses_17b83e420ffeIQEUh8xMPzzUBr",
+          "messageID": "msg_e847c1c78001ebYbmBb5H0po87"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_e847c1c78001ebYbmBb5H0po87",
+        "role": "assistant",
+        "mode": "build",
+        "agent": "build",
+        "path": {
+          "cwd": "/tmp",
+          "root": "/"
+        },
+        "cost": 0,
+        "tokens": {
+          "input": 0,
+          "output": 0,
+          "reasoning": 0,
+          "cache": {
+            "read": 0,
+            "write": 0
+          }
+        },
+        "modelID": "gpt-4o",
+        "providerID": "github-copilot",
+        "time": {
+          "created": 1780339187143,
+          "completed": 1780339187673
+        },
+        "error": {
+          "name": "APIError",
+          "data": {
+            "message": "Unauthorized: unauthorized: unauthorized: AuthenticateToken authentication failed",
+            "statusCode": 401,
+            "isRetryable": false,
+            "responseHeaders": {
+              "content-length": "68",
+              "content-security-policy": "default-src 'none'; sandbox",
+              "content-type": "text/plain; charset=utf-8",
+              "date": "Mon, 01 Jun 2026 18:39:47 GMT",
+              "strict-transport-security": "max-age=31536000",
+              "x-content-type-options": "nosniff",
+              "x-copilot-service-request-id": "ceedecd3-fe91-47df-acf7-5f826eef5b6a",
+              "x-github-backend": "Kubernetes",
+              "x-github-request-id": "AE02:3934A8:6E2429D:7832F84:6A1DD1F3"
+            },
+            "responseBody": "unauthorized: unauthorized: AuthenticateToken authentication failed\n",
+            "metadata": {
+              "url": "https://api.githubcopilot.com/chat/completions"
+            }
+          }
+        },
+        "id": "msg_e847c1dc7001LSXtOlAw3lLXwJ",
+        "sessionID": "ses_17b83e420ffeIQEUh8xMPzzUBr"
+      },
+      "parts": []
+    }
+  ]
+}

@@ -1,0 +1,49 @@
+cluster_name: llm-test
+
+available_node_types:
+    llm:
+        resources: {"llm": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:0.1"
+            container_name: "chia-claude-code-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                # WARN: Run node as self user so the mounted .credentials can be read without changin its permissions...
+                # WARN: When we get accounts for each of these, we can change the .credentials to be accessible to RAY user
+                # and avoid doing this...
+                - "--user $(id -u):$(id -g)"
+                # WARN: Mount credentials so we don't have to interactively authenticate
+                - "-v ~/.claude/.credentials.json:/home/ray/.claude/.credentials.json:ro"
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+            run_setup_commands:
+                # WARN: Add self user to container or things won't work
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                # Empty working directory the Claude Code process chdirs into.
+                - mkdir -p /home/ray/llm_env
+        compatible_ips: #FILL
+
+provider:
+    head_ip: #FILL
+
+auth:
+    ssh_user: ${USER}
+
+min_workers: 1
+max_workers: 1
+
+initialization_commands: []
+setup_commands: []
+head_setup_commands: ["source ~/.bashrc && conda activate chia"]
+worker_setup_commands: []
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379
