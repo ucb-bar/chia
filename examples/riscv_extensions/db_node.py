@@ -114,7 +114,7 @@ def fetch_tests(extension: str) -> list[tuple[str, bytes]]:
 
 
 # ---------------------------------------------------------------------------
-# Random-test pool (S3): generators register tests from run start; the soak
+# Random-test pool (S3): generators register tests from run start; the stress_test
 # streams them to cosims and marks pending -> passed. A divergence resets every
 # status so the whole batch (failing test included) re-runs after the fix.
 # The pool is SCRATCH, living under DB_ROOT/tmp/<run_id>; pool_finalize folds

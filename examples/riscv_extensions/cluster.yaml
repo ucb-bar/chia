@@ -34,7 +34,7 @@ available_node_types:
                 - --shm-size=10.24gb
         compatible_ips: #FILL
 
-    # AWS soak cosim (c5.9xlarge). Scale count + num_workers + the @-list together.
+    # AWS stress_test cosim (c5.9xlarge). Scale count + num_workers + the @-list together.
     cosim_aws:
         resources: {"verilator_run": 4}
         num_workers: 18
@@ -107,7 +107,7 @@ available_node_types:
         resources: {"VLSI": 1, "Syn": 1, "cacti": 4}
         num_workers: 0
 
-# AWS soak hosts (boto3 on `chia up`). KeyName = key-pair NAME ${VEXT_EC2_KEYNAME};
+# AWS stress_test hosts (boto3 on `chia up`). KeyName = key-pair NAME ${VEXT_EC2_KEYNAME};
 # its private half is the host file ${VEXT_EC2_KEYFILE}.
 aws_nodes:
     region: us-east-1

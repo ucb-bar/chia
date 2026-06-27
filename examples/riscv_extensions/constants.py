@@ -22,7 +22,7 @@ BOOM_SRC_REL = "generators/boom/src/main/scala/v3"          # what the LLM edits
 BOOM_REPO_REL = "generators/boom"                            # git submodule root
 # Cosim config: the synth config plus the cospike/trace/commit-log harness. The
 # LLM writes it per run (prompts/system.md); one binary serves directed tests
-# (cospike off) and the random soak (cospike on).
+# (cospike off) and the stress test (cospike on).
 COSIM_CONFIG = "MegaBoomChiaBigCacheCosimConfig"
 # Synthesis (PPA) config: harness-free. Baseline and implemented design both build
 # from it, so the area/slack delta is purely the extension's RTL.
@@ -43,7 +43,7 @@ RISCV_TESTS_ISA_DIR = (
 )
 
 # Base-ISA asm riscv-test suite, staged into DB_ROOT/tests/asm/; the S2 gate runs
-# it to catch base-ISA regressions before the soak.
+# it to catch base-ISA regressions before the stress_test.
 ASM_TESTS = "asm"
 
 # --- Simulation ------------------------------------------------------------
@@ -52,23 +52,23 @@ SIM_TIMEOUT_CYCLES = 10_000_000
 # --- Driver scratch --------------------------------------------------------
 VEXT_LOG_ROOT = "/tmp/vext"                                 # process-wide chdir target
 MAX_ITERS = 60                                              # implement-loop iteration cap
-DEBUG_MAX_ITERS = 5                                         # per soak-divergence debug round
+DEBUG_MAX_ITERS = 5                                         # per stress_test-divergence debug round
 
-# --- Random soak (S3): riscv-dv gen -> test pool -> cospike lockstep --------
+# --- Stress test (S3): riscv-dv gen -> test pool -> cospike lockstep --------
 # Generators fill a pool on the database node; cosims stream from it and mark
 # pending/passed. A divergence resets the pool so the whole batch re-runs after
 # the fix. instr_cnt 175k is riscv-dv's practical ceiling (the UVM generator is
 # superlinear in program size).
-SOAK_HOURS = 24                                            # hard deadline for the batch
+STRESS_TEST_HOURS = 24                                            # hard deadline for the batch
 COSIM_VRUN = 0.9                                           # verilator_run each cosim reserves
-SOAK_VRUN_FRACTION = 0.5                                   # cosim-slot fraction per pipeline
+STRESS_TEST_VRUN_FRACTION = 0.5                                   # cosim-slot fraction per pipeline
                                                           # (0.5 runs two extensions in parallel;
                                                           # 1.0 for a single-extension run)
-SOAK_MAX_CYCLES = 10_000_000                              # per-test cycle budget
-SOAK_CYCLES_PER_INSTR = 20                                # budget scale for oversized tests
-# Two named testlist shapes (uniform + ALU/bitmanip-weighted); SOAK_MIX picks them
+STRESS_TEST_MAX_CYCLES = 10_000_000                              # per-test cycle budget
+STRESS_TEST_CYCLES_PER_INSTR = 20                                # budget scale for oversized tests
+# Two named testlist shapes (uniform + ALU/bitmanip-weighted); STRESS_TEST_MIX picks them
 # by name with per-run count + gen_timeout overrides.
-SOAK_MIX = [
+STRESS_TEST_MIX = [
     (150, GenSpec(test="riscv_rand_instr_test", instr_cnt=175_000, gen_timeout=900)),
     (150, GenSpec(test="riscv_rand_balu_test",  instr_cnt=175_000, gen_timeout=900)),
 ]
@@ -132,6 +132,6 @@ EXTENSIONS: dict[str, Extension] = {
         name="zicond",
         description="RISC-V Integer Conditional Operations (Zicond): czero.eqz, czero.nez.",
         isa_suffix="_zicond",
-        dv_target="riscv_dv_target_zicond",   # czero.* custom-instr soak coverage
+        dv_target="riscv_dv_target_zicond",   # czero.* custom-instr stress_test coverage
     ),
 }

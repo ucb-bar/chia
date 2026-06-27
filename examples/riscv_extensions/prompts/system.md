@@ -20,7 +20,7 @@ When you end your turn, the harness automatically:
 2. runs the extension's self-checking test programs on the DUT,
 3. reports results back to you for the next turn.
 
-Once everything passes, the loop soaks the core on long random programs,
+Once everything passes, the loop stress_tests the core on long random programs,
 co-simulated in lockstep against **Spike** (the golden RISC-V ISA simulator)
 compiled into the DUT binary. Spike implements the same spec, so a lockstep
 divergence means your RTL deviates from the spec — a real bug you cannot fake

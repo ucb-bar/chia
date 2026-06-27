@@ -7,7 +7,7 @@ workers, iteration, snapshots, and tools):
                    8-thread commit-log sim -> run the extension's self-checking
                    riscv-tests on the DUT — until all pass
     S2 REGRESSION  run the full base-ISA asm riscv-test suite on the DUT
-    S3 SOAK        a batch of random tests (riscv-dv/xlm, the SOAK_MIX of
+    S3 STRESS_TEST        a batch of random tests (riscv-dv/xlm, the STRESS_TEST_MIX of
                    lengths and generator weights), generated into a pool on the
                    database node FROM RUN START and streamed through
                    parallel lockstep cosims (pending -> passed); a
@@ -18,7 +18,7 @@ Implementing and testing the implementation are two halves of the same step —
 there is no separate "test stage" before S2. An S2 regression failure feeds back
 to the LLM and re-enters S1 (a fix may touch anything). Once both pass, S3 runs;
 the first divergence hands the failing trace to a debug-specialised LLM, which
-fixes the RTL, and the verify-then-soak process restarts (a fresh clean soak is
+fixes the RTL, and the verify-then-stress_test process restarts (a fresh clean stress_test is
 the bar).
 """
 
@@ -73,10 +73,10 @@ from riscv_extensions.constants import (
     DEBUG_MAX_ITERS,
     MAX_ITERS,
     COSIM_CONFIG,
-    SOAK_HOURS,
-    SOAK_MIX,
+    STRESS_TEST_HOURS,
+    STRESS_TEST_MIX,
     COSIM_VRUN,
-    SOAK_VRUN_FRACTION,
+    STRESS_TEST_VRUN_FRACTION,
     SYNTH_OBJ_ROOT,
     SYNTH_TIMEOUT_S,
     VEXT_LOG_ROOT,
@@ -231,7 +231,7 @@ def _run_tests(artifact, tests, tag, sim_logs_dir, verdict="self_check") -> list
     against Spike and a mismatch is the failure — for extensions with no
     self-checking tests (crypto), Spike is the oracle. Persists per-test logs."""
     # TODO: ray re-serializes `artifact` (~20MB sim + build logs) into the
-    # object store once PER task here (and per soak cosim_run) — ray.put it
+    # object store once PER task here (and per stress_test cosim_run) — ray.put it
     # once and pass the ref, or dedup large args inside chia_remote.
     sl = os.path.join(sim_logs_dir, tag)
     os.makedirs(sl, exist_ok=True)
@@ -337,7 +337,7 @@ def _feedback(artifact, fails, total=0, phase="extension") -> str:
 
 
 def _debug_prompt(res, fail_dir) -> str:
-    """First message to the debug-LLM: the soak divergence + trace window. Also
+    """First message to the debug-LLM: the stress_test divergence + trace window. Also
     persists the failing trace (the only trace we keep)."""
     os.makedirs(fail_dir, exist_ok=True)
     window = ""
@@ -347,7 +347,7 @@ def _debug_prompt(res, fail_dir) -> str:
         window = gzip.decompress(res.failing_trace_gz).decode("utf-8", "replace")
     d = res.first_divergence or {}
     return (
-        f"RANDOM-SOAK DIVERGENCE on {res.elf_name} after {res.matched} matching commits.\n"
+        f"RANDOM-STRESS_TEST DIVERGENCE on {res.elf_name} after {res.matched} matching commits.\n"
         f"Your core disagreed with Spike (golden) at this commit:\n"
         f"  spike: {d.get('spike')}\n  dut:   {d.get('dut')}\n\n"
         f"Trace window (golden vs DUT around the divergence):\n{window}\n\n"
@@ -438,10 +438,10 @@ def _directed_loop(llm, first_message, *, label, ext_name,
 
 
 # ---------------------------------------------------------------------------
-# Soak phase (S3) — gen (xlm) -> cosim, producer/consumer
+# Stress_test phase (S3) — gen (xlm) -> cosim, producer/consumer
 # ---------------------------------------------------------------------------
 
-def _soak(artifact, gen_refs, pool_dir, deadline, fail_dir, archive_dir=None):
+def _stress_test(artifact, gen_refs, pool_dir, deadline, fail_dir, archive_dir=None):
     """Stream the test pool through the cosims (half the cluster's slots), marking each test
     pending -> passed, until the whole batch has passed (generators in gen_refs
     keep filling the pool in the background) or the first divergence. Returns
@@ -454,14 +454,14 @@ def _soak(artifact, gen_refs, pool_dir, deadline, fail_dir, archive_dir=None):
         state = get(db_node.pool_state.chia_remote(pool_dir, extension=getattr(_ctx, "extension", "")))
         for name in sorted(state.keys() - seen):      # log tests as generators add them
             seen.add(name)
-            print(f"  soak: generated {name} ({len(seen)}/{total} in pool)")
+            print(f"  stress_test: generated {name} ({len(seen)}/{total} in pool)")
         running = set(inflight.values())
         pending = [(n, instr) for n, (s, instr) in state.items()
                    if s == "pending" and n not in running]
         # Use half the cluster's live cosim slots; adapts as verilator_run nodes
         # are added/removed (the other half is headroom for co-located roles).
         cap = max(1, int(ray.cluster_resources().get("verilator_run", 0)
-                         / COSIM_VRUN * SOAK_VRUN_FRACTION))
+                         / COSIM_VRUN * STRESS_TEST_VRUN_FRACTION))
         while pending and len(inflight) < cap:
             name, instr = pending.pop(0)
             elf = get(db_node.pool_elf.chia_remote(pool_dir, name, extension=getattr(_ctx, "extension", "")))
@@ -474,7 +474,7 @@ def _soak(artifact, gen_refs, pool_dir, deadline, fail_dir, archive_dir=None):
         if archive_dir and not gens_busy and not archived:   # generation done -> bank all .S once
             n = get(db_node.archive_asm.chia_remote(pool_dir, archive_dir, extension=getattr(_ctx, "extension", "")))
             if n >= 0:
-                print(f"  soak: generation complete — archived {n} .S to {archive_dir}/asm.tar.gz")
+                print(f"  stress_test: generation complete — archived {n} .S to {archive_dir}/asm.tar.gz")
             archived = True
         if not inflight and not pending and not gens_busy:
             return None, n_done, True                     # whole batch passed
@@ -486,13 +486,13 @@ def _soak(artifact, gen_refs, pool_dir, deadline, fail_dir, archive_dir=None):
             name = inflight.pop(ref)
             res = get(ref)
             n_done += 1
-            _event("soak_cosim", elf=name, match=res.match,
+            _event("stress_test_cosim", elf=name, match=res.match,
                    matched=res.matched, cycles=res.sim_cycles)
             if not res.match:
-                _event("soak_divergence", elf=name, index=res.matched)
-                return res, n_done, False                 # divergence -> stop the soak
+                _event("stress_test_divergence", elf=name, index=res.matched)
+                return res, n_done, False                 # divergence -> stop the stress_test
             get(db_node.pool_mark.chia_remote(pool_dir, name, "passed", extension=getattr(_ctx, "extension", "")))
-            print(f"  soak: passed {name} ({n_done}/{total} clean, "
+            print(f"  stress_test: passed {name} ({n_done}/{total} clean, "
                   f"{res.matched:,} instrs executed)")
     return None, n_done, False                            # deadline before batch finished
 
@@ -606,8 +606,8 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
     """One end-to-end loop implementing + proving `extension` on MegaBOOM.
     `seed_diff` (a prior run's probe diff) is applied after the reset so the
     pipeline can resume from a known implementation; if it already passes
-    everything, the implement loop is skipped and we go straight to the soak.
-    `archive_dir` (durable, e.g. the sweep dir) is where the soak packs every
+    everything, the implement loop is skipped and we go straight to the stress_test.
+    `archive_dir` (durable, e.g. the sweep dir) is where the stress_test packs every
     generated .S once generation completes. `synth=False` skips PPA synthesis
     entirely — for clusters with no synth node."""
     _ctx.extension = extension.name        # tag this thread's trace events
@@ -622,7 +622,7 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
     impl_dir = os.path.join(work_root, "implementations")
     llm_logs_dir = os.path.join(work_root, "llm_logs")
     sim_logs_dir = os.path.join(work_root, "sim_logs")
-    fail_dir = os.path.join(work_root, "soak_fails")
+    fail_dir = os.path.join(work_root, "stress_test_fails")
     bins_dir = os.path.join(work_root, "bins")     # built sims (all kept)
     for d in (impl_dir, llm_logs_dir, sim_logs_dir, fail_dir, bins_dir):
         os.makedirs(d, exist_ok=True)
@@ -663,13 +663,13 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
     ppa = (None, None, None, None)           # (baseline_area, impl_area, baseline_slack, impl_slack)
     try:
         _event("run_start", extension=extension.name, run_id=run_id)
-        # Start generating the soak batch NOW, in parallel with everything else:
+        # Start generating the stress_test batch NOW, in parallel with everything else:
         # the xcelium seats pace the tasks; each registers itself in the pool
         # (scratch under DB_ROOT/tmp/, finalized+deleted by the caller).
         pool_dir = db_node.pool_path(run_id)
         gen_isa = f"rv64gc{extension.isa_suffix}"
         gen_refs = [gen_to_pool.chia_remote(spec, gen_isa, pool_dir, GEN_WORK_DIR, extension.dv_target, extension=extension.name)
-                    for n, spec in SOAK_MIX for _ in range(n)]
+                    for n, spec in STRESS_TEST_MIX for _ in range(n)]
         print(f"[{run_id}] dispatched {len(gen_refs)} generators -> pool {pool_dir}")
         print(f"[{run_id}] resetting BOOM + fetching tests")
         get(reset_chipyard.options(**pg_opts).chia_remote(extension=extension.name))
@@ -716,7 +716,7 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
                                     sim_logs_dir, "differential")
             _write_status(status_path, extension.name, ext_tests, base_fails)
             # Verify-first: if the (possibly seeded) core already passes
-            # everything, skip the implement loop and go straight to the soak.
+            # everything, skip the implement loop and go straight to the stress_test.
             ok = (not base_fails
                   and not _run_tests(artifact, asm_tests, "baseline.asm", sim_logs_dir))
         if ok:
@@ -744,18 +744,18 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
         impl_art = get(build_megaboom.options(**pg_opts).chia_remote(SYNTH_CONFIG, extension=getattr(_ctx, "extension", "")))
         comp_syn_ref = _dispatch_synth(impl_art, "impl", run_id)
 
-        # S3 soak: stream the pool through the cosims; on divergence a debug-LLM
+        # S3 stress_test: stream the pool through the cosims; on divergence a debug-LLM
         # fixes the RTL, the pool resets, and the WHOLE batch (failing test
         # included) re-runs. Converged = every test in the batch passed.
         debug_llm, dbg_round = _llm("debug.md"), 0
         while True:
-            _event("section_start", name="soak", round=dbg_round)
-            print(f"[{run_id}] soak round {dbg_round}: {len(gen_refs)}-test mix, "
+            _event("section_start", name="stress_test", round=dbg_round)
+            print(f"[{run_id}] stress_test round {dbg_round}: {len(gen_refs)}-test mix, "
                   "half the cluster's cosim slots")
-            fail, n_cosims, complete = _soak(artifact, gen_refs, pool_dir,
-                                             time.time() + SOAK_HOURS * 3600, fail_dir,
+            fail, n_cosims, complete = _stress_test(artifact, gen_refs, pool_dir,
+                                             time.time() + STRESS_TEST_HOURS * 3600, fail_dir,
                                              archive_dir=archive_dir)
-            _event("section_end", name="soak", round=dbg_round, clean=fail is None,
+            _event("section_end", name="stress_test", round=dbg_round, clean=fail is None,
                    cosims=n_cosims, complete=complete)
             if fail is None:
                 if complete and n_cosims > 0:
@@ -765,12 +765,12 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
                     # extension — surfaced as one durable file (not just a probe).
                     _mirror("implementation.diff", get(collect_diff.options(**pg_opts).chia_remote(extension=getattr(_ctx, "extension", ""))))
                 else:
-                    print(f"[{run_id}] FATAL: soak ended with {n_cosims} cosims and an "
+                    print(f"[{run_id}] FATAL: stress_test ended with {n_cosims} cosims and an "
                           "incomplete batch (generation broken or deadline) — not converged")
                 break
             dbg_round += 1
-            print(f"[{run_id}] SOAK DIVERGENCE on {fail.elf_name} -> debug round {dbg_round}")
-            # The soaked design just regressed — kill its now-stale synth; a
+            print(f"[{run_id}] STRESS_TEST DIVERGENCE on {fail.elf_name} -> debug round {dbg_round}")
+            # The stress_tested design just regressed — kill its now-stale synth; a
             # fresh one is dispatched once the debug round re-passes (below).
             if comp_syn_ref is not None:
                 ray.cancel(comp_syn_ref, force=False)

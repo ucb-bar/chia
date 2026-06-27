@@ -36,8 +36,8 @@ from riscv_extensions.constants import (
     COSIM_CONFIG,
     SIM_TIMEOUT_CYCLES,
     SIM_ZERO_INIT_DEFINES,
-    SOAK_CYCLES_PER_INSTR,
-    SOAK_MAX_CYCLES,
+    STRESS_TEST_CYCLES_PER_INSTR,
+    STRESS_TEST_MAX_CYCLES,
     VERILATOR_THREADS,
 )
 
@@ -135,7 +135,7 @@ def build_isa_test(asm: str, program: str, march: str, work_dir: str,
     via the riscv-harness. `march` carries the extension groups so the assembler
     accepts the instruction. Returns the ELF bytes, or None on build failure.
     Cached by content (the .S + march fully determine the ELF), so re-runs and
-    resumes — including going back to S1 after a soak divergence — reuse the same
+    resumes — including going back to S1 after a stress_test divergence — reuse the same
     binaries instead of recompiling."""
     if extension: get_profiler().add_info({"extension": extension})
     cached = os.path.join(ISA_CACHE_DIR, hashlib.sha1(f"{march}\0{asm}".encode()).hexdigest())
@@ -155,7 +155,7 @@ def build_isa_test(asm: str, program: str, march: str, work_dir: str,
 # --- verilator_run node (the DUT) ------------------------------------------
 # Directed test ELFs come from the durable DB (riscv_extensions.db_node.fetch_tests) and are
 # SELF-CHECKING: the DUT run alone is the verdict. Spike appears only inside the
-# random-soak cosim (CosimNode), where tests have no self-check.
+# random-stress_test cosim (CosimNode), where tests have no self-check.
 
 @ChiaFunction(resources={"verilator_run": COSIM_VRUN}, num_cpus=VERILATOR_THREADS)
 def verilator_run_remote(
@@ -178,7 +178,7 @@ def verilator_run_remote(
     )
 
 
-# --- random soak (S3): gen on dv+xcelium, cosim on a cosim node ------------
+# --- stress test (S3): gen on dv+xcelium, cosim on a cosim node ------------
 
 # The vext custom riscv-dv targets ship in the working-dir, so their path on any
 # worker is relative to this package. Each extension picks its target by name
@@ -217,9 +217,9 @@ def gen_to_pool(spec: GenSpec, isa: str, pool_dir: str, work_dir: str,
 def cosim_run(artifact: BuildArtifact, elf_content: bytes, elf_name: str,
               instr: int, work_dir: str, extension: str = "") -> CosimResult:
     """Co-simulate one ELF in lockstep: spike rides inside the sim (cospike)
-    and the run aborts at the first divergence. Budget is SOAK_MAX_CYCLES, but
+    and the run aborts at the first divergence. Budget is STRESS_TEST_MAX_CYCLES, but
     scales up for tests too large to execute within it."""
     if extension: get_profiler().add_info({"extension": extension})
-    budget = max(SOAK_MAX_CYCLES, instr * SOAK_CYCLES_PER_INSTR)
+    budget = max(STRESS_TEST_MAX_CYCLES, instr * STRESS_TEST_CYCLES_PER_INSTR)
     return CosimNode().run(artifact, elf_content, elf_name, work_dir,
                            timeout_cycles=budget)

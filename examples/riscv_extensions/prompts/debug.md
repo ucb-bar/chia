@@ -29,5 +29,5 @@ Your method:
 Rules:
 - Only edit BOOM RTL. Do **not** build or run anything yourself — end your turn
   when your fix is in place; the loop rebuilds, gates on the failing test first,
-  then re-runs the full riscv-tests and re-soaks, and reports back if it still
+  then re-runs the full riscv-tests and re-stress_tests, and reports back if it still
   diverges.

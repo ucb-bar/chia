@@ -1,11 +1,11 @@
-# Random-soak stimulus for the VEXT loop, zicond target (rv64gc + ratified
+# Stress-test stimulus for the VEXT loop, zicond target (rv64gc + ratified
 # Zba/Zbb/Zbc/Zbs + Zicond). Same shapes as the base target; czero.eqz/czero.nez
 # (RV32X, ARITHMETIC category) are drawn from the arithmetic distribution like any
 # other ALU op — the balu shape's dist_arithmetic weighting exercises them harder.
-# Each entry is one program shape; SOAK_MIX picks them by name. The
+# Each entry is one program shape; STRESS_TEST_MIX picks them by name. The
 # riscv_loop_instr weight sets how many loops each program runs — the main lever
 # (with the loop trip-count range, set in the image) on dynamic instruction count.
-# instr_cnt here is the standalone default; the soak overrides it per run via --sim_opts.
+# instr_cnt here is the standalone default; the stress_test overrides it per run via --sim_opts.
 - test: riscv_rand_instr_test
   description: >
     Random instruction mix over rv64gc + Zba/Zbb/Zbc/Zbs, machine mode,
