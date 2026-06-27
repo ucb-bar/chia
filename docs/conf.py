@@ -106,6 +106,7 @@ html_theme_options = {
     'collapse_navigation': False,
     'navigation_depth': 4,
 }
+html_logo = 'chia-logo-inv.png'
 html_static_path = ['_static']
 html_css_files = ['custom.css']
 html_context = {"version": version}
