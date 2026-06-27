@@ -26,7 +26,7 @@ from pathlib import Path
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction, get
-from chia.examples.common.common_nodes import (
+from common.common_nodes import (
     _parse_verilog_modules,
     _resolve_boom_tile_module,
     run_cacti_characterization,

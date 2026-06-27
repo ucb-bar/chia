@@ -36,13 +36,13 @@ from chia.base.tools.BashTool import BashTool
 from chia.chipyard.chisel_build_node import ChiselBuildNode
 from chia.chipyard.state_def import BuildArtifact, BuildTarget
 
-from chia.examples.common.common_nodes import (
+from common.common_nodes import (
     _elapsed,
     _log_timing,
     collect_diff,
     debug_failure,
 )
-from chia.examples.common.common_helpers import format_build_error
+from common.common_helpers import format_build_error
 from common.state_def import OptContext
 
 

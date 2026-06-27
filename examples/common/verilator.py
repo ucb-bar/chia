@@ -19,7 +19,7 @@ from chia.chipyard.state_def import BuildArtifact, BuildTarget, RunResult
 from chia.chipyard.verilator_run_node import VerilatorRunNode
 from chia.trace.profiler import get_profiler
 
-from chia.examples.common.common_nodes import VerilatorTestOutcome
+from common.common_nodes import VerilatorTestOutcome
 from common.state_def import TestBinary
 
 

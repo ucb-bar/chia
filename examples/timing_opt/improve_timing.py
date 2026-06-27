@@ -48,7 +48,7 @@ from chia.base.tools.BashTool import BashTool
 # non-debug build/verilator variants were folded into common.*).
 from common.build import build_all_thread_variants, build_with_debug_retry
 from common.verilator import dispatch_verilator_tests
-from chia.examples.common.common_nodes import (
+from common.common_nodes import (
     _parse_verilog_modules,
     _resolve_boom_tile_module,
     collect_diff,
@@ -58,7 +58,7 @@ from chia.examples.common.common_nodes import (
     reset_and_apply_diff,
     run_cacti_macrocompiler_prep,
 )
-from chia.examples.common.common_helpers import (
+from common.common_helpers import (
     format_test_error,
     load_test_binaries,
     parse_tma_counters,

@@ -23,7 +23,7 @@ from chia.vlsi.sram_cacti.sram_characterize import (
     parse_mems_conf,
 )
 
-from chia.examples.common.common_nodes import (
+from common.common_nodes import (
     _parse_verilog_modules,
     _resolve_boom_tile_module,
     parse_area_from_reports,

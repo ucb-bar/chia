@@ -483,7 +483,7 @@ def debug_failure(
     # threading is identical. _creds_prompt_task defaults to the 'claude_creds'
     # resource; override it to 'llm' (1.0/call) so it schedules on the cluster's
     # existing LLM nodes.
-    from chia.examples.common.common_helpers import _creds_prompt_task
+    from common.common_helpers import _creds_prompt_task
     models_config = dict(
         model="claude-opus-4-6",
         timeout_seconds=1800,

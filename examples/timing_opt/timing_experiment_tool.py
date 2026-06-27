@@ -63,7 +63,7 @@ from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.base.tools.ChiaTool import ChiaTool
 
-from chia.examples.common.common_nodes import (
+from common.common_nodes import (
     _build_children_map,
     _get_all_descendants,
     _parse_verilog_modules,
