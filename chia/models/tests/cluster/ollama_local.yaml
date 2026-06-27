@@ -1,0 +1,97 @@
+# Single-machine (localhost) Chia cluster for exercising the Ollama worker image
+# (chia-ollama) against a REAL Ollama server over its OpenAI-compatible endpoint.
+#
+# Mirrors chia/chipyard/test/cluster/chipyard_local.yaml. The worker advertises
+# the "ollama_creds" resource that chia.models.ollama.OllamaLLM.prompt is gated
+# on (@ChiaFunction(resources={"ollama_creds": 0.01})), so prompts dispatched via
+# .chia_remote land on this container. Because chia runs containers with
+# --net=host, the prompt task — running inside this same container — reaches the
+# local Ollama server at the OllamaLLM default base_url http://localhost:11434/v1.
+#
+# Topology:
+#   - head:   runs on the host (no docker) — just `ray start --head`. Needs SOME
+#             env with ray + chia active (yours); see head_env_commands /
+#             CHIA_HEAD_ENV_SETUP below.
+#   - worker: one chia-ollama container on the same host. Its entrypoint starts
+#             `ollama serve` in the background and (via OLLAMA_PULL) pulls the
+#             model, then execs the `sleep infinity` chia gives it; Ray is then
+#             started inside it via `docker exec`. It advertises "ollama_creds".
+#
+# CPU-ONLY: deliberately requests no GPUs (no --gpus / --device flags) so it runs
+# on a plain machine. The model (qwen2.5:3b) is small + a reliable tool-caller, so
+# it runs at a usable speed on CPU.
+#
+# Prerequisites on the host:
+#   - any conda/venv with ray (2.54.0) + chia, ACTIVATED before you run
+#   - passwordless SSH to 127.0.0.1 (`ssh 127.0.0.1` must not prompt)
+#   - the chia-ollama:test image built locally (dockerfiles/OllamaDockerfile);
+#     it is NOT in a registry, so pull_before_run is false below.
+#
+# Bring up / tear down (activate your env first; the wrapper passes it through):
+#   ./chia/models/tests/cluster/ollama_cluster.sh up
+#   ./chia/models/tests/cluster/ollama_cluster.sh down
+#
+# Then run the e2e driver (see ollama_e2e_test.py in this directory).
+
+cluster_name: chia-ollama-local
+
+provider:
+    head_ip: 127.0.0.1
+
+auth:
+    ssh_user: ${USER}
+
+available_node_types:
+    # One Ollama worker container. `resources.ollama_creds` is the pool the
+    # OllamaLLM.prompt task schedules against. The prompt requests only 0.01
+    # (gates on presence without throttling), so advertising 1 unit lets many
+    # prompts run concurrently against the single local server.
+    ollama:
+        resources: {"ollama_creds": 1}
+        num_workers: 1
+        compatible_ips: [127.0.0.1]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-ollama:latest"
+            container_name: "chia_ollama"
+            pull_before_run: true
+            run_options:
+                # Persist pulled models on the HOST home (bind mount). Left side
+                # is the host path, right side is the path inside the container
+                # (the container runs as root, so models live at /root/.ollama).
+                # - "-v ${HOME}/.ollama:/root/.ollama"
+                # Pre-pull the model on container start (entrypoint OLLAMA_PULL
+                # knob). The e2e driver also ensures it, so this is just a warm
+                # start. No --gpus/--device: CPU-only by design.
+                - "-e OLLAMA_PULL=qwen2.5:3b"
+                # Raise the served context window. Ollama otherwise defaults to a
+                # small num_ctx (~4096) regardless of the model's real max, which
+                # is fine for the toy single-tool e2e but truncates/corrupts once
+                # real (multi-tool, multi-turn) tool prompts grow. qwen2.5 supports
+                # 32K; OLLAMA_CONTEXT_LENGTH is the server-wide default `ollama
+                # serve` reads, and our OpenAI-compat client can't raise num_ctx
+                # per-request, so this is the knob. Dial down if CPU KV-cache RAM
+                # is tight (32768 -> 16384 etc.).
+                - "-e OLLAMA_CONTEXT_LENGTH=32768"
+                - "--shm-size=10.24gb"
+
+# The head runs on the host via a fresh SSH shell that does NOT inherit your
+# interactive env, so it must re-activate one with ray + chia. The
+# ollama_cluster.sh wrapper sets CHIA_HEAD_ENV_SETUP automatically from your
+# currently-active venv/conda env; if you invoke chia directly,
+# `export CHIA_HEAD_ENV_SETUP="<your activate cmd>"` first. head_env_commands run
+# on both `up` and `down`.
+head_env_commands:
+    - "${CHIA_HEAD_ENV_SETUP}"
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+# Inside the chia-ollama container ray + chia + openai are already installed (in
+# the py_worker conda env, first on PATH); the provisioner injects
+# --resources={"ollama_creds":1} into this start command.
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+
+file_mounts: {}

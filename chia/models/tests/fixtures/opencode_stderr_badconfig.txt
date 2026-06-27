@@ -1,0 +1,23 @@
+[91m[1mError: [0mConfig file at /tmp/bad_cfg.json is not valid JSON(C): 
+--- JSONC Input ---
+this is not json{{{
+
+--- Errors ---
+InvalidSymbol at line 1, column 1
+   Line 1: this is not json{{{
+          ^
+InvalidSymbol at line 1, column 6
+   Line 1: this is not json{{{
+               ^
+InvalidSymbol at line 1, column 9
+   Line 1: this is not json{{{
+                  ^
+InvalidSymbol at line 1, column 13
+   Line 1: this is not json{{{
+                      ^
+PropertyNameExpected at line 1, column 18
+   Line 1: this is not json{{{
+                           ^
+ValueExpected at line 2, column 1
+CloseBraceExpected at line 2, column 1
+--- End ---

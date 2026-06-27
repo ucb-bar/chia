@@ -1,0 +1,47 @@
+# Random-soak stimulus for the VEXT loop, zicond target (rv64gc + ratified
+# Zba/Zbb/Zbc/Zbs + Zicond). Same shapes as the base target; czero.eqz/czero.nez
+# (RV32X, ARITHMETIC category) are drawn from the arithmetic distribution like any
+# other ALU op — the balu shape's dist_arithmetic weighting exercises them harder.
+# Each entry is one program shape; SOAK_MIX picks them by name. The
+# riscv_loop_instr weight sets how many loops each program runs — the main lever
+# (with the loop trip-count range, set in the image) on dynamic instruction count.
+# instr_cnt here is the standalone default; the soak overrides it per run via --sim_opts.
+- test: riscv_rand_instr_test
+  description: >
+    Random instruction mix over rv64gc + Zba/Zbb/Zbc/Zbs, machine mode,
+    aligned-only memory access. Uniform riscv-dv category distribution.
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=10000
+    +num_of_sub_program=5
+    +directed_instr_0=riscv_load_store_rand_instr_stream,4
+    +directed_instr_1=riscv_loop_instr,6
+    +directed_instr_2=riscv_hazard_instr_stream,4
+    +directed_instr_3=riscv_load_store_hazard_instr_stream,4
+    +directed_instr_4=riscv_jal_instr,4
+    +boot_mode=m
+  rtl_test: core_base_test
+
+# Same shape, weighted toward ALU + bitmanip categories (Zb* instrs live in
+# arithmetic/logical/shift) to exercise the extension harder.
+- test: riscv_rand_balu_test
+  description: >
+    Random instruction mix over rv64gc + Zba/Zbb/Zbc/Zbs, machine mode,
+    aligned-only memory access. ALU/bitmanip-weighted distribution.
+  iterations: 1
+  gen_test: riscv_instr_base_test
+  gen_opts: >
+    +instr_cnt=10000
+    +num_of_sub_program=5
+    +directed_instr_0=riscv_load_store_rand_instr_stream,4
+    +directed_instr_1=riscv_loop_instr,6
+    +directed_instr_2=riscv_hazard_instr_stream,4
+    +directed_instr_3=riscv_load_store_hazard_instr_stream,4
+    +directed_instr_4=riscv_jal_instr,4
+    +boot_mode=m
+    +dist_control_mode=1
+    +dist_arithmetic=40
+    +dist_logical=40
+    +dist_shift=20
+  rtl_test: core_base_test

@@ -1,0 +1,76 @@
+# Single-machine (localhost) Chia cluster for exercising the Chipyard worker
+# image (ghcr.io/ucb-bar/chia-chisel-build) against the REAL Chipyard tools.
+#
+# It is deliberately GENERIC over the Chipyard nodes: the worker advertises the
+# "chipyard" resource that every @ChiaFunction / @ray.remote chipyard task
+# schedules against (macrocompiler remap, chisel build, verilator run, torture,
+# etc.). The macrocompiler e2e driver in this directory is just the first user
+# of it; the same cluster serves the other chipyard nodes unchanged.
+#
+# Topology:
+#   - head:   runs on the host (no docker) — just `ray start --head`. Needs SOME
+#             env with ray + chia active (yours — not a hardcoded one); see
+#             head_env_commands / CHIA_HEAD_ENV_SETUP below.
+#   - worker: one `ghcr.io/ucb-bar/chia-chisel-build` container on the same host
+#             (chia runs containers with --net=host, so it reaches the head's
+#             Ray at 127.0.0.1). The image ships the full Chipyard build env
+#             (Java, SBT, Verilator, firtool, RISCV toolchain) plus a prebuilt
+#             MacroCompiler jar at /home/ray/chipyard/.classpath_cache/tapeout.jar.
+#             It advertises the "chipyard" resource that the chipyard tasks
+#             (remap_with_macrocompiler and friends) require.
+#
+# Prerequisites on the host:
+#   - any conda/venv with ray (2.54.0) + chia, ACTIVATED before you run
+#   - passwordless SSH to 127.0.0.1 (`ssh 127.0.0.1` must not prompt)
+#   - `docker login ghcr.io` (the ucb-chia image may be private)
+#
+# Bring up / tear down (activate your env first; the wrapper passes it through):
+#   ./chia/chipyard/test/cluster/chipyard_cluster.sh up
+#   ./chia/chipyard/test/cluster/chipyard_cluster.sh down
+#
+# Then run the e2e driver (see macrocompiler_e2e_test.py in this directory).
+
+cluster_name: chia-chipyard-local
+
+provider:
+    head_ip: 127.0.0.1
+
+auth:
+    ssh_user: ${USER}
+
+available_node_types:
+    # One chipyard worker container. `resources.chipyard` is the pool the
+    # @ChiaFunction(resources={"chipyard": 1}) tasks schedule against; 4 lets a
+    # few lightweight chipyard tasks (e.g. macrocompiler remaps) run in parallel
+    # on this machine. Heavier nodes (chisel build / verilator) also take
+    # num_cpus, so bump host cores accordingly when using this for those.
+    chipyard:
+        resources: {"chipyard": 4}
+        num_workers: 1
+        compatible_ips: [127.0.0.1]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "chia_chipyard"
+            pull_before_run: true
+
+# The head runs on the host via a fresh SSH shell that does NOT inherit your
+# interactive env, so it must re-activate one with ray + chia. Rather than
+# hardcode a path, we bake in whatever activation you pass via the
+# CHIA_HEAD_ENV_SETUP env var (expanded at load time). The chipyard_cluster.sh
+# wrapper sets this automatically from your currently-active venv/conda env;
+# if you invoke chia directly, `export CHIA_HEAD_ENV_SETUP="<your activate cmd>"`
+# first. head_env_commands run on both `up` and `down`.
+head_env_commands:
+    - "${CHIA_HEAD_ENV_SETUP}"
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+# Inside the container ray + chia + the chipyard env are already on PATH; the
+# provisioner injects --resources={"chipyard":4} into this start command.
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+
+file_mounts: {}

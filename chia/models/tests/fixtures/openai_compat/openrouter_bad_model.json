@@ -1,0 +1,19 @@
+{
+  "label": "bad_model",
+  "how_produced": "model='nonexistent/...' \u2014 OpenRouter returns 400, not 404",
+  "provider": "openrouter (https://openrouter.ai/api/v1)",
+  "captured": "2026-06-01, opencode-style real capture",
+  "request_model": "nonexistent/totally-fake-model-v99",
+  "status": 400,
+  "openai_exc_type": "BadRequestError",
+  "headers": {
+    "date": "Mon, 01 Jun 2026 20:00:22 GMT"
+  },
+  "body": {
+    "error": {
+      "message": "nonexistent/totally-fake-model-v99 is not a valid model ID",
+      "code": 400
+    }
+  },
+  "expected_chia": "InvalidRequestError"
+}

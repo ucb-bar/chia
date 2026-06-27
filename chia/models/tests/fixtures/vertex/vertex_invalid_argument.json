@@ -1,0 +1,9 @@
+{
+  "label": "vertex_invalid_argument",
+  "provider": "vertex gemini (google-genai generate_content)",
+  "how_produced": "REAL capture \u2014 max_output_tokens=100000000 (out of range)",
+  "code": 400,
+  "status": "INVALID_ARGUMENT",
+  "message": "Unable to submit request because it has a maxOutputTokens value of 100000000 but the supported range is from 1 (inclusive) to 65537 (exclusive). Update the value and try again.",
+  "expected_chia": "InvalidRequestError"
+}

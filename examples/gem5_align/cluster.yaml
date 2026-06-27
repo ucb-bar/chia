@@ -1,0 +1,116 @@
+# gem5-to-BOOM alignment loop cluster config (see README.md).
+#
+# Usage
+#   cd <repo>/chia
+#   python -m chia.cli.main up   examples/gem5_align/cluster.yaml
+#   ray job submit -- python examples/gem5_align/gem5_align_loop.py
+#   python -m chia.cli.main down examples/gem5_align/cluster.yaml
+#
+# SITE-SPECIFIC — edit before first use:
+#   * provider.head_ip and every `compatible_ips` are
+#     this lab's hostnames; replace with yours.
+#   * head_setup_commands activates the conda env that has THIS repo's chia +
+#     ray installed on the head (the loop ships chia to workers via Ray
+#     py_modules, so only the head env must match this checkout).
+#   * the llm node's `-v /scratch/${USER}/claude_config_dir/.claude:...` mount
+#     supplies the Claude Code credentials/harness setup.
+# All four node types are required: chisel_build + verilator_run generate the
+# verilator golden cache on the first run; gem5_worker runs gem5; llm runs the
+# aligning/debugging LLM.
+
+cluster_name: gem5-align
+
+available_node_types:
+
+    llm:
+        resources: {"llm": 1}
+        min_workers: 6
+        max_workers: 6
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "g5-claude-code-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "--user $(id -u):$(id -g)"
+                - "-v /scratch/${USER}/claude_config_dir/.claude:/home/ray/.claude"
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                # Empty working directory the Claude Code process chdirs into.
+                - mkdir -p /home/ray/llm_env
+        compatible_ips: # FILL
+
+    chisel_build:
+        resources: {"chipyard": 2}
+        min_workers: 1
+        max_workers: 1
+        worker_setup_commands: ["source /home/ray/chipyard/env.sh"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "g5-chisel-build-${USER}"
+            pull_before_run: True
+            pull_timeout: 3600
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+            run_setup_commands:
+                - cd /home/ray/chipyard
+                - git -c submodule.recurse=false pull
+                - git submodule update --init generators/
+        compatible_ips: # FILL
+
+    verilator_run:
+        resources: {"verilator_run": 10}
+        min_workers: 4
+        max_workers: 4
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "g5-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: # FILL
+
+    gem5_worker:
+        resources: {"gem5": 1}
+        min_workers: 6
+        max_workers: 6
+        docker:
+            image: "ghcr.io/ucb-bar/chia-gem5:latest"
+            container_name: "g5-worker-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                # - "--user $(id -u):$(id -g)"
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+
+        compatible_ips: # FILL
+
+provider:
+    head_ip: # FILL
+
+auth:
+    ssh_user: ${USER}
+    # ssh_private_key: /path/to/private/key
+
+
+head_setup_commands: ["source ~/.bashrc && conda activate gem5-align"]
+
+
+worker_setup_commands: []
+
+head_start_ray_commands:
+    - source ~/.bashrc && conda activate gem5-align && ray stop
+    - source ~/.bashrc && conda activate gem5-align && ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

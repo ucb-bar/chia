@@ -1,0 +1,168 @@
+# Base image for chia-circt: every layer that's expensive to rebuild but
+# rarely changes — CIRCT SDK, source clone, ``ninja circt-opt`` (~30 min),
+# Python 3.10.19, ray 2.54.0, sbt, OpenJDK. Tagged
+# ``ghcr.io/ucb-bar/chia-circt-base:latest``.
+#
+# The thin child image (chia/dockerfiles/ChiaCirctDockerfile) does only
+# ``FROM <this image> + COPY chia + pip install -e /workspace/chia``, so
+# the nightly that publishes ``chia-circt`` finishes in seconds.
+#
+# Rebuild this image whenever any of the following change:
+#   - CIRCT_VER / CIRCT_PKG (CIRCT SDK pin)
+#   - PYTHON_VERSION / PBS_TAG (chia interpreter pin)
+#   - RAY_VERSION (chia framework pin)
+#   - SBT_VER (Chisel build tool)
+#   - apt-get tool set (clang/clang-format/lld/cmake/ninja/ccache/openjdk/dtc)
+# The .github/workflows/build-chia-circt-base.yml workflow does this on
+# manual dispatch and on changes to *this* Dockerfile.
+#
+# Base image: ubuntu:24.04 (NOT rayproject/ray:2.54.0-cpu).
+#   The CIRCT release tarball's prebuilt libLLVM*/libMLIR* require GLIBC
+#   2.36/2.38 — newer than the rayproject base's Ubuntu 22.04 (glibc 2.35).
+#   ubuntu:24.04 (glibc 2.39) satisfies them, so we install Python + Ray
+#   manually on top, rather than starting from the rayproject base.
+#
+# Build (from the chia repo root):
+#
+#   docker build -f dockerfiles/ChiaCirctBaseDockerfile \
+#       -t ghcr.io/ucb-bar/chia-circt-base:latest .
+
+FROM ubuntu:24.04
+
+SHELL ["/bin/bash", "-cl"]
+
+# ---------------------------------------------------------------------------
+# System + CIRCT build toolchain.
+# clang/lld/cmake/ninja/ccache are required to rebuild circt-opt after a
+# chia flow links in a custom pass. openjdk + sbt cover chisel elaboration
+# (chia.chipyard.circt.chisel_elaborate_to_chirrtl).
+#
+# We deliberately do NOT install Ubuntu 24.04's system Python (3.12). The
+# chia framework is pinned to Python 3.10.19; we install that explicitly
+# below from astral-sh/python-build-standalone (PBS), mirroring the Genus
+# worker's approach for the same reason.
+# ---------------------------------------------------------------------------
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        --no-install-recommends \
+        ca-certificates wget curl git unzip xz-utils \
+        clang lld cmake ninja-build ccache \
+        zlib1g libxml2 libtinfo6 libz3-4 \
+        openjdk-17-jdk-headless \
+        device-tree-compiler \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# sbt (Scala build tool, for compiling Chisel)
+# ---------------------------------------------------------------------------
+ARG SBT_VER=1.10.5
+RUN curl -fsSL -o /tmp/sbt.tgz \
+        "https://github.com/sbt/sbt/releases/download/v${SBT_VER}/sbt-${SBT_VER}.tgz" \
+ && tar -xzf /tmp/sbt.tgz -C /opt \
+ && rm /tmp/sbt.tgz
+ENV PATH=/opt/sbt/bin:$PATH
+
+# ---------------------------------------------------------------------------
+# Prebuilt CIRCT SDK (LLVM + MLIR + CIRCT install: headers, libs, cmake configs).
+# We strip the SDK's CIRCT headers + cmake configs so they don't shadow the
+# matching source tree we clone below — keep only MLIR + LLVM from the install.
+# ---------------------------------------------------------------------------
+ARG CIRCT_VER=firtool-1.148.0
+ARG CIRCT_PKG=circt-full-shared-linux-x64.tar.gz
+RUN mkdir -p /opt/circt-sdk \
+ && wget -qO- \
+      "https://github.com/llvm/circt/releases/download/${CIRCT_VER}/${CIRCT_PKG}" \
+        | tar -xz --strip-components=1 -C /opt/circt-sdk \
+ && rm -rf /opt/circt-sdk/include/circt /opt/circt-sdk/lib/cmake/circt
+
+ENV PATH=/opt/circt-sdk/bin:/usr/lib/ccache:$PATH \
+    LD_LIBRARY_PATH=/opt/circt-sdk/lib \
+    CC=clang CXX=clang++
+
+# ---------------------------------------------------------------------------
+# CIRCT source matching the SDK ABI (no submodules — we use installed MLIR)
+# ---------------------------------------------------------------------------
+WORKDIR /workspace
+RUN git clone --depth 1 --branch "${CIRCT_VER}" \
+      https://github.com/llvm/circt.git circt
+
+# ---------------------------------------------------------------------------
+# Standalone CIRCT build dir, configured against the installed MLIR/LLVM.
+# ---------------------------------------------------------------------------
+WORKDIR /workspace/circt
+RUN cmake -B build -S . -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DLLVM_ENABLE_ASSERTIONS=ON \
+      -DMLIR_DIR=/opt/circt-sdk/lib/cmake/mlir \
+      -DLLVM_DIR=/opt/circt-sdk/lib/cmake/llvm \
+      -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+      -DLLVM_USE_LINKER=lld -DLLVM_CCACHE_BUILD=ON
+
+# Bake circt-opt (and its full dependency closure) into the image. This
+# is the slow part of the build (~30 min single-core); doing it during
+# image construction means every `docker run --rm` from this image starts
+# from a pre-built tree. Pass-dev iterations then only rebuild the single
+# source they touched + re-link circt-opt (~10 s).
+#
+# ninja uses nproc — to cap cores on shared hosts, build with
+# `docker build --cpuset-cpus=0-23 ...` so the cgroup limits nproc inside
+# the build container.
+RUN ninja -C build circt-opt
+
+# Put the freshly-built circt-opt ahead of the SDK's so the rebuilt binary
+# wins on PATH for `circt-opt`-by-name invocations.
+ENV PATH="/workspace/circt/build/bin:${PATH}"
+
+# ---------------------------------------------------------------------------
+# Python 3.10.19 + ray 2.54.0 (no chia yet — that goes in the child image).
+#
+# Python comes from astral-sh/python-build-standalone: a redistributable
+# manylinux2014 (glibc 2.17) build, so it works on this ubuntu:24.04 base
+# without a from-source compile. The pin (PYTHON_VERSION / PBS_TAG) MUST
+# stay in sync with the other chia worker images (Genus, Cacti, ...) so
+# every worker on the same Ray cluster runs the same interpreter. To bump
+# either, do it across every chia/dockerfiles/*Dockerfile in one go.
+#
+# The venv lives at /home/ray/anaconda3/envs/py_worker — same path the
+# Genus worker uses — so chia's worker_provisioner.py recognizes it as
+# the pre-baked interpreter and doesn't try to reinstall ray.
+# ---------------------------------------------------------------------------
+ARG PYTHON_VERSION=3.10.19
+ARG PBS_TAG=20260203
+ARG RAY_VERSION=2.54.0
+
+RUN curl -fsSL \
+      "https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_TAG}/cpython-${PYTHON_VERSION}+${PBS_TAG}-x86_64-unknown-linux-gnu-install_only.tar.gz" \
+        | tar -xzf - -C /opt \
+ && mkdir -p /home/ray/anaconda3/envs \
+ && /opt/python/bin/python3 -m venv /home/ray/anaconda3/envs/py_worker \
+ && /home/ray/anaconda3/envs/py_worker/bin/pip install --no-cache-dir \
+        "ray[default]==${RAY_VERSION}" pyyaml
+
+ENV PATH="/home/ray/anaconda3/envs/py_worker/bin:${PATH}"
+
+# Make /home/ray and /etc/passwd writable for any UID — needed when chia up
+# starts the container with `--user $(id -u):$(id -g)` and the cluster.yaml's
+# run_setup_commands appends a synthetic passwd entry for the host user.
+# Same trick as ClaudeCodeDockerfile.
+RUN mkdir -p /home/ray && chmod -R a+rwX /home/ray && chmod a+rw /etc/passwd
+
+# The pass-dev flow (5_chiaflow / build_pass.sh) writes into the source tree
+# (cp ChiaAreaEstimate.cpp, sed CMakeLists.txt, splice Passes.td) and re-runs
+# ninja against the prebuilt /workspace/circt/build. With chia up's
+# `--user $(id -u):$(id -g)`, the host user needs write access to the whole
+# CIRCT checkout. world-rwX with overlayfs costs one copy-up per file during
+# image build but lets every container start with a writable tree.
+RUN chmod -R a+rwX /workspace/circt
+
+# clang-format for the CIRCT issue-solving flow: lets the agent auto-format
+# edited C++ to the repo's root .clang-format (BasedOnStyle: LLVM) before
+# verification. The unversioned pkg -> clang-format-18 on Ubuntu 24.04, matching
+# the SDK's LLVM 18. Deliberately the LAST layer (a separate apt step, not folded
+# into the toolchain install near the top) so adding/bumping it doesn't bust the
+# cache on the ~30-min `ninja circt-opt` build and everything between.
+RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        --no-install-recommends clang-format \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

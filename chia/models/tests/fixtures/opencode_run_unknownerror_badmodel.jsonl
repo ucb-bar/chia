@@ -1,0 +1,2 @@
+{"type":"error","timestamp":1780339099637,"sessionID":"ses_17b853a0dffeeXEom9uDjz6eUP","error":{"name":"UnknownError","data":{"message":"Model not found: nonexistent/fake-model-v99."}}}
+{"type":"error","timestamp":1780339099638,"sessionID":"ses_17b853a0dffeeXEom9uDjz6eUP","error":{"name":"UnknownError","data":{"message":"Unexpected server error. Check server logs for details.","ref":"err_e02691fa"}}}

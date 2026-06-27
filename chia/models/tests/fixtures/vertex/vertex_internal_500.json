@@ -1,0 +1,9 @@
+{
+  "label": "vertex_internal_500",
+  "provider": "vertex gemini (google-genai generate_content)",
+  "how_produced": "SYNTHETIC \u2014 transient server fault",
+  "code": 500,
+  "status": "INTERNAL",
+  "message": "Internal error encountered. Retry your request.",
+  "expected_chia": "ServerError"
+}

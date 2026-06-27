@@ -1,0 +1,22 @@
+{
+  "label": "invalid_param_400",
+  "how_produced": "max_tokens=-5",
+  "provider": "openrouter (https://openrouter.ai/api/v1)",
+  "captured": "2026-06-01, opencode-style real capture",
+  "request_model": "liquid/lfm-2.5-1.2b-instruct:free",
+  "status": 400,
+  "openai_exc_type": "BadRequestError",
+  "headers": {
+    "date": "Mon, 01 Jun 2026 20:00:22 GMT"
+  },
+  "body": {
+    "error": {
+      "message": "Expected max_tokens to be at least 1",
+      "code": 400,
+      "metadata": {
+        "provider_name": null
+      }
+    }
+  },
+  "expected_chia": "InvalidRequestError"
+}

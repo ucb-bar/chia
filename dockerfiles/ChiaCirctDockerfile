@@ -1,0 +1,40 @@
+# Dockerfile for chia CIRCT workers (child image — thin layer over base).
+#
+# Bundles a built ``circt-opt`` (at /workspace/circt/build/bin/circt-opt) plus
+# the chia python package, so chia flows can dispatch CIRCT work (firtool
+# lowering, circt-opt invocations, custom-pass rebuild via ninja) to workers
+# of this image.
+#
+# The expensive bits — CIRCT SDK, source clone, ``ninja circt-opt`` (~30 min),
+# Python 3.10.19, ray 2.54.0, sbt, JDK — live in
+# ``chia-circt-base`` (built by chia/dockerfiles/ChiaCirctBaseDockerfile and
+# the .github/workflows/build-chia-circt-base.yml workflow). This image only
+# adds the chia editable install on top, so the nightly that publishes
+# ``chia-circt:latest`` rebuilds in seconds (only the ``COPY chia`` and
+# ``pip install -e`` layers re-run when chia changes).
+#
+# Build (from the chia repo root):
+#
+#   docker build -f dockerfiles/ChiaCirctDockerfile \
+#       -t ghcr.io/ucb-bar/chia-circt:latest .
+#
+# (The base image must be reachable — published to ghcr.io/ucb-bar or
+# already present locally as ``chia-circt-base``.)
+#
+# The nightly workflow .github/workflows/nightly-chia-circt.yml does the
+# above automatically.
+
+ARG BASE_IMAGE=ghcr.io/ucb-bar/chia-circt-base:latest
+FROM ${BASE_IMAGE}
+
+SHELL ["/bin/bash", "-cl"]
+
+# Build context is the chia repo root. Install chia editable so in-container
+# edits to chia (e.g. iterating on a ChiaFunction that drives circt-opt) are
+# picked up without a reinstall.
+COPY . /workspace/chia
+RUN /home/ray/anaconda3/envs/py_worker/bin/pip install --no-cache-dir \
+        -e /workspace/chia
+
+WORKDIR /workspace
+CMD ["/bin/bash"]

@@ -1,0 +1,72 @@
+# Google Antigravity CLI worker image.
+#
+# Builds ON TOP of ghcr.io/ucb-bar/chia (rayproject/ray + the chia package),
+# so chia is already installed — no COPY + pip install step here. Layers the
+# Google Antigravity CLI (`agy`) on top.
+#
+# Unlike Claude Code / Clarp Code, Antigravity ships as a single self-updating
+# native binary (no Node.js): its installer downloads a checksum-verified build
+# into $HOME/.local/bin/agy and runs `agy install` to configure the shell. So
+# this image only needs curl + tar + coreutils (sha512sum), all of which the
+# rayproject base already provides; we install curl/ca-certificates defensively.
+#
+# No build secret is required — the installer pulls from Google's public CDN,
+# not a private ucb-bar repo.
+#
+# ---------------------------------------------------------------------------
+# Build
+# ---------------------------------------------------------------------------
+# CI (.github/workflows/nightly-antigravity.yml) builds + pushes this via
+# docker/build-push-action; `FROM ghcr.io/ucb-bar/chia:latest` is resolved
+# from the registry automatically, so no manual pull is needed there.
+#
+# Local build (from the chia repo root) — commands used to build/verify this
+# image by hand; kept commented so they don't interfere with CI:
+#   # 1. Make sure the chia base is present locally (CI gets it for free):
+#   #    docker pull ghcr.io/ucb-bar/chia:latest
+#   # 2. Build and load into the local daemon:
+#   #    docker buildx build \
+#   #        -f dockerfiles/AntigravityDockerfile \
+#   #        -t ghcr.io/ucb-bar/chia-antigravity:latest --load .
+#   # 3. Smoke-test:
+#   #    docker run --rm ghcr.io/ucb-bar/chia-antigravity:latest \
+#   #        bash -lc 'agy --version && python -c "import chia"'
+#
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+#   docker run --rm -it ghcr.io/ucb-bar/chia-antigravity:latest agy --help
+#
+# Mount a working directory for file-editing tasks:
+#   docker run --rm -it \
+#       -v /path/to/project:/workspace -w /workspace \
+#       ghcr.io/ucb-bar/chia-antigravity:latest agy
+FROM ghcr.io/ucb-bar/chia:latest
+
+USER root
+
+# Antigravity's installer needs curl (download), ca-certificates (TLS to the
+# Google CDN), and tar/sha512sum (extract + verify the release). tar/sha512sum
+# come from coreutils in the base; curl/ca-certificates we ensure explicitly.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates tar && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install Antigravity as the unprivileged ray user so the binary lands in that
+# user's HOME ($HOME/.local/bin/agy) and `agy install` configures ray's shell.
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray
+
+# curl -fsSL https://antigravity.google/cli/install.sh | bash
+# The installer writes agy to ~/.local/bin and self-configures; we surface that
+# directory on PATH below so `agy` resolves for any login/non-login shell.
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+ENV PATH="/home/ray/.local/bin:${PATH}"
+
+# Make home dir and /etc/passwd writable for any UID (needed when running with
+# --user), mirroring the other chia CLI images.
+USER root
+RUN chmod -R a+rwX /home/ray && chmod a+rw /etc/passwd
+USER ray

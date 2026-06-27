@@ -1,0 +1,19 @@
+# Config for examples/bypass_cache/bypass_cache_loop.py
+#
+# Demonstrates CHIA's two cooperating mechanisms (see the "Caching and Bypass"
+# user guide). Both key off the per-call _chia_tag, here "iter<N>_call<M>".
+
+# CACHE (write path): auto-write every expensive_step result to the on-disk
+# cache. The tags regex "iter.*" matches every call, so all 16 are cached.
+cache:
+  expensive_step:
+    cache: true
+    tags: ["iter.*"]
+
+# BYPASS (read path): replay a SUBSET from the cache. The regex selects only
+# iterations 1 and 3 (iter1_*, iter3_*) — iterations 0 and 2 do NOT match, so
+# they fall through and run for real. This is the "bypass regex" capability.
+bypass:
+  expensive_step:
+    bypass: true
+    tags: ["iter[13]_.*"]

@@ -1,0 +1,123 @@
+# Dockerfile for the riscv-dv random-stimulus generator node (flattened,
+# single-file, fully self-contained).
+#
+# Builds ON TOP of ghcr.io/ucb-bar/chia (rayproject/ray + the chia package),
+# so chia is already installed — no COPY + pip install step here. This file
+# replaces the former RiscvCrossBaseDockerfile -> RiscvDvBaseDockerfile ->
+# RiscvDvDockerfile chain: the RISC-V cross toolchain AND the riscv-dv layer
+# are both inlined here so the image depends only on chia (not on a separate
+# chia-riscv-cross base).
+#
+# riscv-dv's pure-Python generator (pyflow) needs NO commercial SV simulator —
+# `run.py --simulator=pyflow` generates random RISC-V programs in Python (via
+# PyVSC). The riscv64-unknown-elf toolchain (below) is present for riscv-dv's
+# `gcc_compile` step (gen -> .S -> ELF). No spike is used at runtime here: the
+# generated ELFs are run + checked by the separate Spike<->Verilator cosim.
+#
+#   docker build -f dockerfiles/RiscvDvDockerfile \
+#       -t ghcr.io/ucb-bar/chia-riscv-dv:latest .
+FROM ghcr.io/ucb-bar/chia:latest
+
+# ---------------------------------------------------------------------------
+# RISC-V cross toolchain (inlined from the former RiscvCrossBaseDockerfile).
+# ---------------------------------------------------------------------------
+USER root
+
+# Build tools required by libgloss-htif's autotools build, plus runtime
+# libs the conda riscv64-unknown-elf-ar depends on (libfl.so.2).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        make \
+        git \
+        curl \
+        ca-certificates \
+        libfl2 \
+    && rm -rf /var/lib/apt/lists/*
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray
+
+# Install conda into /home/ray/conda (kept separate from the chia base's
+# anaconda3, which carries the chia worker interpreter).
+RUN curl -fsSL -o /tmp/miniforge.sh \
+        https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh \
+    && bash /tmp/miniforge.sh -b -p /home/ray/conda \
+    && rm /tmp/miniforge.sh \
+    && /home/ray/conda/bin/conda config --system --set always_yes true \
+    && /home/ray/conda/bin/conda config --system --set channel_priority strict
+
+# chipyard's riscv-tools meta-package: riscv64-unknown-elf-gcc + binutils +
+# newlib + spike. Channels match chipyard/conda-reqs/riscv-tools.yaml.
+RUN /home/ray/conda/bin/conda create -n riscv-tools \
+        -c ucb-bar -c conda-forge \
+        riscv-tools=1.0.6 \
+    && /home/ray/conda/bin/conda clean -afy
+
+ENV PATH=/home/ray/conda/envs/riscv-tools/riscv-tools/bin:$PATH
+
+# Build & install libgloss-htif into the toolchain sysroot. Pinned to
+# chipyard's submodule SHA so the output matches chipyard/tests/ byte-for-byte.
+ARG LIBGLOSS_HTIF_SHA=39234a16247ab1fa234821b251f1f1870c3de343
+ENV RISCV=/home/ray/conda/envs/riscv-tools/riscv-tools
+RUN git clone https://github.com/ucb-bar/libgloss-htif.git /tmp/libgloss-htif \
+    && cd /tmp/libgloss-htif \
+    && git checkout $LIBGLOSS_HTIF_SHA \
+    && mkdir build && cd build \
+    && ../configure --prefix=$RISCV/riscv64-unknown-elf --host=riscv64-unknown-elf \
+    && make -j"$(nproc)" \
+    && make install \
+    && rm -rf /tmp/libgloss-htif
+
+# Vendored harness — single source of truth in the repo.
+COPY --chown=ray:ray dockerfiles/riscv-harness/ /opt/riscv-harness/
+
+# ---------------------------------------------------------------------------
+# riscv-dv layer (inlined from the former RiscvDvBaseDockerfile).
+# ---------------------------------------------------------------------------
+# pyflow deps (from riscv-dv requirements.txt; docs/sphinx omitted). pyvsc is the
+# randomization engine and the fiddly one to install (pulls a SAT solver — see
+# riscv-dv issue #934); pin versions here if the build breaks. These install
+# into the chia base's anaconda3 env (same env chia lives in).
+RUN pip install --no-cache-dir \
+        PyYAML \
+        bitstring \
+        pyvsc \
+        tabulate \
+        pandas \
+    && rm -rf /home/ray/.cache/pip
+
+# Clone riscv-dv; pygen lives at pygen/ and is driven via run.py --simulator=pyflow.
+# Pinned (was `master`) so the RV64 stack-alignment patch below applies against a
+# known tree.
+ARG RISCV_DV_REPO=https://github.com/chipsalliance/riscv-dv.git
+ARG RISCV_DV_SHA=b7a0b4b0b51346a3c64f159f81ea262d867c14a9
+ENV RISCV_DV_DIR=/home/ray/riscv-dv
+RUN git clone $RISCV_DV_REPO $RISCV_DV_DIR \
+    && cd $RISCV_DV_DIR \
+    && git checkout $RISCV_DV_SHA
+
+# RV64 misaligned-stack fix. riscv-dv hardcodes 4-byte stack adjustments where
+# RV64 needs XLEN/8: the M-mode trap handler's user-SP push/pop and the directed
+# pop-stack size check. On a misalign-trapping core (BOOM; Spike misaligned=false)
+# the handler's own 8-byte sd/ld to a 4-decremented pointer faults (cause 6); the
+# handler (no case for it) re-enters, its save pointer walks into its own .text
+# -> self-modifying code without fence.i -> BOOM (stale I$) vs Spike (coherent)
+# fetch differently -> spurious cosim divergence. The legitimate `mepc += 4`
+# skips elsewhere are deliberately NOT touched.
+#
+# TODO: this is a LOCAL patch over upstream chipsalliance/riscv-dv. To remove it
+# once fixed upstream: (1) delete this COPY+RUN and the patch file, (2) bump
+# RISCV_DV_SHA to the commit that merges the complete fix, (3) rebuild this image.
+# Track upstream (all OPEN as of the pin): PR #925 (push only — incomplete),
+# PR #1027, issue #1033. A `git apply` failure on a future rebuild means upstream
+# moved these lines — re-cut the patch or drop it if already merged.
+COPY dockerfiles/patches/riscv-dv-rv64-stack-align.patch /tmp/
+# This RUN executes as the non-root `ray` user, so it can't delete the
+# root-owned COPY in sticky /tmp — leave the (inert, 1.7KB) patch in place.
+RUN cd $RISCV_DV_DIR \
+    && git apply --verbose /tmp/riscv-dv-rv64-stack-align.patch
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray

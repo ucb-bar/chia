@@ -1,0 +1,156 @@
+{
+  "aes64ds": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "aes64dsm": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "aes64es": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "aes64esm": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "aes64im": [
+    "rd",
+    "rs1"
+  ],
+  "aes64ks1i": [
+    "rd",
+    "rs1",
+    "rnum"
+  ],
+  "aes64ks2": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "andn": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "brev8": [
+    "rd",
+    "rs1"
+  ],
+  "clmul": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "clmulh": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "orn": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "pack": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "packh": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "packw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "rev8": [
+    "rd",
+    "rs1"
+  ],
+  "rol": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "rolw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "ror": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "rori": [
+    "rd",
+    "rs1",
+    "shamtd"
+  ],
+  "roriw": [
+    "rd",
+    "rs1",
+    "shamtw"
+  ],
+  "rorw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "sha256sig0": [
+    "rd",
+    "rs1"
+  ],
+  "sha256sig1": [
+    "rd",
+    "rs1"
+  ],
+  "sha256sum0": [
+    "rd",
+    "rs1"
+  ],
+  "sha256sum1": [
+    "rd",
+    "rs1"
+  ],
+  "sha512sig0": [
+    "rd",
+    "rs1"
+  ],
+  "sha512sig1": [
+    "rd",
+    "rs1"
+  ],
+  "sha512sum0": [
+    "rd",
+    "rs1"
+  ],
+  "sha512sum1": [
+    "rd",
+    "rs1"
+  ],
+  "xnor": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "xperm4": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "xperm8": [
+    "rd",
+    "rs1",
+    "rs2"
+  ]
+}

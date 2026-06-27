@@ -1,0 +1,41 @@
+# Single-machine cluster for examples/bypass_cache/bypass_cache_loop.py:
+# one head + four local workers, all on the same host.
+#
+# The host is read from the CHIA_HEAD environment variable, so no hard-coded IPs.
+# Set it before bringing the cluster up, e.g.:
+#
+#     export CHIA_HEAD=$(hostname)
+#     chia up examples/bypass_cache/cluster.yaml
+#     python examples/bypass_cache/bypass_cache_loop.py
+#     chia down examples/bypass_cache/cluster.yaml
+
+cluster_name: bypass-cache-example
+
+provider:
+    head_ip: ${CHIA_HEAD}
+
+auth:
+    ssh_user: ${USER}
+    # ssh_private_key: ~/.ssh/<key>   # omit if your key is in the ssh-agent
+
+available_node_types:
+    # Four workers, all on the head machine. The demo's expensive_step needs no
+    # special Ray resource, so each worker just advertises CPUs; the four let the
+    # four parallel calls per loop iteration run concurrently.
+    worker:
+        resources: {"demo": 1}
+        num_workers: 4
+        compatible_ips: ["${CHIA_HEAD}"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+# The head runs on the host via a fresh (non-interactive) SSH shell, so activate
+# an env with ray + chia. head_env_commands run on both `chia up` and `chia down`.
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && mkdir -p /tmp/${USER}_ray && ray start --head --port=6379 --dashboard-port=8081 --include-dashboard=True --dashboard-agent-listen-port=0 --temp-dir=/tmp/${USER}_ray
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379

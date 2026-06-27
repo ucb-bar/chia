@@ -1,0 +1,9 @@
+{
+  "label": "bedrock_service_unavailable",
+  "provider": "bedrock-runtime converse",
+  "how_produced": "SYNTHETIC \u2014 ServiceUnavailableException (transient)",
+  "code": "ServiceUnavailableException",
+  "message": "The service is currently unavailable. Please retry.",
+  "http_status": 503,
+  "expected_chia": "ServerError"
+}

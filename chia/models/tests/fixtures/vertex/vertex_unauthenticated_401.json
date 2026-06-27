@@ -1,0 +1,9 @@
+{
+  "label": "vertex_unauthenticated_401",
+  "provider": "vertex gemini (google-genai generate_content)",
+  "how_produced": "SYNTHETIC \u2014 missing/invalid credentials",
+  "code": 401,
+  "status": "UNAUTHENTICATED",
+  "message": "Request had invalid authentication credentials.",
+  "expected_chia": "AuthenticationError"
+}

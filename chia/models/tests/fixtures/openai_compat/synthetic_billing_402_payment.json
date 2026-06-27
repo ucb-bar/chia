@@ -1,0 +1,16 @@
+{
+  "label": "billing_402_payment",
+  "how_produced": "SYNTHETIC (no real capture) \u2014 402 Payment Required",
+  "provider": "synthetic (common convention)",
+  "request_model": "some/paid-model",
+  "status": 402,
+  "openai_exc_type": "APIStatusError",
+  "headers": {},
+  "body": {
+    "error": {
+      "message": "Payment required: insufficient credits to serve this request.",
+      "code": 402
+    }
+  },
+  "expected_chia": "BillingError"
+}

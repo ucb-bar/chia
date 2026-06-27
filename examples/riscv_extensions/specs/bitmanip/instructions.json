@@ -1,0 +1,210 @@
+{
+  "add.uw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "andn": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "bclr": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "bclri": [
+    "rd",
+    "rs1",
+    "shamtd"
+  ],
+  "bext": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "bexti": [
+    "rd",
+    "rs1",
+    "shamtd"
+  ],
+  "binv": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "binvi": [
+    "rd",
+    "rs1",
+    "shamtd"
+  ],
+  "bset": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "bseti": [
+    "rd",
+    "rs1",
+    "shamtd"
+  ],
+  "clmul": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "clmulh": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "clmulr": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "clz": [
+    "rd",
+    "rs1"
+  ],
+  "clzw": [
+    "rd",
+    "rs1"
+  ],
+  "cpop": [
+    "rd",
+    "rs1"
+  ],
+  "cpopw": [
+    "rd",
+    "rs1"
+  ],
+  "ctz": [
+    "rd",
+    "rs1"
+  ],
+  "ctzw": [
+    "rd",
+    "rs1"
+  ],
+  "max": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "maxu": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "min": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "minu": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "orc.b": [
+    "rd",
+    "rs1"
+  ],
+  "orn": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "rev8": [
+    "rd",
+    "rs1"
+  ],
+  "rol": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "rolw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "ror": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "rori": [
+    "rd",
+    "rs1",
+    "shamtd"
+  ],
+  "roriw": [
+    "rd",
+    "rs1",
+    "shamtw"
+  ],
+  "rorw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "sext.b": [
+    "rd",
+    "rs1"
+  ],
+  "sext.h": [
+    "rd",
+    "rs1"
+  ],
+  "sh1add": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "sh1add.uw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "sh2add": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "sh2add.uw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "sh3add": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "sh3add.uw": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "slli.uw": [
+    "rd",
+    "rs1",
+    "shamtd"
+  ],
+  "xnor": [
+    "rd",
+    "rs1",
+    "rs2"
+  ],
+  "zext.h": [
+    "rd",
+    "rs1"
+  ],
+  "zext.w": [
+    "rd",
+    "rs1"
+  ]
+}

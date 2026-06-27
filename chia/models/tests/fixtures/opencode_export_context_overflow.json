@@ -1,0 +1,47 @@
+{
+  "info": {
+    "id": "ses_synthetic",
+    "directory": "/tmp"
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "hi"
+        }
+      ]
+    },
+    {
+      "info": {
+        "role": "assistant",
+        "tokens": {
+          "input": 0,
+          "output": 0
+        },
+        "cost": 0.0,
+        "error": {
+          "name": "ContextOverflowError",
+          "data": {
+            "message": "prompt is too long: 250000 tokens > 200000 maximum"
+          }
+        }
+      },
+      "parts": [
+        {
+          "type": "step-start"
+        },
+        {
+          "type": "text",
+          "text": "partial answer before overflow..."
+        },
+        {
+          "type": "step-finish"
+        }
+      ]
+    }
+  ]
+}

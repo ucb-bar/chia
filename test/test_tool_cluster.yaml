@@ -1,0 +1,109 @@
+# Cluster config for test/test_tool.py
+#
+# Local machine : node_a, node_b (bare-metal), node_c, node_d (Docker)
+# Remote machine : node_e (bare-metal), node_g (Docker)
+#
+# Usage:
+#   chia up test/test_tool_cluster.yaml
+#   python -m pytest test/test_tool.py -v
+#   chia down test/test_tool_cluster.yaml
+
+cluster_name: test_tool
+
+available_node_types:
+    # -- Local bare-metal (same machine as head) --
+    node_a:
+        resources: {"node_a": 1}
+        num_workers: 1
+        compatible_ips: #FILL
+        worker_env_commands:
+            - "source ~/.bashrc && conda activate chia_env"
+    node_b:
+        resources: {"node_b": 1}
+        num_workers: 1
+        compatible_ips: #FILL
+        worker_env_commands:
+            - "source ~/.bashrc && conda activate chia_env"
+
+    # -- Local Docker --
+    node_c:
+        resources: {"node_c": 1}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:0.1"
+            container_name: "chia-test-node-c"
+            pull_before_run: True
+            run_options:
+                - --shm-size=1gb
+                - --hostname=chia-test-node-c
+        compatible_ips: #FILL
+    node_d:
+        resources: {"node_d": 1}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:0.1"
+            container_name: "chia-test-node-d"
+            pull_before_run: True
+            run_options:
+                - --shm-size=1gb
+                - --hostname=chia-test-node-d
+        compatible_ips: #FILL
+
+    # -- Remote bare-metal --
+    node_e:
+        resources: {"node_e": 1}
+        num_workers: 1
+        compatible_ips: #FILL
+        worker_env_commands:
+            - "source ~/.bashrc && conda activate chia_env"
+
+    # -- Remote Docker --
+    node_g:
+        resources: {"node_g": 1}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:0.1"
+            container_name: "chia-test-node-g"
+            pull_before_run: True
+            run_options:
+                - --shm-size=1gb
+                - --hostname=chia-test-node-g
+        compatible_ips: #FILL
+
+provider:
+    head_ip: #FILL
+
+# How Ray will authenticate with newly launched nodes.
+auth:
+    ssh_user: ${USER}
+    # You can comment out `ssh_private_key` if the following machines don't need a private key for SSH access to the Ray
+    # cluster:
+    #   (1) The machine on which `ray up` is executed.
+    #   (2) The head node of the Ray cluster.
+    #
+    # The machine that runs ray up executes SSH commands to set up the Ray head node. The Ray head node subsequently
+    # executes SSH commands to set up the Ray worker nodes. When you run ray up, ssh credentials sitting on the ray up
+    # machine are copied to the head node -- internally, the ssh key is added to the list of file mounts to rsync to head node.
+    ssh_private_key: /home/eecs/${USER}/.ssh/${USER}
+
+rsync_exclude:
+    - "**/.git"
+    - "**/.git/**"
+
+rsync_filter:
+    - ".gitignore"
+
+initialization_commands: []
+setup_commands: []
+
+# TODO: ensure this is correct for the head node
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379

@@ -1,0 +1,13 @@
+/* sphinx_rtd_theme forces `white-space: nowrap` on table cells, which makes
+   wide tables (e.g. the config reference) overflow horizontally with a scroll
+   bar instead of wrapping. Allow cell content to wrap so :widths: are honored. */
+.wy-table-responsive table td,
+.wy-table-responsive table th {
+    white-space: normal !important;
+}
+
+/* Let the responsive wrapper size to the content column rather than forcing a
+   horizontal scrollbar around the (now-wrapping) table. */
+.wy-table-responsive {
+    overflow: visible !important;
+}

@@ -1,0 +1,165 @@
+# Chipyard image.
+#
+# Builds a chipyard environment capable of compiling Chisel designs into
+# Verilator simulator binaries (chipyard verilator + FireSim metasim).
+#
+# Build (from the chia repo root):
+#
+#   docker buildx build \
+#       -f dockerfiles/ChipyardDockerfile \
+#       -t ghcr.io/ucb-bar/chia-chipyard:latest .
+FROM ghcr.io/ucb-bar/chia:latest
+
+USER root
+
+# System packages required by chipyard's build-setup.sh and submodule init.
+# conda provides the heavy tooling (Java, SBT, Verilator, GCC, etc.) but
+# build-setup.sh needs git, autoconf, and basic build tools at the OS level.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    openssh-client \
+    autoconf \
+    automake \
+    autotools-dev \
+    curl \
+    wget \
+    device-tree-compiler \
+    libmpc-dev \
+    libmpfr-dev \
+    libgmp-dev \
+    libusb-1.0-0-dev \
+    libboost-regex-dev \
+    libboost-system-dev \
+    texinfo \
+    gperf \
+    patchutils \
+    bc \
+    zlib1g-dev \
+    libexpat1-dev \
+    libtool \
+    pkg-config \
+    ca-certificates \
+    kmod \
+    git-lfs \
+    && rm -rf /var/lib/apt/lists/*
+
+# Switch to ray user for the entire chipyard setup.
+# Conda and chipyard are installed under /home/ray so ray owns everything
+# and can write build artifacts without permission issues.
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray
+
+# Chipyard repository. This image tracks the repository's default branch so it
+# stays as up to date as possible.
+ARG CHIPYARD_REPO=https://github.com/ucb-bar/chipyard.git
+
+# Clone the public chipyard over plain HTTPS (no auth required), then print
+# provenance (remote, commit, and every sysroot_linux-64 pin conda-lock will
+# solve) so build-setup failures at the conda step are diagnosable from logs.
+RUN git clone -b chia_artifact ${CHIPYARD_REPO} /home/ray/chipyard \
+    && echo "=== chipyard provenance ===" \
+    && git -C /home/ray/chipyard remote -v \
+    && git -C /home/ray/chipyard rev-parse HEAD \
+    && grep -RnE "sysroot_linux-64" /home/ray/chipyard/conda-reqs/*.yaml || true
+
+WORKDIR /home/ray/chipyard
+
+# Some chipyard branches' build-setup.sh auto-rewrite sysroot_linux-64 to the
+# container glibc version. This image is based on Ubuntu 22.04 / glibc 2.35,
+# but conda-forge only publishes sysroot_linux-64 2.34 and 2.39, so that
+# auto-rewrite makes conda-lock fail. Neutralize the rewrite so the supported
+# 2.34 sysroot is kept.
+#
+# The chia_artifact branch we clone here has no such auto-rewrite block (its
+# chipyard-base.yaml is statically pinned to sysroot_linux-64=2.34), so this
+# patch is a no-op there. It only applies if a future branch reintroduces the
+# upstream-main glibc-detection block, hence the tolerant skip instead of a
+# hard failure.
+RUN python - <<'PY'
+from pathlib import Path
+
+path = Path("/home/ray/chipyard/scripts/build-setup.sh")
+text = path.read_text()
+old = """    SYS_GLIBC=$(ldd --version | awk '/ldd/{print $NF}')
+    DEFAULT_GLIBC=$(grep -i "sysroot_linux-64=" conda-reqs/chipyard-base.yaml | awk -F= '{print $2}')
+"""
+new = """    SYS_GLIBC=$(ldd --version | awk '/ldd/{print $NF}')
+    if [ "$SYS_GLIBC" = "2.35" ]; then
+        SYS_GLIBC=2.34
+    fi
+    DEFAULT_GLIBC=$(grep -i "sysroot_linux-64=" conda-reqs/chipyard-base.yaml | awk -F= '{print $2}' | awk '{print $1}')
+"""
+if old in text:
+    path.write_text(text.replace(old, new, 1))
+    print("Patched glibc detection block in build-setup.sh")
+else:
+    print("No glibc detection block to patch in build-setup.sh; skipping")
+PY
+
+# Install conda to ray's home directory (no sudo needed).
+# Inspired by chipyard's CI Dockerfile (.github/scripts/install-conda.sh).
+#
+# We run our own patched copy (dockerfiles/install-conda.sh) rather than
+# chipyard's. Chipyard's script `conda update`s base conda to the latest
+# (>=23.10), where the `experimental_solver` config key was removed in favor of
+# `solver` (libmamba is now the default). Its `--set experimental_solver
+# libmamba` line then aborts the build; our copy uses `--set solver` instead.
+COPY --chown=ray:ray dockerfiles/install-conda.sh /tmp/install-conda.sh
+RUN /tmp/install-conda.sh --prefix /home/ray/conda
+
+SHELL ["/bin/bash", "-cl"]
+
+# Stub vivado binary to pass hdk_setup.sh checks during FireSim setup.
+# Vivado runs natively on the FPGA AMI host, never inside this container.
+USER root
+RUN printf '#!/bin/bash\necho "Vivado v2024.2 (64-bit)"\n' > /usr/local/bin/vivado \
+    && chmod +x /usr/local/bin/vivado
+USER ray
+
+# Run build-setup.sh with FireSim support. The public chipyard's submodules are
+# also public, so no auth is needed for submodule init.
+RUN ./build-setup.sh -s 4 -s 9
+
+# Pre-build the MacroCompiler classpath jar (tapeout.jar) so SRAM remapping
+# (chia.chipyard.macrocompiler.remap_with_macrocompiler, which runs
+# `java -cp .classpath_cache/tapeout.jar tapeout.macros.MacroCompiler`) works
+# out of the box without a first-call sbt assembly. This mirrors chipyard's
+# own run_sbt_assembly target (common.mk: $(TAPEOUT_CLASSPATH)); assembly takes
+# only seconds since build-setup.sh already compiled the tapeout classes.
+RUN mkdir -p /home/ray/chipyard/.classpath_cache && \
+    source /home/ray/chipyard/env.sh && \
+    sbt ";project tapeout; set assembly / assemblyOutputPath := file(\"/home/ray/chipyard/.classpath_cache/tapeout.jar\"); assembly" && \
+    test -f /home/ray/chipyard/.classpath_cache/tapeout.jar
+
+# Build the AWS FPGA SDK (provides libfpga_mgmt for F2 driver linking).
+# This enables `make driver` for FireSim F2 targets inside this image.
+# If the checked-out FireSim already provides the F2 platform submodule we use
+# it directly; otherwise, fall back to cloning aws-fpga-firesim-f2 explicitly.
+RUN if [ ! -f sims/firesim/platforms/f2/aws-fpga-firesim-f2/sdk_setup.sh ]; then \
+        mkdir -p sims/firesim/platforms/f2 && \
+        git clone https://github.com/firesim/aws-fpga-firesim-f2.git \
+            sims/firesim/platforms/f2/aws-fpga-firesim-f2; \
+    fi \
+    && cd sims/firesim/platforms/f2/aws-fpga-firesim-f2 \
+    && source sdk_setup.sh
+
+# At runtime, containers get SSH agent forwarding (not a PAT). Rewrite
+# HTTPS GitHub URLs to SSH so that git pull / submodule update uses the
+# forwarded agent instead of trying unauthenticated HTTPS.
+RUN git config --global url."git@github.com:".insteadOf "https://github.com/" \
+    && mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
+
+# Source chipyard and firesim env.sh in .bashrc so that
+# subprocess.run(shell=True) in ChiselBuildNode inherits the full
+# environment (Java, SBT, Verilator, RISCV toolchain, CIRCT firtool,
+# FIRESIM_ENV_SOURCED, FS_DIR, etc.).
+RUN echo 'source /home/ray/chipyard/env.sh' >> ~/.bashrc \
+    && echo 'source /home/ray/chipyard/sims/firesim/env.sh' >> ~/.bashrc \
+    && echo 'cd /home/ray/chipyard/sims/firesim/platforms/f2/aws-fpga-firesim-f2' >> ~/.bashrc \
+    && echo 'cd /home/ray' >> ~/.bashrc
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray

@@ -1,0 +1,47 @@
+# Standalone Claude Code CLI image for non-interactive (--print) usage.
+#
+# Unlike other chia images that derive from rayproject/ray:latest-cpu, this
+# uses node:22-slim because Claude Code is a Node.js CLI with no Python/Ray
+# dependencies.
+#
+# Requires BuildKit and a GitHub PAT with read access to ucb-bar repos:
+#
+#   docker buildx build \
+#       --secret id=GIT_AUTH_TOKEN,env=GIT_AUTH_TOKEN \
+#       -f dockerfiles/ClaudeCodeDockerfile -t ghcr.io/ucb-bar/chia-claude-code:latest .
+#
+# or with SSH:
+#
+#   DOCKER_BUILDKIT=1 docker buildx build --ssh default=${SSH_AUTH_SOCK} \
+#       -f dockerfiles/ClaudeCodeDockerfile -t ghcr.io/ucb-bar/chia-claude-code:latest .
+#
+# Run with OAuth credentials (mounted read-only from host):
+#   docker run --rm --user $(id -u):$(id -g) \
+#       -v ~/.claude/.credentials.json:/home/ray/.claude/.credentials.json:ro \
+#       ghcr.io/ucb-bar/chia-claude-code:latest \
+#       -p "Your prompt here"
+#
+# Run with API key:
+#   docker run --rm \
+#       -e ANTHROPIC_API_KEY \
+#       ghcr.io/ucb-bar/chia-claude-code:latest \
+#       -p "Your prompt here"
+#
+# Mount a working directory for file-editing tasks:
+#   docker run --rm \
+#       -e ANTHROPIC_API_KEY \
+#       -v /path/to/project:/workspace -w /workspace \
+#       ghcr.io/ucb-bar/chia-claude-code:latest \
+#       -p --dangerously-skip-permissions "Review the code in this directory"
+FROM rayproject/ray:2.54.0-cpu
+SHELL ["/bin/bash", "-cl"]
+
+# Copy the already-checked-out repo into the image
+COPY --chown=ray:ray . /tmp/chia
+
+# Install the chia Python package from local source
+RUN pip install /tmp/chia && rm -rf /tmp/chia
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray

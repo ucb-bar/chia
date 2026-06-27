@@ -1,0 +1,22 @@
+{
+  "label": "over_context_400",
+  "how_produced": "~187k-token prompt vs 32k-context free model (now classified ContextLengthExceededError via body-aware match)",
+  "provider": "openrouter (https://openrouter.ai/api/v1)",
+  "captured": "2026-06-01, opencode-style real capture",
+  "request_model": "liquid/lfm-2.5-1.2b-instruct:free",
+  "status": 400,
+  "openai_exc_type": "BadRequestError",
+  "headers": {
+    "date": "Mon, 01 Jun 2026 20:00:22 GMT"
+  },
+  "body": {
+    "error": {
+      "message": "This endpoint's maximum context length is 32768 tokens. However, you requested about 187516 tokens (187500 of text input, 16 in the output). Please reduce the length of either one, or use the context-compression plugin to compress your prompt automatically.",
+      "code": 400,
+      "metadata": {
+        "provider_name": null
+      }
+    }
+  },
+  "expected_chia": "ContextLengthExceededError"
+}

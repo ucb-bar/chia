@@ -1,0 +1,162 @@
+# RISC-V extension loop cluster. `cosim` runs broad; `build`/`gen` on subsets;
+# `llm`/`head_local`/`database` are bare-SSH. Fill every compatible_ips + head_ip.
+cluster_name: vext
+
+available_node_types:
+    llm:
+        resources: {"llm": 4}
+        num_workers: 2
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env && export PATH=$HOME/.local/bin:$PATH"]
+        compatible_ips:     # FILL
+
+    head_local:
+        resources: {"head_local": 8}
+        num_workers: 1
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env && export PATH=$HOME/.local/bin:$PATH"]
+        compatible_ips: #FILL
+
+    database:
+        resources: {"database": 2}
+        num_workers: 1
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env && export PATH=$HOME/.local/bin:$PATH"]
+        compatible_ips: #FILL
+
+    # Verilator DUT sims + lockstep cospike.
+    cosim:
+        resources: {"verilator_run": 4}
+        num_workers: 6
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: #FILL
+
+    # AWS soak cosim (c5.9xlarge). Scale count + num_workers + the @-list together.
+    cosim_aws:
+        resources: {"verilator_run": 4}
+        num_workers: 18
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips:
+            - "@verilator_run_aws:0"
+            - "@verilator_run_aws:1"
+            - "@verilator_run_aws:2"
+            - "@verilator_run_aws:3"
+            - "@verilator_run_aws:4"
+            - "@verilator_run_aws:5"
+            - "@verilator_run_aws:6"
+            - "@verilator_run_aws:7"
+            - "@verilator_run_aws:8"
+            - "@verilator_run_aws:9"
+            - "@verilator_run_aws:10"
+            - "@verilator_run_aws:11"
+            - "@verilator_run_aws:12"
+            - "@verilator_run_aws:13"
+            - "@verilator_run_aws:14"
+            - "@verilator_run_aws:15"
+            - "@verilator_run_aws:16"
+            - "@verilator_run_aws:17"
+
+    # Chisel -> Verilator elaboration.
+    build:
+        resources: {"chipyard": 1}
+        num_workers: 3
+        worker_env_commands: ["cd /home/ray/chipyard && source env.sh"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "chia-chisel-build-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - -v $SSH_AUTH_SOCK:/ssh-agent
+        compatible_ips: #FILL
+
+    gen:
+        resources: {"dv": 1, "xcelium": 1}
+        num_workers: 4
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-dv:latest"
+            container_name: "chia-riscv-dv-${USER}"
+            pull_before_run: True
+        compatible_ips: #FILL
+
+    # Cross-compiles directed tests to ELFs.
+    riscv_build:
+        resources: {"riscv_build": 4}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-cross:latest"
+            container_name: "chia-riscv-cross-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+        compatible_ips: #FILL
+
+    # Synthesis (PPA) — TEMPLATE: logical labels only, 0 workers. Point at a real
+    # synth image + PDK + license to enable; --no-synth runs without it.
+    vlsi:
+        resources: {"VLSI": 1, "Syn": 1, "cacti": 4}
+        num_workers: 0
+
+# AWS soak hosts (boto3 on `chia up`). KeyName = key-pair NAME ${VEXT_EC2_KEYNAME};
+# its private half is the host file ${VEXT_EC2_KEYFILE}.
+aws_nodes:
+    region: us-east-1
+    verilator_run_aws:
+        KeyName: ${VEXT_EC2_KEYNAME}
+        InstanceType: c5.9xlarge
+        count: 18
+        ImageId: ami-0ec10929233384c7f
+        ssh_user: ubuntu
+        setup_commands:
+            - "echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${GHCR_USER} --password-stdin"
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 300
+                  VolumeType: gp3
+
+provider:
+    type: local
+    head_ip: #FILL
+    worker_ips: ["@verilator_run_aws:0", "@verilator_run_aws:1", "@verilator_run_aws:2", "@verilator_run_aws:3",
+                 "@verilator_run_aws:4", "@verilator_run_aws:5", "@verilator_run_aws:6", "@verilator_run_aws:7",
+                 "@verilator_run_aws:8", "@verilator_run_aws:9", "@verilator_run_aws:10", "@verilator_run_aws:11",
+                 "@verilator_run_aws:12", "@verilator_run_aws:13", "@verilator_run_aws:14", "@verilator_run_aws:15",
+                 "@verilator_run_aws:16", "@verilator_run_aws:17"]
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: ${VEXT_EC2_KEYFILE}
+
+file_mounts: {}
+
+rsync_exclude:
+    - "**/.git"
+    - "**/.git/**"
+
+rsync_filter:
+    - ".gitignore"
+
+initialization_commands: []
+
+setup_commands: []
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env && export PATH=$HOME/.local/bin:$PATH"]
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

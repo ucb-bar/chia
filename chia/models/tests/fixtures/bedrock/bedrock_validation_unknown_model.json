@@ -1,0 +1,9 @@
+{
+  "label": "bedrock_validation_unknown_model",
+  "provider": "bedrock-runtime converse",
+  "how_produced": "REAL capture (Nova Lite, us-east-1) \u2014 converse with modelId='fake.nonexistent-model-v99'",
+  "code": "ValidationException",
+  "message": "The provided model identifier is invalid.",
+  "http_status": 400,
+  "expected_chia": "InvalidRequestError"
+}

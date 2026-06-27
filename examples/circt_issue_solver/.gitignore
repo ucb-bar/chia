@@ -1,0 +1,7 @@
+issues.db
+issues.db-journal
+issue_logs/
+issue_logs_to_pr/
+__pycache__/
+*.pyc
+review_logs

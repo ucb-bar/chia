@@ -1,0 +1,162 @@
+# syntax=docker/dockerfile:1
+# Dockerfile for a chia Ollama serving worker.
+#
+# Builds on Ollama's official image (https://hub.docker.com/r/ollama/ollama),
+# then layers a conda Python env with Ray + the chia package on top — so the
+# same container both (a) serves open-weight models over Ollama's
+# OpenAI-compatible endpoint on :11434 and (b) joins the chia Ray cluster as a
+# worker. Pair it with chia.models.ollama.OllamaLLM, whose `prompt` is gated on
+# the `ollama_creds` resource so calls land on a node running this image.
+#
+# ---------------------------------------------------------------------------
+# GPU support: AMD *and* NVIDIA  (read this)
+# ---------------------------------------------------------------------------
+# A SINGLE image cannot serve both vendors: NVIDIA needs the CUDA runtime and
+# AMD needs the (much larger) ROCm runtime, and Ollama ships them as two
+# separate base tags rather than one combined image. So we parameterize the
+# base via OLLAMA_BASE and build one image per vendor from this one Dockerfile:
+#
+#   NVIDIA / CPU:  --build-arg OLLAMA_BASE=ollama/ollama:latest   (default)
+#   AMD (ROCm):    --build-arg OLLAMA_BASE=ollama/ollama:rocm
+#
+# Both still run on CPU if no GPU is present, so the NVIDIA image is the safe
+# default. (If you genuinely need one artifact for both, the only real option
+# is a CPU-only build — it just won't use either GPU.)
+#
+# ---------------------------------------------------------------------------
+# Build (from the chia repo root)
+# ---------------------------------------------------------------------------
+#   # NVIDIA / CPU
+#   docker build -f dockerfiles/OllamaDockerfile \
+#       -t ghcr.io/ucb-bar/chia-ollama:latest .
+#
+#   # AMD (ROCm)
+#   docker build -f dockerfiles/OllamaDockerfile \
+#       --build-arg OLLAMA_BASE=ollama/ollama:rocm \
+#       -t ghcr.io/ucb-bar/chia-ollama:rocm .
+#
+# ---------------------------------------------------------------------------
+# Run
+# ---------------------------------------------------------------------------
+# Standalone server (no Ray), pre-pulling a model — handy for a first test:
+#   # NVIDIA
+#   docker run --rm --gpus all -p 11434:11434 \
+#       -e OLLAMA_PULL="llama3.1:8b" \
+#       ghcr.io/ucb-bar/chia-ollama:latest
+#   # AMD
+#   docker run --rm --device /dev/kfd --device /dev/dri -p 11434:11434 \
+#       -e OLLAMA_PULL="llama3.1:8b" \
+#       ghcr.io/ucb-bar/chia-ollama:rocm
+#
+# As a chia Ray worker that also serves Ollama (entrypoint backgrounds
+# `ollama serve`, then execs the command you pass):
+#   docker run --rm --gpus all -p 11434:11434 \
+#       -e OLLAMA_PULL="llama3.1:8b" \
+#       ghcr.io/ucb-bar/chia-ollama:latest \
+#       ray start --address=<head-ip>:6379 \
+#                 --resources='{"ollama_creds": 1}' --block
+#
+# Knobs (env vars):
+#   OLLAMA_PULL    space/comma-separated model tags to pull on startup
+#   OLLAMA_SERVE   set to 0 to skip launching the server (pure Ray worker)
+#   OLLAMA_HOST    bind address for the server (default 0.0.0.0:11434)
+#   OLLAMA_MODELS  model store dir (default $HOME/.ollama/models, resolved at
+#                  runtime; created if missing) — works under both Docker (root)
+#                  and unprivileged Apptainer (runs as you, mounts $HOME)
+
+ARG OLLAMA_BASE=ollama/ollama:latest
+FROM ${OLLAMA_BASE}
+
+SHELL ["/bin/bash", "-c"]
+
+# Python + Ray versions. Pinned to the exact patch the canonical chia env uses
+# (3.10.19) for reproducibility. Ray must match the head node.
+ARG PYTHON_VERSION=3.10.19
+ARG RAY_VERSION=2.54.0
+
+# Tooling: curl (server health check + miniconda download), git (chia deps),
+# bzip2 (miniconda installer), ca-certificates.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git bzip2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Miniforge — the ollama base has no Python, so we install our own controlled
+# interpreter (same role as the conda the other chia worker images inherit from
+# the rayproject base). Miniforge defaults to the conda-forge channel, which
+# avoids Anaconda's default-channel Terms-of-Service gate that now blocks
+# non-interactive `conda create` on a fresh Miniconda.
+RUN curl -fsSL "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh" \
+        -o /tmp/miniforge.sh \
+    && bash /tmp/miniforge.sh -b -p /opt/conda \
+    && rm /tmp/miniforge.sh
+ENV PATH="/opt/conda/bin:${PATH}"
+
+# A dedicated env with matching Python + Ray, plus `openai` (the SDK
+# OpenAICompatLLM/OllamaLLM import lazily — it is NOT a declared chia dep).
+RUN conda create -n py_worker python=${PYTHON_VERSION} -y -q \
+    && /opt/conda/envs/py_worker/bin/pip install --no-cache-dir -q \
+        "ray[default]==${RAY_VERSION}" openai \
+    && conda clean -afy
+
+# Install the chia package from local source — same as every other chia worker.
+COPY . /tmp/chia
+RUN /opt/conda/envs/py_worker/bin/pip install --no-cache-dir /tmp/chia \
+    && rm -rf /tmp/chia
+
+# Put the worker env first on PATH so python/ray/pip resolve to it. The `ollama`
+# binary lives at /bin/ollama (base image) and stays reachable.
+ENV PATH="/opt/conda/envs/py_worker/bin:${PATH}"
+
+# Serve on all interfaces so other Ray nodes can reach it if base_url is set to
+# this host (the OllamaLLM default of localhost works when the client runs on
+# this same node, which is the resource-gated common case).
+ENV OLLAMA_HOST=0.0.0.0:11434
+EXPOSE 11434
+
+# Entrypoint: background `ollama serve`, wait for it to come up, optionally
+# pre-pull models, then exec the passed command (e.g. `ray start ... --block`).
+# With no command, keep the server in the foreground. Overrides the base
+# image's ENTRYPOINT (["/bin/ollama"], CMD ["serve"]).
+#
+# Written inline via a BuildKit heredoc COPY (requires the `# syntax` directive
+# at the top of this file) so the whole image is self-contained in one file.
+COPY --chmod=755 <<'EOF' /usr/local/bin/chia-ollama-entrypoint.sh
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Store models under the invoking user's HOME rather than a hardcoded
+# /root/.ollama. Resolved at runtime, so it lands in /root/.ollama/models under
+# Docker (root) but in the user's home under Apptainer/Singularity (read-only
+# image, runs as you, mounts $HOME). Overridable via OLLAMA_MODELS.
+export OLLAMA_MODELS="${OLLAMA_MODELS:-${HOME:-/root}/.ollama/models}"
+mkdir -p "$OLLAMA_MODELS"
+
+if [ "${OLLAMA_SERVE:-1}" = "1" ]; then
+    ollama serve &
+    OLLAMA_PID=$!
+    # Wait (up to ~60s) for the HTTP API to accept connections.
+    for _ in $(seq 1 60); do
+        if curl -fsS "http://127.0.0.1:11434/api/version" >/dev/null 2>&1; then
+            break
+        fi
+        sleep 1
+    done
+    # Optionally pre-pull models, e.g. OLLAMA_PULL="llama3.1:8b qwen2.5:7b".
+    if [ -n "${OLLAMA_PULL:-}" ]; then
+        for m in ${OLLAMA_PULL//,/ }; do
+            echo "[chia-ollama] pulling ${m}"
+            ollama pull "${m}" || echo "[chia-ollama] WARN: failed to pull ${m}" >&2
+        done
+    fi
+fi
+
+if [ "$#" -gt 0 ]; then
+    exec "$@"
+else
+    # No command given: keep the Ollama server in the foreground.
+    wait "${OLLAMA_PID:-}"
+fi
+EOF
+
+ENTRYPOINT ["/usr/local/bin/chia-ollama-entrypoint.sh"]
+CMD []

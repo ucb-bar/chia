@@ -1,0 +1,36 @@
+# General Hammer Inputs Related to the Design and Build System
+
+# Generate Make include to aid in flow
+vlsi.core.build_system: make
+vlsi.core.max_threads: 32
+
+# Hammer will auto-generate a CPF for simple power designs; see hammer/src/hammer-vlsi/defaults.yml for more info
+vlsi.inputs.power_spec_mode: "auto"
+vlsi.inputs.power_spec_type: "cpf"
+
+# Specify clock signals
+# 100MHz target for module-level synthesis area estimation
+vlsi.inputs.clocks: [
+  {name: "clock", period: "10ns", uncertainty: "0.5ns"},
+  {name: "clock_uncore", period: "10ns", uncertainty: "0.5ns"}
+]
+
+# Specify pin properties
+# Default pin placement can be set by the tool
+# Default pin layer assignments can be found in some tech plug-ins
+vlsi.inputs.pin_mode: generated
+vlsi.inputs.pin.generate_mode: semi_auto
+
+# Placement Constraints
+vlsi.inputs.placement_constraints:
+  - path: "ChipTop"
+    type: toplevel
+    x: 0
+    y: 0
+    width: 4000
+    height: 3000
+    margins:
+      left: 10
+      right: 0
+      top: 10
+      bottom: 10

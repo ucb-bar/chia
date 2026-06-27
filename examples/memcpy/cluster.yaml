@@ -1,0 +1,84 @@
+# Minimal single-machine cluster for the memcpy RoCC example.
+#
+# Three node types — one chisel-build (chipyard), one verilator, one claude
+# (llm) — all pinned to the SAME machine (${THIS_MACHINE}). The head runs in
+# your conda env on that machine; each node type is a docker container on it.
+#
+# Usage:
+#   python -m chia.cli.main up   examples/memcpy/cluster.yaml
+#   ray job submit --working-dir . -- python examples/memcpy/memcpy_loop.py
+#   python -m chia.cli.main down examples/memcpy/cluster.yaml
+#
+# SITE-SPECIFIC — edit before first use:
+#   * The llm node mounts your Claude Code credentials/harness setup via
+#       -v /scratch/${USER}/.claude:/home/ray/.claude
+#     Point this at the dir holding your .claude (settings.json must accept the
+#     bypass-permissions disclaimer, or the CLI hangs on first launch).
+#   * ${THIS_MACHINE} / ${USER} are filled in by `chia up`.
+
+cluster_name: memcpy
+
+provider:
+    head_ip: ${THIS_MACHINE}
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: ~/.ssh/angelacui
+
+available_node_types:
+
+    chisel_build:
+        resources: {"chipyard": 1}
+        num_workers: 1
+        compatible_ips: ["${THIS_MACHINE}"]
+        worker_setup_commands: ["source /home/ray/chipyard/env.sh"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "memcpy-chisel-build-${USER}"
+            pull_before_run: False
+            pull_timeout: 7200  # chia-chisel-build is large; default 600s is too short
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+
+    verilator_run:
+        resources: {"verilator_run": 1}
+        num_workers: 1
+        compatible_ips: ["${THIS_MACHINE}"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "memcpy-verilator-${USER}"
+            pull_before_run: False
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+
+    llm:
+        resources: {"llm": 1}
+        num_workers: 1
+        compatible_ips: ["${THIS_MACHINE}"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "memcpy-claude-code-${USER}"
+            pull_before_run: False
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "--user $(id -u):$(id -g)"
+                # Mount the .claude directory for credentials
+                - "-v /scratch/${USER}/.claude:/home/ray/.claude"
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                # Empty working directory the Claude Code process chdirs into.
+                - mkdir -p /home/ray/llm_env
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+# head_setup_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --dashboard-port=8081 --include-dashboard=True --dashboard-agent-listen-port=0 --temp-dir=/tmp/ray/${USER}
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

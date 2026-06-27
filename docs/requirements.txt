@@ -1,0 +1,7 @@
+# Docs dependencies now live as the `docs` extra in ../pyproject.toml
+# (single source of truth). Read the Docs installs that extra directly via
+# .readthedocs.yaml; this file just forwards to it for local/CI workflows.
+#
+#   pip install -r docs/requirements.txt   # run from the repo root
+#   pip install -e ".[docs]"               # equivalent
+.[docs]

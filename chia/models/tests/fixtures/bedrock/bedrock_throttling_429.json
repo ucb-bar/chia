@@ -1,0 +1,9 @@
+{
+  "label": "bedrock_throttling_429",
+  "provider": "bedrock-runtime converse",
+  "how_produced": "SYNTHETIC \u2014 ThrottlingException (can't trigger deterministically here)",
+  "code": "ThrottlingException",
+  "message": "Too many requests, please wait before trying again.",
+  "http_status": 429,
+  "expected_chia": "RateLimitError"
+}
