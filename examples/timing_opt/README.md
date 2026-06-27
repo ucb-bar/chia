@@ -86,6 +86,11 @@ Results are recorded in the `llm_experiments` table via the head-pinned
 
 ## Running
 
+**Note that running this flow requires creating a logical worker environment with Genus. 
+We do not want to expose details of how to do this for the commercial tool 
+publicly, but if you have Genus licenses, you should feel free to reach out 
+to us for help setting this up.**
+
 `improve_timing.py` is the entry point. With an empty DB it seeds the baseline,
 then optimizes from it:
 
@@ -187,13 +192,15 @@ slack / achievable frequency vs. a target period:
 > relpaths, the editable `chia` checkout, and the cluster keys/hosts. See
 > [Paths to fill in](#paths-to-fill-in) for the complete checklist.
 
+SKY130 collateral can be acquired here: https://github.com/fossi-foundation/open-pdks
+
 - **Ray cluster** with `chipyard`, `verilator_run`, `VLSI`/`Syn`, and `llm`
   resources. `timing_cluster.yaml` is a reference topology; `env.yml` is the
   conda env.
 - **Synthesis collateral** on the VLSI/chipyard workers: CACTI
   (`constants.CACTI_PATH`) and the sky130 collateral
   (`constants.SKY130_COL_PATH`). We cannot provide a Docker container with
-  commercial tools.
+  commercial tools. A cacti docker container is available, and the SKY130 collateral can be acquired here: https://github.com/fossi-foundation/open-pdks
 - **Test binaries** under `verilatorbins/` (`asmtests/`, `embench/`) — a git submodule; the `ubench` subdirs are
   git-ignored from the Ray upload. `dramsim_ini/` ships alongside for the
   verilator runs.
@@ -225,7 +232,7 @@ the flow will run end-to-end. The complete checklist, by file:
 | `constants.py` | `/path/to/…` defaults for the synth obj_dir scratch, sky130 collateral, and CACTI binary | prefer setting the `TIMING_OPT_*` env vars instead of editing the file — see the env-var table below |
 | `sky130_vlsi/tools-chia.yml` | `synthesis.genus.genus_bin: "/path/to/cadence/GENUS"` and `cadence.cadence_home: "/path/to/cadence"` | absolute path to your synthesis tool binary and Cadence install root on the synth workers |
 | `env.yml` | `- -e /path/to/chia` | path to your editable `chia` checkout (pip `-e` install in the conda env) |
-| `timing_cluster.yaml` | `${HEAD_IP}`, `KeyName: CHANGE_ME_ec2_key` (×2), `${GHCR_USER}`/`${GITHUB_TOKEN}`, and the stubbed `vlsi` node `docker.image` + `compatible_ips` | your head IP, EC2 key-pair, GHCR creds, and synth-worker image/hosts — details in the "`timing_cluster.yaml`" subsection below |
+| `timing_cluster.yaml` | `${HEAD_IP}`, `KeyName: CHANGE_ME_ec2_key` (×2), and the stubbed `vlsi` node `docker.image` + `compatible_ips` | your head IP, EC2 key-pair, and synth-worker image/hosts — details in the "`timing_cluster.yaml`" subsection below |
 | `boom_tile_syn.py` *(only if you run the standalone variant-sweep script, not the main flow)* | `OPTS_DIR = Path("PATH/TO/OPTS")`, `BASE_MEMS_CONF_PATH` (`# USER MUST FILL IN`) | the variants directory to synthesize and the base `.top.mems.conf` path |
 
 `sky130_vlsi/tech-sky130.yml`'s `basepath: "/path/to/base/"` is intentionally
@@ -248,8 +255,6 @@ the flow will run end-to-end. The complete checklist, by file:
 `chia up`:
 
 - `KeyName: CHANGE_ME_ec2_key` (×2) — your EC2 key-pair name (edit literally).
-- `${GHCR_USER}` and `${GITHUB_TOKEN}` — GHCR login for the docker images
-  (exported into the node env, like the existing `${GITHUB_TOKEN}`).
 - **`vlsi` synthesis worker** — left as a stub in the yaml. Our runs used
   Cadence Genus (sky130 PDK), but the tool image, its licensing, and the PDK
   collateral are commercial and intentionally omitted. Provide a worker that
@@ -282,13 +287,9 @@ alongside:
 git submodule update --init examples/timing_opt/verilatorbins
 ```
 
-**3. Bring up the cluster.** `chia up` expands `${HEAD_IP}`, `${USER}`, and the
-GHCR creds from your shell (after you've set the `KeyName` and `vlsi` worker in
-`timing_cluster.yaml`):
+**3. Bring up the cluster.** `chia up` expands `${HEAD_IP}`, `${USER}`
 ```bash
 export HEAD_IP=10.0.0.10            # host running the Ray head
-export GHCR_USER=<your-ghcr-user>
-export GITHUB_TOKEN=<ghcr-PAT>      # read:packages
 chia up examples/timing_opt/timing_cluster.yaml
 ```
 The first bring-up is slow — it pulls the large chipyard/verilator images.

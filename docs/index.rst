@@ -51,6 +51,7 @@ received thorough testing. Bugs throughout CHIA are likely.
 
 ..    case-studies/gem5-alignment
 ..    case-studies/circt-issue-solving
+..    case-studies/timing-optimization
 
 .. toctree::
    :maxdepth: 2
