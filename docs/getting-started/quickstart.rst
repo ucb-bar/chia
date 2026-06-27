@@ -30,8 +30,17 @@ The chia/examples/hello-world directory contains checkpoints of the code after e
 0. Project Setup
 ----------------
 
-Start by creating a directory for the project on your machine. Open a shell in that directory and activate the conda environment where you have installed CHIA. We will assume in this tutorial that this environment is named ``chia_env``. 
+Start by creating a directory for the project on your machine. Open a shell in that directory and activate the conda environment where you have installed CHIA. We will assume in this tutorial that this environment is named ``chia_env``.
 
+If you have not yet set up the ``chia_env`` environment, create it and install CHIA. CHIA requires **Python 3.10.19** (matching the Python in the Docker images).
+
+.. code-block:: bash
+
+    conda create -n chia_env python=3.10.19
+    conda activate chia_env
+    pip install -e /path/to/chia
+
+Then create a directory for the project and activate the environment:
 
 .. code-block:: bash
 
@@ -41,6 +50,20 @@ Start by creating a directory for the project on your machine. Open a shell in t
 
 You should assume that, unless otherwise specified, all commands in this tutorial are run from within the chia_env conda environment and in the project's directory.
 
+Fix default ``.bashrc``
+~~~~~~~~~~~~~~~~~~~~~~
+
+We need various parts of the ``~/.bashrc`` file to execute even in non-interactive mode. To do so, edit your ``~/.bashrc`` file so that the following section is removed:
+
+Edit your ``~/.bashrc`` file so that the following section is removed:
+
+.. code-block:: bash
+
+    # If not running interactively, don't do anything
+    case $- in
+         *i*) ;;
+           *) return;;
+    esac
 
 1. ``print()`` ing Hello from a worker
 --------------------------------------
@@ -137,7 +160,16 @@ In general, the these commands should source your shell environment scripts (lik
         - "ray stop"
         - "ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0"
 
-That's our cluster! With all of these keys in our ``cluster.yaml``, we can now run the following command to create the cluster:
+That's our cluster! With all of these keys in our ``cluster.yaml``, we can now run the following command to create the cluster.
+
+Since our configuration references ``${THIS_MACHINE}``, first export it to the head machine's IP address:
+
+.. code-block:: bash
+
+    export THIS_MACHINE=$(hostname -I | awk '{print $1}')
+    echo $THIS_MACHINE # This should be the IP address of the machine you are running on
+
+Then bring up the cluster:
 
 .. code-block:: bash
 
@@ -342,12 +374,16 @@ Next, we will add a new import and a small block to our flow script which prompt
 
         get(print_hello_world.chia_remote()) # Already here
 
+        # YOUR JOB: ADD THIS CODE BLOCK
+
+        # ====== New code starts here ======
         llm = OpenCodeLLM(model="opencode/big-pickle")
         resp : QueryResult = get(llm.prompt.chia_remote(llm,
             "Can you please respond exactly \"Hello World (#3) from OpenCode!\""
         ))
         print("LLM Responded:")
         print(resp.result)
+        # ====== New code ends here ======
 
         # Already here
         c_src = Path("helloworld.c").read_text(encoding="utf-8")
