@@ -368,6 +368,7 @@ class CodexLLM(LLMCallBase):
         from chia.trace.profiler import get_profiler
 
         profiler = get_profiler()
+        last_error = ""
         for attempt in range(self.retries):
             try:
                 tool_list = tools or []
@@ -397,21 +398,24 @@ class CodexLLM(LLMCallBase):
                                         attempt + 1, self.retries)
                     continue
                 raise
-            except ServerError:
+            except ServerError as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
                 backoff = min(5 * 2 ** attempt, 60)
                 self.logger.warning("Server error on attempt %d/%d, backing off %ds",
                                     attempt + 1, self.retries, backoff)
                 _time.sleep(backoff)
             except (UnknownCodexError, subprocess.TimeoutExpired) as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
                 self.logger.warning("Codex attempt %d/%d failed: %s",
                                     attempt + 1, self.retries, exc)
             except Exception as exc:
+                last_error = f"{type(exc).__name__}: {exc}"
                 self.logger.warning("Unexpected Codex error on attempt %d/%d: %s",
                                     attempt + 1, self.retries, exc)
         return CodexQueryResult(
             result="",
             returncode=-1,
-            stderr="",
+            stderr=last_error,
             stream_result="",
             success=False,
             session_id=self._session_id,

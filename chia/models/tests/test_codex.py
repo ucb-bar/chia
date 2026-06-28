@@ -357,6 +357,26 @@ def test_classify_errors(message, error_cls, returncode, monkeypatch):
         CodexLLM()._classify_error(_cli(returncode=returncode, stderr=message))
 
 
+def test_prompt_preserves_final_retry_error(monkeypatch):
+    _disable_profiler(monkeypatch)
+    monkeypatch.setattr(CodexLLM, "_get_node_id", lambda self: "test-node")
+    calls = 0
+
+    def fake_run_codex(self, user_message, tools):
+        nonlocal calls
+        calls += 1
+        return _cli(returncode=1, stderr="something surprising")
+
+    monkeypatch.setattr(CodexLLM, "_run_codex", fake_run_codex)
+    cli = CodexLLM(retries=2).prompt("hello", tools=[])
+
+    assert calls == 2
+    assert cli.success is False
+    assert cli.returncode == -1
+    assert "UnknownCodexError" in cli.stderr
+    assert "something surprising" in cli.stderr
+
+
 live = pytest.mark.skipif(
     os.environ.get("CODEX_LIVE_TEST") != "1" or not shutil.which("codex"),
     reason="set CODEX_LIVE_TEST=1 and authenticate codex to run live tests",
