@@ -109,7 +109,10 @@ html_theme_options = {
 html_logo = 'chia-logo-inv.png'
 html_static_path = ['_static']
 html_css_files = ['custom.css']
-html_context = {"version": version}
+html_context = {
+    "version": version,
+    "cf_beacon_token": os.environ.get("CF_BEACON_TOKEN", ""),
+}
 
 # -- Options for LaTeX (PDF) output ------------------------------------------
 

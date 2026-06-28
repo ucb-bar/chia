@@ -1,0 +1,12 @@
+{% extends "!layout.html" %}
+
+{# Inject the Cloudflare Web Analytics beacon into every page's <head>.
+   The token is set via the CF_BEACON_TOKEN environment variable in conf.py. #}
+{% block extrahead %}
+  {{ super() }}
+  {% if cf_beacon_token %}
+  <script defer
+          src="https://static.cloudflareinsights.com/beacon.min.js"
+          data-cf-beacon='{"token": "{{ cf_beacon_token }}"}'></script>
+  {% endif %}
+{% endblock %}
