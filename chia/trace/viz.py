@@ -660,7 +660,7 @@ def render_flow(
     dot = graphviz.Digraph(format=fmt)
     dot.attr(
         rankdir="TB", fontname="Helvetica",
-        label=f"Chia Flow: {orchestrator.name}()\n{Path(source_path).name}",
+        label=f"Chia Loop: {orchestrator.name}()\n{Path(source_path).name}",
         labelloc="t", fontsize="16",
     )
     dot.attr("node", fontname="Helvetica", fontsize="11")

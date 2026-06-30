@@ -1,7 +1,7 @@
 ChiaFunction
 ============
 
-``ChiaFunction`` is the core primitive of a CHIA flow. The ``@ChiaFunction``
+``ChiaFunction`` is the core primitive of a CHIA loop. The ``@ChiaFunction``
 decorator turns *any* Python function into a **node**, a unit of work that can
 be scheduled onto a worker in the cluster, chained into a task graph, profiled,
 cached, and bypassed. This page explains the Ray concepts the rest of the docs
@@ -18,7 +18,7 @@ CHIA is built on the `Ray <https://www.ray.io/>`_ distributed-computing
 platform, and the docs use Ray's vocabulary throughout. You do not need to know
 Ray to use CHIA, but these terms recur:
 
-- **Driver** — the process running your flow script (the ``main()`` you submit
+- **Driver** — the process running your loop script (the ``main()`` you submit
   with ``python ...`` or ``chia job submit ...``). It runs on the cluster's head node, dispatches
   work, and collects results.
 
@@ -157,7 +157,7 @@ To override the decorator-level options for a single dispatch, use
    ).chia_remote(cb_node)
 
 Any keyword that Ray's ``.options()`` accepts is supported. The
-ones CHIA flows reach for in practice are:
+ones CHIA loops reach for in practice are:
 
 - **``resources``** — the resource labels (and quantities) a worker must offer
   to run the node. E.g. tag a function with ``@ChiaFunction(resources={"chipyard": 1})``
@@ -194,7 +194,7 @@ is not a ``@ChiaFunction``. Use whichever reads better at the call site:
 Collecting results
 ------------------
 
-``get()`` is the basic collector and is usually all you need. For flows that
+``get()`` is the basic collector and is usually all you need. For loops that
 dispatch many tasks and want to react as each finishes, or that run long enough
 to hit a wedged worker, CHIA provides ``chia_wait``, a drop-in replacement for
 ``ray.wait`` that operates on :class:`TrackedRef` objects (an ``ObjectRef``
@@ -321,8 +321,8 @@ at once, with no change to the decorated function.
 See also
 --------
 
-- :doc:`/getting-started/quickstart` — a hands-on flow that uses every mode above.
+- :doc:`/getting-started/quickstart` — a hands-on example that uses every mode above.
 - :doc:`/concepts/overview` — how nodes, edges, workers, and clusters fit together.
 - :doc:`/user_guides/caching_and_bypass` — the ``_chia_tag`` cache/replay workflow.
-- :doc:`/user_guides/profiling` — recording and visualizing a flow's execution.
+- :doc:`/user_guides/profiling` — recording and visualizing a loop's execution.
 - :ref:`cli-viz-profile` — rendering a recorded profile from the CLI.

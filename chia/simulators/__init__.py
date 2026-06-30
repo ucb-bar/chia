@@ -1,4 +1,4 @@
-"""chia.simulators — simulator build/run nodes for Chia flows."""
+"""chia.simulators — simulator build/run nodes for CHIA loops."""
 
 from chia.simulators.gem5 import (
     Gem5Node,

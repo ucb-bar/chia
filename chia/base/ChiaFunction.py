@@ -655,7 +655,7 @@ def get(
     callback: Optional[Callable[[Any], Any]] = None,
     _use_object_store: bool = False,
 ) -> Union[Any, List[Any]]:
-    """Wrapper around ``ray.get()`` for use in Chia flows.
+    """Wrapper around ``ray.get()`` for use in Chia loops.
 
     Delegates to :func:`ray.get` and post-processes the result through
     the Chia profiler. Overloads mirror :func:`ray.get` so a single

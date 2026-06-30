@@ -1,11 +1,11 @@
-"""chia.database.sqlite_node — generic colocated SQLite store for chia flows.
+"""chia.database.sqlite_node — generic colocated SQLite store for chia loops.
 
 :class:`SQLiteNode` is a :class:`~chia.database.base.DatabaseNode` (and thus
 a :class:`~chia.base.colocated.ColocatedNode`) whose member
 ``@ChiaFunction``\\ s all operate on one SQLite database file.  Because
 every member is pinned to the same machine, they all see the same file —
 that colocation guarantee is what makes a plain on-disk SQLite database a
-safe shared store for a distributed chia flow.  SQL placeholders are
+safe shared store for a distributed chia loop.  SQL placeholders are
 sqlite's ``paramstyle = "qmark"`` (``?`` positional, ``:name`` named); see
 :class:`~chia.database.postgres_node.PostgresNode` for the client-server
 sibling.

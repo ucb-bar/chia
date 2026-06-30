@@ -1,17 +1,17 @@
 Architecture Overview
 =====================
 
-A **CHIA project** is a composition of two pieces: a **flow** and a **cluster**.
+A **CHIA project** is a composition of two pieces: a **loop** and a **cluster**.
 
-- A **flow** is an orchestration script that defines a pipeline of tasks — the
+- A **loop** is an orchestration script that defines a pipeline of tasks — the
   *what to do*.
 - A **cluster** is the collection of computers those tasks are scheduled onto — the
   *where and how it runs*.
 
-CHIA flows
+CHIA loops
 ----------
 
-A flow can be described as a **graph**: the nodes are tasks (functions) and the
+A loop can be described as a **graph**: the nodes are tasks (functions) and the
 edges are the data and control flow between them. CHIA treats both **programmatic**
 and **agentic** edges as first-class primitives, and any function can be driven
 either way.
@@ -52,7 +52,7 @@ docstring becomes the description the model sees.
 CHIA clusters
 -------------
 
-A flow needs diverse infrastructure working in tandem: different nodes need
+A loop needs diverse infrastructure working in tandem: different nodes need
 different *physical* hardware (FireSim needs FPGAs) and different *software*
 environments (dependencies, credentials, isolation). The cluster provides this.
 
@@ -103,8 +103,8 @@ CHIA is built for long, expensive runs:
   required resources. Clusters can grow at runtime — ``chia up --add`` adds resources
   to a live cluster (and reintegrates recovered nodes) with no downtime.
 - **Process-leak prevention** — CHIA tracks the processes a node spawns and stops
-  them when the node or flow is stopped or cancelled.
-- **Caching & bypass** — a flow can reuse a node's cached result instead of
+  them when the node or loop is stopped or cancelled.
+- **Caching & bypass** — a loop can reuse a node's cached result instead of
   recomputing it, so it can restart quickly from anywhere after a crash and bypass
   nondeterministic nodes.
 - **Profiling & visualization** record what ran where and for how long.
@@ -114,7 +114,7 @@ Infrastructure
 
 CHIA curates a set of existing tools into a single fabric. The
 `Ray <https://www.ray.io/>`_ distributed-computing platform is the substrate beneath
-CHIA's flows and clusters — providing scheduling, distributed execution, fault
+CHIA's loops and clusters — providing scheduling, distributed execution, fault
 tolerance, and data collection. Ray was chosen over alternatives like LangGraph, the
 Microsoft Agent Framework, and Apache Airflow for its expressive control-flow
 semantics, fine-grained flexible scheduling, and distributed execution and fault

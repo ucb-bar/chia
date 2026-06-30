@@ -7,16 +7,16 @@ A hardware-design workflow is any sequence of steps you need to execute in the p
 
 CHIA boils a workflow down into two pieces:
 
-- **Flows/Loops** — a CHIA flow, or CHIA loop, is a Python script that describes the orchestration of a pipeline of tasks, and the data and control flow between them.
-  These flows form a graph of sorts, so we often call tasks "*nodes*", and control/data
+- **Loops** — a CHIA loop is a Python script that describes the orchestration of a pipeline of tasks, and the data and control flow between them.
+  These loops form a graph of sorts, so we often call tasks "*nodes*", and control/data
   flow between them "*edges*". Notably, any Python function can be a CHIA node.
-  LLMs and agents are first-class participants — both as nodes in a flow and
-  as orchestrators of the flow. Because flows are just code over a
+  LLMs and agents are first-class participants — both as nodes in a loop and
+  as orchestrators of the loop. Because loops are just code over a
   library of (often open-source) nodes, rearranging, scaling up, or completely
-  reinventing a flow takes little more than changing some function calls and loop
+  reinventing a loop takes little more than changing some function calls and loop
   bounds.
 
-- **Clusters** — a cluster is the collection of computers a flow executes on. You
+- **Clusters** — a cluster is the collection of computers a loop executes on. You
   assemble a group of physical machines and, on top of them, define *logical workers* that
   expose virtualized hardware resources (CPU cores, GPUs, accelerators, FPGAs) and
   software resources (dependencies, environments, isolation, credentials). Nodes
