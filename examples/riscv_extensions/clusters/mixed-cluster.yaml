@@ -1,0 +1,184 @@
+# =============================================================================
+# CHIA cluster TEMPLATE — RISC-V extension loop, compute on AWS
+#
+#   AWS  (chia launches these for you):   build, cosim, riscv_build
+#   ON-PREM (you fill IPs + your key):    head, llm, database, gen(dv)
+#
+# Why those stay on-prem:
+#   - gen (riscv-dv) needs Xcelium at /ecad — only exists on-prem; can't run on AWS
+#   - head — chia ALWAYS runs the Ray head locally (the box you run `chia up` from)
+#   - llm / database — kept local by choice
+#
+# >>> BEFORE `chia up`, on the head, run:   ulimit -n 1048576
+#     Each AWS tunnel forwards many ports; the default 1024 fd limit jams them
+#     (build/cosim hang with "timed out before SETTINGS frame"). This raises it.
+#
+# FILL every <...> placeholder below.
+# =============================================================================
+
+cluster_name: mixed-prem-aws-no-synth
+
+provider:
+    head_ip: &head_ip ${HEAD_IP}
+    # llm/db/gen all default to this one box. To run any on a SEPARATE on-prem
+    # machine, add its IP to this list and to that node's compatible_ips.
+
+auth:
+    ssh_user: ${USER}                        # on-prem login user
+    # ssh_private_key: <ONPREM_KEY_PATH>     # omit this line to use your ssh-agent
+
+# Small Ray worker-port range so the AWS SSH tunnels don't exhaust file descriptors.
+tunnel_defaults:
+    ray_worker_port_min: 30000
+    ray_worker_port_max: 30100
+
+available_node_types:
+
+    # ------------------------- ON-PREM -------------------------
+    head_local:
+        resources: {"head_local": 8}
+        num_workers: 1
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+        compatible_ips: [*head_ip]
+
+    llm:
+        resources: {"llm": 4}
+        num_workers: 2
+        compatible_ips: [*head_ip]
+        docker:                                            # self-contained claude CLI (matches examples/memcpy)
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "chia-claude-code-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                - "--user $(id -u):$(id -g)"               # run as self so the mounted creds are readable
+                - "-v ${HOME}/.claude:/home/ray/.claude"   # real Claude Code creds live in $HOME, NOT /scratch
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                - mkdir -p /home/ray/llm_env               # empty cwd the claude CLI chdirs into
+
+    database:
+        resources: {"database": 2}
+        num_workers: 1
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+        compatible_ips: [*head_ip]
+
+    gen:                                               # riscv-dv generation — MUST be on-prem (Xcelium /ecad)
+        resources: {"dv": 1, "xcelium": 1}
+        num_workers: 4
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-dv:latest"
+            container_name: "chia-riscv-dv-${USER}"
+            pull_before_run: True
+            run_options:
+                - -v /ecad:/ecad:ro                    # Xcelium + FlexLM license (on-prem path)
+        compatible_ips: [*head_ip]
+
+    # Synthesis (PPA) — ON-PREM only (Genus + sky130 + license; can't run on AWS).
+    # num_workers:0 = off (matches this cluster's "no-synth"). To enable: fill image,
+    # bump num_workers, and set VEXT_SKY130_COL_PATH / VEXT_CACTI_PATH to in-image paths.
+    vlsi:
+        resources: {"VLSI": 4, "Syn": 1, "cacti": 4}
+        num_workers: 0
+        docker:
+            image:  # FILL — genus + hammer + cacti + sky130 PDK image
+            container_name: "chia-genus-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+        compatible_ips: [*head_ip]
+
+    # ------------------------- AWS (chia launches; no IPs to fill) -------------------------
+    build:
+        resources: {"chipyard": 1}
+        num_workers: 1
+        worker_env_commands: ["cd /home/ray/chipyard && source env.sh"]
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "chia-chisel-build-${USER}"
+            pull_before_run: True
+            pull_timeout: 7200                         # ~47 GB image — needs a long pull window
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: ["@build_aws:0"]
+
+    cosim:
+        resources: {"verilator_run": 4}
+        num_workers: 4
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: ["@cosim_aws:0", "@cosim_aws:1", "@cosim_aws:2", "@cosim_aws:3"]
+
+    riscv_build:                                       # cross-compiles directed-test ELFs
+        resources: {"riscv_build": 4}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-cross:latest"
+            container_name: "chia-riscv-cross-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+        compatible_ips: ["@riscv_build_aws:0"]
+
+# AWS instances chia launches (boto3 on `chia up`). Same EC2 key for all.
+aws_nodes:
+    region: us-east-1
+
+    build_aws:
+        KeyName: ${VEXT_EC2_KEYNAME}                        # your EC2 key-pair name (in AWS)
+        ssh_private_key: ${VEXT_EC2_KEYFILE}                # path to that key's .pem on the head
+        InstanceType: c5.9xlarge
+        count: 1
+        ImageId: ami-0ec10929233384c7f                # chia AWS AMI (docker preinstalled)
+        ssh_user: ubuntu
+        # chia images are PUBLIC on GHCR — no docker login / token needed
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 512                      # build image + chipyard tree are large
+                  VolumeType: gp3
+
+    cosim_aws:
+        KeyName: ${VEXT_EC2_KEYNAME}
+        ssh_private_key: ${VEXT_EC2_KEYFILE}
+        InstanceType: c5.9xlarge
+        count: 4
+        ImageId: ami-0ec10929233384c7f
+        ssh_user: ubuntu
+        # chia images are PUBLIC on GHCR — no docker login / token needed
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 300
+                  VolumeType: gp3
+
+    riscv_build_aws:
+        KeyName: ${VEXT_EC2_KEYNAME}
+        ssh_private_key: ${VEXT_EC2_KEYFILE}
+        InstanceType: c5.2xlarge
+        count: 1
+        ImageId: ami-0ec10929233384c7f
+        ssh_user: ubuntu
+        # chia images are PUBLIC on GHCR — no docker login / token needed
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 50
+                  VolumeType: gp3
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
