@@ -6,15 +6,15 @@ In this brief introduction to using CHIA, we explore 4 ways you can use CHIA to 
 What we will do in this tutorial
 --------------------------------
 
-As we describe in :doc:`chia-basics </getting-started/chia-basics>`, a CHIA workflow consists of two parts: a flow and a cluster. The flow is a Python script which orchestrates loops and sequences of tasks, and a cluster is the compute substrate on which a flow executes.
+As we describe in :doc:`chia-basics </getting-started/chia-basics>`, a CHIA workflow consists of two parts: a loop and a cluster. The loop is a Python program which orchestrates tasks The cluster is the compute substrate on which a loop executes.
 
-In this tutorial, we will design a simple CHIA workflow (both flow and cluster) to say Hello.
+In this tutorial, we will design a simple CHIA workflow (both loop and cluster) to say Hello.
 
-First, we will build a very simple cluster (only requiring a single machine, with the option to use multiple) with a few worker nodes from `Chipyard <https://chipyard.readthedocs.io/en/stable/>`_, and write a flow which prints "Hello World!" from a worker in the cluster.
+First, we will build a very simple cluster (only requiring a single machine, with the option to use multiple) with a few worker nodes from `Chipyard <https://chipyard.readthedocs.io/en/stable/>`_, and write a loop which prints "Hello World!" from a worker in the cluster.
 
 Second, we will use that simple cluster to build a verilator simulator of an in-order RocketChip core in Chipyard, compile a C program which prints "Hello World!" for the RocketChip core, and run the program in our Verilator simulator.
 
-Third, we will add an OpenCode AI agent to the cluster and flow, and ask it to say "Hello World!"
+Third, we will add an OpenCode AI agent to the cluster and loop, and ask it to say "Hello World!"
 
 Fourth, and finally, we will ask the AI agent to edit our RocketChip's RTL using an MCP tool. We will ask it to add a line to the RocketChip source which prints to the Verilator output "Hello World!" after 1000 instructions have been committed by the processor.
 
@@ -112,7 +112,7 @@ Now, we will specify our logical workers to map onto our physical machines. As d
                     - --shm-size=10.24gb # More shared memory
                 pull_timeout: 7200 # default is 600 seconds but chia-chisel-build is large
 
-Node types are specified under the ``available_node_types`` key, where subkeys are the names of different node types. Below, we introduce a node type named ``hello_chipyard``. This node exposes a resource named "chipyard" broadcasting to the flow that it has chipyard available. We will look at how this is leveraged later in this tutorial. We also specify the number of workers we want of this type (1), the IP addresses/hostnames of machines which can support this worker type (your head node machine or optionally another machine you have available to you), and a set of commands which are run before executing any tasks on this worker (in this case we source the chipyard environment shell script). 
+Node types are specified under the ``available_node_types`` key, where subkeys are the names of different node types. Below, we introduce a node type named ``hello_chipyard``. This node exposes a resource named "chipyard" broadcasting to the program that it has chipyard available. We will look at how this is leveraged later in this tutorial. We also specify the number of workers we want of this type (1), the IP addresses/hostnames of machines which can support this worker type (your head node machine or optionally another machine you have available to you), and a set of commands which are run before executing any tasks on this worker (in this case we source the chipyard environment shell script). 
 
 Finally, we also specify a docker ``image`` (we will use CHIA provided Docker images for Chipyard and Verilator), a ``container_name``, arguments to pass to Docker during container construction (``run_options``), and in the Chipyard case, a large ``pull_timeout`` because the Chipyard container is fairly large. Container names are appended with numbers so that multiple workers can be constructed of a given type without any container naming conflicts. When multiple CHIA users are sharing a system, we recommend including your username in the container name.
 
@@ -175,7 +175,7 @@ Then bring up the cluster:
 
     chia up cluster.yaml
 
-Now let's write the simplest CHIA flow we could write: a flow that dispatches a ``print()`` statement onto any available worker in the cluster. Create a script called ``hello-world.py``, and add the following lines:
+Now let's write the simplest CHIA loop we could write: a loop that dispatches a ``print()`` statement onto any available worker in the cluster. Create a script called ``hello-world.py``, and add the following lines:
 
 .. code-block:: python
 
@@ -213,7 +213,7 @@ In the output you should see lots of messages from the cluster, including a line
 2. Print Hello in Verilator
 ---------------------------
 
-In this step, we will show how you can leverage CHIA to easily use existing hardware design tools. Our example uses Chipyard and Verilator. Specifically, we will add the following three things into our CHIA flow:
+In this step, we will show how you can leverage CHIA to easily use existing hardware design tools. Our example uses Chipyard and Verilator. Specifically, we will add the following three things into our CHIA loop:
 
 (1) Compiling a single-file C program to run on RocketChip using a custom CHIA node.
 (2) Elaborating a RocketChip core and building a Verilator simulator for it using a provided CHIA node.
@@ -355,7 +355,7 @@ We can expand our already running cluster with the following command.
 
 This version of ``chia up`` looks at the already running cluster, and compares it to the current configuration in cluster.yaml. CHIA will attempt to bring up any workers which were not yet instantiated or which have died.
 
-Next, we will add a new import and a small block to our flow script which prompts OpenCode using the free ``big-pickle`` model.
+Next, we will add a new import and a small block to our script which prompts OpenCode using the free ``big-pickle`` model.
 
 .. code-block:: python
 
@@ -420,7 +420,7 @@ In the output of this run, you should now see the following lines:
 
 Finally, we get to tie all of this together with a nice demonstration of a very natural use-case for CHIA: LLMs writing RTL. Specifically, we are going to ask an LLM to have our RocketChip core print "Hello World (#4) from instruction 1000!" when the core has retired it's 1000th instruction.
 
-In our flow, let's start with the following new import, the ``BashTool``.
+In our example, let's start with the following new import, the ``BashTool``.
 
 .. code-block:: python
 

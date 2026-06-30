@@ -1,4 +1,4 @@
-"""General-purpose CIRCT chia nodes — firtool lowering, circt-opt invocation, custom-pass rebuild, ninja builds, lit runs, plus async MCP tool wrappers — usable from any chia flow.
+"""General-purpose CIRCT chia nodes — firtool lowering, circt-opt invocation, custom-pass rebuild, ninja builds, lit runs, plus async MCP tool wrappers — usable from any chia loop.
 
 These primitives wrap the CIRCT toolchain (firtool, circt-opt) plus chipyard's
 Chisel elaboration target so that any CHIA user can compose a CIRCT-driven flow

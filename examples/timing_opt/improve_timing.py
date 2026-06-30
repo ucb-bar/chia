@@ -1,4 +1,4 @@
-"""Chia flow that reduces BoomTile critical-path delays.
+"""Chia loop that reduces BoomTile critical-path delays.
 
 Given a parent branch in the SQLite-backed DB (see db.py) that has already been
 built and synthesized, and asks Claude to edit Chisel to shorten critical paths,

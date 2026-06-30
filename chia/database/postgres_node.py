@@ -1,4 +1,4 @@
-"""chia.database.postgres_node — generic PostgreSQL client node for chia flows.
+"""chia.database.postgres_node — generic PostgreSQL client node for chia loops.
 
 SQL placeholders are psycopg's
 ``paramstyle = "format"`` (``%s`` positional, ``%(name)s`` named) — SQL

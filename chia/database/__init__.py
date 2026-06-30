@@ -1,4 +1,4 @@
-"""chia.database — generic colocated database nodes for Chia flows."""
+"""chia.database — generic colocated database nodes for Chia loops."""
 
 from chia.database.base import (
     DatabaseNode,

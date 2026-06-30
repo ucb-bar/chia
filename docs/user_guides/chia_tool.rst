@@ -2,7 +2,7 @@ ChiaTool
 ========
 
 ``ChiaTool`` is the primitive CHIA uses to allow an **AI
-agent** to orchestrate control of the flow. Where ``chia_remote(...)`` creates a node that your flow
+agent** to orchestrate control of the loop. Where ``chia_remote(...)`` creates a node that your flow
 dispatches programmatically — a programmatic edge in the task graph — a ``ChiaTool`` stands up an
 `MCP <https://modelcontextprotocol.io/>`_ server on a worker that an *agent* can
 call on its own initiative. That is an **agentic edge**: you give the agent a
@@ -307,6 +307,6 @@ See also
 --------
 
 - :doc:`/user_guides/chia_function` — the programmatic counterpart; tools call nodes via ``chia_remote_blocking``.
-- :doc:`/getting-started/quickstart` — a hands-on flow that ends with an agent using a ``BashTool`` to edit RTL.
+- :doc:`/getting-started/quickstart` — a hands-on example that ends with an agent using a ``BashTool`` to edit RTL.
 - :doc:`/concepts/overview` — how nodes, tools, agents, workers, and clusters fit together.
-- :doc:`/user_guides/profiling` — recording and visualizing a flow's execution, including agent calls.
+- :doc:`/user_guides/profiling` — recording and visualizing a loop's execution, including agent calls.

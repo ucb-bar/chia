@@ -43,7 +43,7 @@ def main():
                              help="Enable verbose (DEBUG) logging")
 
     # chia viz
-    viz_parser = subparsers.add_parser("viz", help="Visualize a Chia flow graph")
+    viz_parser = subparsers.add_parser("viz", help="Visualize a Chia loop graph")
     viz_parser.add_argument("source_file", help="Path to a Python file with @ChiaFunction calls")
     viz_parser.add_argument("--func", default=None,
                             help="Orchestrator function name (auto-detected if omitted)")

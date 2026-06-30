@@ -1,6 +1,6 @@
 # circt_issue_solver — autonomous CIRCT GitHub-issue solver (CHIA example)
 
-A CHIA flow which triages open CIRCT issues and, for each candidate, drives a sequence of agents through
+A CHIA loop which triages open CIRCT issues and, for each candidate, drives a sequence of agents through
 **assess → reproduce → fix → verify → (regression repair) → writeup** inside a
 real CIRCT checkout (the `chia-circt` image). 
 The output is local: a candidate diff and the PR description it *would* submit. A
