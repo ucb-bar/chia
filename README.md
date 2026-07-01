@@ -17,7 +17,7 @@
 
 ## What is CHIA?
 
-CHIA is an open-source framework for agile and principled hardware/software co-design research. Even though many of the steps of the  hardware/softward co-design process can be accelerated by AI, existing research using AI in these contexts has been limited to small studies on isolated examples because it is still too hard to assemble more complex experiments. CHIA solves this problem by enabling  users to express the whole co-design **workflow** in an agile way with all of the tools you already use. CHIA abstracts workflows as graphs, and provides an efficient, feature rich runtime system to execute these workflows.
+CHIA is an open-source framework for agile and principled hardware/software co-design research. Even though many of the steps of the  hardware/software co-design process can be accelerated by AI, existing research using AI in these contexts has been limited to small studies on isolated examples because it is still too hard to assemble more complex experiments. CHIA solves this problem by enabling  users to express the whole co-design **workflow** in an agile way with all of the tools you already use. CHIA abstracts workflows as graphs, and provides an efficient, feature rich runtime system to execute these workflows.
 
 See the [documentation](https://docs.chialoops.ai/en/latest/getting-started/quickstart.html) to run your first flow!
 
