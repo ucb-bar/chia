@@ -55,6 +55,7 @@ def test_tensorboard_backend():
         files = os.listdir(tmpdir)
         assert any("events.out.tfevents" in f for f in files), f"No event files in {files}"
 
+# can skip the tests, deps not defined.
 
 def test_from_config_does_not_mutate_input():
     cfg = {"backend": "none", "extra": "value"}
