@@ -7,6 +7,7 @@ import tempfile
 
 from chia.trace.metrics import MetricsLogger, NullBackend, TensorBoardBackend
 
+# skip the tests when the optional dep is absent. One line at the top of each affected test.
 
 def test_null_backend():
     m = MetricsLogger(backend="none")
