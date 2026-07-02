@@ -2,7 +2,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DOCKERFILE = REPO_ROOT / "dockerfiles" / "ChipyardDockerfileBAR"
+DOCKERFILE = REPO_ROOT / "dockerfiles" / "ChipyardDockerfileBAR" # this tests a file that doesn't exist. All 3 tests read dockerfiles/ChipyardDockerfileBAR, which isn't in the repo (and never was — the public history is a single squashed commit)
 
 
 def test_bar_dockerfile_patches_chipyard_glibc_rewrite():
