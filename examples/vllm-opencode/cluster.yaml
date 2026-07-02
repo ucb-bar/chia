@@ -1,0 +1,122 @@
+
+cluster_name: chia-vllm-opencode
+
+provider:
+    # On-prem head (where you invoke the wrapper). The AWS worker connects back
+    # to this host's Ray, so it must be reachable from the instance Change to your head machine.
+    head_ip: 127.0.0.1
+
+auth:
+    ssh_user: ${USER}
+
+available_node_types:
+
+
+    vllm:
+        resources: {"vllm_creds": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-vllm:latest"
+            container_name: "chia-vllm-${USER}"
+            pull_before_run: true
+            run_options:
+                - --ulimit nofile=65536:65536
+                # Expose the instance's NVIDIA GPU(s) (REQUIRED for vLLM); the AMI
+                # must have the NVIDIA driver + nvidia-container-toolkit.
+                - "--gpus all"
+                # vLLM needs ample shared memory (NCCL / tensor parallel).
+                - "--shm-size=16g"
+                # Model to serve (must match VLLM_E2E_MODEL in the driver).
+                # Qwen2.5-3B is ungated (no HF token) + a reliable tool-caller.
+                - "-e VLLM_MODEL=Qwen/Qwen2.5-3B-Instruct"
+                # VLLM_SERVE_ARGS has spaces -> MUST be quoted (chia joins
+                # run_options into a shell command). hermes parser matches Qwen.
+                # --max-model-len 32768: opencode's agentic baseline request
+                # (system prompt + built-in tool schemas + environment) is ~6k
+                # input tokens, so 8192 leaves almost no room for output. 32768
+                # is Qwen2.5's full native context; the 32k KV cache (~1.2 GB)
+                # is trivial on the A10G next to the ~6 GB of weights. Keep in
+                # sync with VLLM_OPENCODE_CONTEXT in the driver.
+                # --port 8200: NOT 8000 — chia's SSH tunnels reserve 8000-8010 on
+                # tunneled (AWS) workers, and the container is --net=host, so vLLM
+                # on 8000 collides. Newer images default to 8200, making this
+                # redundant (harmless); kept explicit so it works on any image.
+                - '-e "VLLM_SERVE_ARGS=--max-model-len 32768 --enable-auto-tool-choice --tool-call-parser hermes --port 8200"'
+                # Cache weights on the instance disk so a container restart is warm
+                # (instance path, NOT ${HOME} — that would expand to the head's home).
+                - "-v /home/ubuntu/.cache/huggingface:/root/.cache/huggingface"
+                # For GATED models (meta-llama/*) also add a token, e.g.:
+                # - "-e HF_TOKEN=hf_xxx"   (do NOT commit a real token)
+        compatible_ips:
+            - "@vllm_aws:0"
+
+    opencode:
+        resources: {"opencode_creds": 1}
+        worker_setup_commands: ["source ~/.bashrc"]
+        num_workers: 1
+        compatible_ips:
+            - "@vllm_aws:0"
+        docker:
+            image: ghcr.io/ucb-bar/chia-opencode:latest
+            container_name: "chia-opencode-${USER}"
+
+# The GPU EC2 instance chia launches for the vllm worker.
+aws_nodes:
+    region: us-east-1
+    vllm_aws:
+        KeyName: ${EC2_KEYNAME}                       # TODO: your EC2 key pair name
+        # g5.xlarge = 1x NVIDIA A10G (24 GB), 4 vCPU, 16 GB RAM, ~$1/hr on-demand.
+        # Plenty for Qwen2.5-3B/7B. Use g5.2xlarge+ for bigger models.
+        InstanceType: g5.xlarge
+        count: 1
+        # TODO: a GPU AMI with NVIDIA driver + Docker + nvidia-container-toolkit
+        # preinstalled. The AWS "Deep Learning Base GPU AMI (Ubuntu 22.04)" has
+        # all three. Find the current id for your region, e.g.:
+        #   aws ssm get-parameters --region us-east-1 --names \
+        #     /aws/service/deeplearning/ami/x86_64/base-oss-nvidia-driver-gpu-ubuntu-22.04/latest/ami-id \
+        #     --query 'Parameters[0].Value' --output text
+        ImageId: ami-0995cd07358db88b4
+        ssh_user: ubuntu
+        setup_commands:
+            # Host GPU driver must be present.
+            - "nvidia-smi"
+            # Ensure the NVIDIA Container Toolkit so `docker run --gpus all` works.
+            # The DL Base GPU AMI ships it; if this AMI doesn't (or it's broken),
+            # install + configure it. Probes GPU-in-docker first so it's a no-op
+            # when already present.
+            - >-
+              if ! docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi >/dev/null 2>&1; then
+              echo '[vllm-aws] GPU not visible in docker; installing nvidia-container-toolkit';
+              curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg;
+              curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list;
+              sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit;
+              sudo nvidia-ctk runtime configure --runtime=docker;
+              sudo systemctl restart docker;
+              fi
+            # Final fail-fast verification: the GPU must be visible inside a
+            # container, or the vLLM worker can't use it. Non-zero exit here aborts
+            # bring-up with an obvious message instead of a cryptic vLLM failure.
+            - "docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi"
+        BlockDeviceMappings:
+            # vLLM CUDA image (~10 GB) + model weights need room.
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 300
+                  VolumeType: gp3
+
+head_env_commands:
+    - "source ~/.bashrc && conda activate vllm_opencode"
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+
+min_workers: 1
+max_workers: 1
+
+file_mounts: {}
