@@ -46,6 +46,7 @@ Originally CHIA stood for:
    user_guides/chia_function
    user_guides/chia_tool
    user_guides/cluster_config_reference
+   user_guides/logical_workers
    user_guides/docker_images
    user_guides/caching_and_bypass
    user_guides/profiling
