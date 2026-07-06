@@ -58,7 +58,7 @@ from common.helper_nodes import (
     parse_area_from_reports,
     run_cacti_macrocompiler_prep,
 )
-from timing_opt.boom_tile_syn import run_boom_tile_synthesis
+from riscv_extensions.synth_node import run_boom_tile_synthesis
 from timing_opt.db import parse_worst_slack
 from riscv_extensions.constants import (
     ASM_TESTS,
@@ -514,16 +514,16 @@ def _dispatch_synth(artifact, label, run_id):
     worker), then fire an async BoomTile synth. None if it has no RTL or the
     BoomTile top can't be resolved. Same flow as the timing-improvement loop."""
     src = getattr(artifact, "generated_src_files", None)
-    if not getattr(artifact, "success", False) or not src or not _synth_available():
+    if not _synth_available():
+        print(f"[{run_id}] WARNING: skipping {label} synthesis (--no-synth or no VLSI node in cluster)", flush=True)
+        return None
+    if not getattr(artifact, "success", False) or not src:
         return None
     print(f"[{run_id}] {label} synth prep: CACTI + MacroCompiler remap ({len(src)} RTL files)")
     gen_src, cacti_libs, vlsi_top = run_cacti_macrocompiler_prep(src, {}, CACTI_PATH)
     if vlsi_top is None:
         print(f"[{run_id}] {label} synth: no BoomTile top after prep — skipping PPA", flush=True)
         return None
-    # Filter to the BoomTile's module closure, then fire the SHARED synth node
-    # (run_boom_tile_synthesis -> (result, syn_obj tarball)) — the same drop-in
-    # node as synth_rerun / the timing loop; no reimplementation.
     modules = _parse_verilog_modules(gen_src)
     keep = {vlsi_top} | _get_all_descendants(vlsi_top, _build_children_map(modules, set(modules)))
     filtered = [(f, c) for f, c in gen_src
@@ -555,7 +555,7 @@ def _await_synth(ref, run_id, label):
 def _log_ppa(run_id, base, comp):
     """Baseline-vs-implemented Total Area + worst-slack delta, and archive the
     FULL Genus rundir for each. `base`/`comp` are (SynthesisResult, syn_obj
-    tarball) from the shared run_boom_tile_synthesis node, or None.
+    tarball) from our run_boom_tile_synthesis node, or None.
 
     Area is parse_area_from_reports (Total Area = Cell + Net, includes the CACTI
     SRAM macros); slack is parse_worst_slack (ns) — both reused from the timing
@@ -698,6 +698,8 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
         if _synth_available():
             base_art = get(build_megaboom.options(**pg_opts).chia_remote(SYNTH_CONFIG, extension=getattr(_ctx, "extension", "")))
             baseline_syn_ref = _dispatch_synth(base_art, "baseline", run_id)
+        else:
+            print(f"[{run_id}] WARNING: skipping baseline synthesis (--no-synth or no VLSI node in cluster)", flush=True)
         if seed_diff:
             r = get(apply_diff.options(**pg_opts).chia_remote(seed_diff, extension=extension.name))
             print(f"[{run_id}] seed diff: {r}")

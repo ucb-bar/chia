@@ -97,7 +97,8 @@ def sky130_vlsi_runtime_env() -> dict:
     return {"py_modules": [os.path.join(examples, "riscv_extensions"),
                            os.path.join(examples, "sky130_vlsi"),
                            os.path.join(examples, "common"),
-                           os.path.join(examples, "timing_opt")]}
+                           os.path.join(examples, "timing_opt")],
+            "env_vars": {"VEXT_SKY130_COL_PATH": SKY130_COL_PATH}}
 
 
 @dataclass(frozen=True)
