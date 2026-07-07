@@ -19,6 +19,10 @@
     +directed_instr_3=riscv_load_store_hazard_instr_stream,4
     +directed_instr_4=riscv_jal_instr,4
     +boot_mode=m
+    +enable_zba_extension=1
+    +enable_zbb_extension=1
+    +enable_zbc_extension=1
+    +enable_zbs_extension=1
   rtl_test: core_base_test
 
 # Same shape, weighted toward ALU + bitmanip categories (Zb* instrs live in
@@ -42,4 +46,8 @@
     +dist_arithmetic=40
     +dist_logical=40
     +dist_shift=20
+    +enable_zba_extension=1
+    +enable_zbb_extension=1
+    +enable_zbc_extension=1
+    +enable_zbs_extension=1
   rtl_test: core_base_test
