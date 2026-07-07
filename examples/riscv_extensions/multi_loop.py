@@ -78,7 +78,8 @@ def _render_ppa(results) -> str:
     return "".join(out)
 
 
-def _run_one(ext_name: str, ts: str, seed_diff: str | None = None, synth: bool = True):
+def _run_one(ext_name: str, ts: str, seed_diff: str | None = None, synth: bool = True,
+             prebuilt: bool = False):
     """One extension: claim a sweep, snapshot src, run the inner loop, then archive
     whatever exists. Best-effort and self-contained: a crash — or nodes that never
     produced anything (missing/empty work_root, DB down) — yields (None, sweep_path)
@@ -93,7 +94,8 @@ def _run_one(ext_name: str, ts: str, seed_diff: str | None = None, synth: bool =
         sweep_n, sweep_path = get(db_node.claim_sweep.chia_remote(ext_name))
         get(db_node.archive_dir.chia_remote(sweep_path, "src", _tar_dir(_VEXT_DIR), extension=ext_name))
         result = run_vext_loop(ext, run_id, work_root,
-                               seed_diff=seed_diff, archive_dir=sweep_path, synth=synth)
+                               seed_diff=seed_diff, archive_dir=sweep_path, synth=synth,
+                               prebuilt=prebuilt)
     except Exception:
         import traceback
         print(f"[{ext_name}] pipeline FAILED:\n{traceback.format_exc()}", flush=True)
@@ -119,6 +121,9 @@ def _parse_args():
                         "meant for single-extension runs)")
     p.add_argument("--no-synth", action="store_true",
                    help="skip sky130 PPA synthesis (run on a cluster with no synth node)")
+    p.add_argument("--prebuilt-stress", action="store_true",
+                   help="seed the stress pool from committed prebuilt binaries instead of "
+                        "generating with riscv-dv (run on a cluster with no Xcelium license)")
     return p.parse_args()
 
 
@@ -135,7 +140,8 @@ def main() -> int:
     seed = open(args.seed_diff).read() if args.seed_diff else None
     n = min(MAX_PARALLEL_PIPELINES, len(args.extensions))
     with ThreadPoolExecutor(max_workers=n) as ex:
-        futures = [ex.submit(_run_one, e, ts, seed, not args.no_synth) for e in args.extensions]
+        futures = [ex.submit(_run_one, e, ts, seed, not args.no_synth, args.prebuilt_stress)
+                   for e in args.extensions]
         outcomes = [f.result() for f in futures]   # _run_one never raises; (None, sweep_path) on failure
 
     # Ship the profiler into every claimed sweep, best-effort — _run_one returns

@@ -10,6 +10,7 @@ build share one container exclusively.
 import hashlib
 import os
 import subprocess
+import tarfile
 import uuid
 
 from chia.base.ChiaFunction import ChiaFunction
@@ -211,6 +212,29 @@ def gen_to_pool(spec: GenSpec, isa: str, pool_dir: str, work_dir: str,
         unique = f"{os.path.splitext(name)[0]}_{uuid.uuid4().hex[:8]}"
         get(db_node.pool_add.chia_remote(pool_dir, unique, elf, asm, spec.instr_cnt or 0, extension=extension))
     return len(tests)
+
+
+@ChiaFunction(resources={"head_local": 0.1})
+def load_prebuilt_to_pool(ext_name: str, pool_dir: str, extension: str = "") -> int:
+    """Seed the pool from prebuilt_stress/<ext>.tar.gz (no Xcelium). The
+    --prebuilt-stress counterpart to gen_to_pool. Returns the count added."""
+    if extension: get_profiler().add_info({"extension": extension})
+    from chia.base.ChiaFunction import get
+    import riscv_extensions.db_node as db_node
+    arch = os.path.join(_VEXT_BASE, "prebuilt_stress", f"{ext_name}.tar.gz")
+    if not os.path.isfile(arch):
+        return 0
+    n = 0
+    with tarfile.open(arch, "r:gz") as tar:
+        for m in sorted(tar.getmembers(), key=lambda m: m.name):
+            if not m.isfile():
+                continue
+            elf = tar.extractfile(m).read()
+            name = "prebuilt_" + os.path.splitext(os.path.basename(m.name))[0]
+            # instr=0: untracked count -> cosim uses the default STRESS_TEST_MAX_CYCLES budget
+            get(db_node.pool_add.chia_remote(pool_dir, name, elf, "", 0, extension=extension))
+            n += 1
+    return n
 
 
 @ChiaFunction(resources={"verilator_run": COSIM_VRUN}, num_cpus=VERILATOR_THREADS)
