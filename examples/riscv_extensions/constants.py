@@ -128,6 +128,7 @@ EXTENSIONS: dict[str, Extension] = {
         description="RISC-V scalar cryptography, NIST suite "
                     "(Zbkb, Zbkc, Zbkx, Zknd, Zkne, Zknh).",
         isa_suffix="_zbkb_zbkc_zbkx_zknd_zkne_zknh",
+        dv_target="riscv_dv_target_crypto",   # crypto custom-instr stress_test coverage (riscv-dv has none natively)
     ),
     "zicond": Extension(
         name="zicond",

@@ -1,6 +1,8 @@
 //-----------------------------------------------------------------------------
-// riscv-dv target: rv64gc + Zicond. riscv-dv has no Zicond support, so czero.eqz
-// and czero.nez are defined as RV64X custom instructions (isa/custom/).
+// riscv-dv target: rv64gc + scalar crypto (Zbkb/Zbkc/Zbkx/Zknd/Zkne/Zknh).
+// riscv-dv has no crypto support, so every crypto op — including the ones that
+// overlap bitmanip (andn, ror, rev8, pack, clmul, ...) — is defined as an RV64X
+// custom instruction (isa/custom/).
 //-----------------------------------------------------------------------------
 
 // XLEN
@@ -15,10 +17,10 @@ privileged_mode_t supported_privileged_mode[] = {MACHINE_MODE};
 // Unsupported instructions
 riscv_instr_name_t unsupported_instr[];
 
-// ISA supported by the processor: rv64gc base + the RV64X custom Zicond group.
+// ISA supported by the processor: rv64gc base + the RV64X custom crypto group.
 riscv_instr_group_t supported_isa[$] = {RV32I, RV32M, RV64I, RV64M, RV32C, RV64C,
                                         RV32A, RV64A, RV32F, RV64F, RV32D, RV64D,
-                                        RV64X};   // Zicond czero.eqz/czero.nez (isa/custom/)
+                                        RV64X};   // scalar crypto (isa/custom/)
 
 // DIRECT only: VECTORED mtvec-base alignment differs between BOOM and spike, and
 // no interrupts are injected anyway.
