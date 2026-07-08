@@ -55,10 +55,11 @@ Originally CHIA stood for:
 .. toctree::
    :maxdepth: 2
    :caption: Case Studies
-   
+
    case-studies/gem5-alignment
    case-studies/circt-issue-solving
    case-studies/timing-optimization
+   case-studies/riscv-extensions
 
 .. toctree::
    :maxdepth: 2
