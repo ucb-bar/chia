@@ -51,7 +51,7 @@ Then create a directory for the project and activate the environment:
 You should assume that, unless otherwise specified, all commands in this tutorial are run from within the chia_env conda environment and in the project's directory.
 
 Fix default ``.bashrc``
-~~~~~~~~~~~~~~~~~~~~~~
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 We need various parts of the ``~/.bashrc`` file to execute even in non-interactive mode. To do so, edit your ``~/.bashrc`` file so that the following section is removed:
 

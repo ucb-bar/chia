@@ -4,7 +4,7 @@ from enum import Enum
 
 class BuildTarget(str, Enum):
     """Which Chipyard simulator flavor :class:`ChiselBuildNode` builds.
-    Maps to ``make`` targets in ``chipyard/sims/verilator`
+    Maps to ``make`` targets in ``chipyard/sims/verilator``.
 
     Attributes:
         VERILATOR: Default fast Verilator sim (``make`` in ``sims/verilator``).
@@ -228,7 +228,7 @@ class SpikeBuildArtifact:
     """Result of (re)building the Spike simulator binary from source.
 
     Attributes:
-        success: True iff ``make``+install succeeded and the binary exists.
+        success: True iff ``make`` + install succeeded and the binary exists.
         spike_bin: Path to the (re)built spike binary (in-container).
         stdout: Captured stdout of the build command.
         stderr: Captured stderr of the build command.

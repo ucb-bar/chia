@@ -200,7 +200,8 @@ class PostgresNode(DatabaseNode):
                 call (keys: ``connect_timeout_s``, ``lock_timeout_ms``,
                 ``statement_timeout_ms``, ``application_name``); per-call
                 ``connect_opts=`` overrides.
-            (remaining args as in :class:`DatabaseNode`.)
+
+        Remaining args are as in :class:`DatabaseNode`.
         """
         super().__init__(
             _normalize_dsn(dsn),

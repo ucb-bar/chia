@@ -214,7 +214,8 @@ class SQLiteNode(DatabaseNode):
             connect_opts: connection defaults injected into every member
                 call (keys: ``busy_timeout_s``, ``wal``, ``synchronous``,
                 ``foreign_keys``); per-call ``connect_opts=`` overrides.
-            (remaining args as in :class:`DatabaseNode`.)
+
+        Remaining args are as in :class:`DatabaseNode`.
         """
         db_path = str(db_path)
         if not os.path.isabs(db_path):

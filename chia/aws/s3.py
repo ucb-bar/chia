@@ -125,7 +125,7 @@ class S3Node:
            ``aws_secret_access_key`` together (plus ``aws_session_token`` for
            temporary/STS credentials). Use this to ship credentials by value
            into an environment with no ``~/.aws`` or instance role, e.g. a
-           docker worker.
+           docker worker::
 
                key, secret, token = load_aws_creds(creds_dir)  # on the head node
                node = S3Node(bucket,                           # on the worker

@@ -8,6 +8,7 @@ Base class
 ----------
 
 .. automodule:: chia.base.llm_call
+   :no-index:
 
 Providers
 ---------

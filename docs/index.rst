@@ -52,17 +52,10 @@ Originally CHIA stood for:
    user_guides/profiling
    user_guides/memcpy_example
 
-.. .. toctree::
-..    :maxdepth: 2
-..    :caption: Case Studies
-
-..    case-studies/gem5-alignment
-..    case-studies/circt-issue-solving
-..    case-studies/timing-optimization
-
 .. toctree::
-   :hidden:
-
+   :maxdepth: 2
+   :caption: Case Studies
+   
    case-studies/gem5-alignment
    case-studies/circt-issue-solving
    case-studies/timing-optimization
