@@ -90,6 +90,7 @@ from riscv_extensions.nodes import (
     collect_diff,
     cosim_run,
     gen_to_pool,
+    load_prebuilt_to_pool,
     reset_chipyard,
     verilator_run_remote,
 )
@@ -441,15 +442,12 @@ def _directed_loop(llm, first_message, *, label, ext_name,
 # Stress_test phase (S3) — gen (xlm) -> cosim, producer/consumer
 # ---------------------------------------------------------------------------
 
-def _stress_test(artifact, gen_refs, pool_dir, deadline, fail_dir, archive_dir=None):
-    """Stream the test pool through the cosims (half the cluster's slots), marking each test
-    pending -> passed, until the whole batch has passed (generators in gen_refs
-    keep filling the pool in the background) or the first divergence. Returns
-    (failing CosimResult | None, cosims completed, batch complete?). When
-    generation finishes, packs every .S into one durable tarball under
-    archive_dir (once)."""
+def _stress_test(artifact, gen_refs, pool_dir, deadline, fail_dir, archive_dir=None, total=None):
+    """Stream the pool through the cosims until the batch passes or the first
+    divergence. Returns (failing CosimResult | None, cosims done, batch complete?);
+    archives the .S once generation finishes. `total` sizes the progress logs."""
     inflight, n_done, seen, archived = {}, 0, set(), False
-    total = len(gen_refs)
+    total = len(gen_refs) if total is None else total
     while time.time() < deadline:
         state = get(db_node.pool_state.chia_remote(pool_dir, extension=getattr(_ctx, "extension", "")))
         for name in sorted(state.keys() - seen):      # log tests as generators add them
@@ -602,7 +600,7 @@ def _log_ppa(run_id, base, comp):
 
 def run_vext_loop(extension: Extension, run_id: str, work_root: str,
                   seed_diff: str | None = None, archive_dir: str | None = None,
-                  synth: bool = True) -> VextResult:
+                  synth: bool = True, prebuilt: bool = False) -> VextResult:
     """One end-to-end loop implementing + proving `extension` on MegaBOOM.
     `seed_diff` (a prior run's probe diff) is applied after the reset so the
     pipeline can resume from a known implementation; if it already passes
@@ -667,10 +665,21 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
         # the xcelium seats pace the tasks; each registers itself in the pool
         # (scratch under DB_ROOT/tmp/, finalized+deleted by the caller).
         pool_dir = db_node.pool_path(run_id)
-        gen_isa = f"rv64gc{extension.isa_suffix}"
-        gen_refs = [gen_to_pool.chia_remote(spec, gen_isa, pool_dir, GEN_WORK_DIR, extension.dv_target, extension=extension.name)
-                    for n, spec in STRESS_TEST_MIX for _ in range(n)]
-        print(f"[{run_id}] dispatched {len(gen_refs)} generators -> pool {pool_dir}")
+        if prebuilt:
+            gen_refs = []
+            n_stress = get(load_prebuilt_to_pool.chia_remote(extension.name, pool_dir,
+                                                             extension=extension.name))
+            print(f"[{run_id}] --prebuilt-stress: loaded {n_stress} prebuilt tests -> pool {pool_dir} (skipping generation)")
+            if n_stress == 0:
+                print(f"[{run_id}] FATAL: no prebuilt binaries for {extension.name} "
+                      f"(prebuilt_stress/{extension.name}.tar.gz)")
+                return VextResult(extension.name, False, 0, 0, 0)
+        else:
+            gen_isa = f"rv64gc{extension.isa_suffix}"
+            gen_refs = [gen_to_pool.chia_remote(spec, gen_isa, pool_dir, GEN_WORK_DIR, extension.dv_target, extension=extension.name)
+                        for n, spec in STRESS_TEST_MIX for _ in range(n)]
+            n_stress = len(gen_refs)
+            print(f"[{run_id}] dispatched {n_stress} generators -> pool {pool_dir}")
         print(f"[{run_id}] resetting BOOM + fetching tests")
         get(reset_chipyard.options(**pg_opts).chia_remote(extension=extension.name))
         isa_march = f"rv64imafd_zicsr_zifencei{extension.isa_suffix}"
@@ -752,11 +761,11 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
         debug_llm, dbg_round = _llm("debug.md"), 0
         while True:
             _event("section_start", name="stress_test", round=dbg_round)
-            print(f"[{run_id}] stress_test round {dbg_round}: {len(gen_refs)}-test mix, "
+            print(f"[{run_id}] stress_test round {dbg_round}: {n_stress}-test mix, "
                   "half the cluster's cosim slots")
             fail, n_cosims, complete = _stress_test(artifact, gen_refs, pool_dir,
                                              time.time() + STRESS_TEST_HOURS * 3600, fail_dir,
-                                             archive_dir=archive_dir)
+                                             archive_dir=archive_dir, total=n_stress)
             _event("section_end", name="stress_test", round=dbg_round, clean=fail is None,
                    cosims=n_cosims, complete=complete)
             if fail is None:
@@ -862,6 +871,9 @@ def _parse_args():
                    help="probe diff from a prior run to seed BOOM with (resume)")
     p.add_argument("--no-synth", action="store_true",
                    help="skip sky130 PPA synthesis (run on a cluster with no synth node)")
+    p.add_argument("--prebuilt-stress", action="store_true",
+                   help="seed the stress pool from committed prebuilt binaries instead of "
+                        "generating with riscv-dv (run on a cluster with no Xcelium license)")
     return p.parse_args()
 
 
@@ -882,7 +894,8 @@ def main() -> int:
     sweep_n, sweep_path = get(db_node.claim_sweep.chia_remote(args.extension))
     get(db_node.archive_dir.chia_remote(sweep_path, "src", _tar_dir(_VEXT_DIR), extension=args.extension))
     result = run_vext_loop(EXTENSIONS[args.extension], run_id, work_root,
-                           seed_diff=seed, archive_dir=sweep_path, synth=not args.no_synth)
+                           seed_diff=seed, archive_dir=sweep_path, synth=not args.no_synth,
+                           prebuilt=args.prebuilt_stress)
     get(db_node.pool_finalize.chia_remote(db_node.pool_path(run_id), extension=args.extension))   # .S already in the sweep
     get(db_node.archive_dir.chia_remote(sweep_path, "profiler", _tar_dir(os.path.join(work_root, "profiler")), extension=args.extension))
     get(db_node.write_text.chia_remote(sweep_path, "summary.md", _render_summary(result, sweep_n), extension=args.extension))
