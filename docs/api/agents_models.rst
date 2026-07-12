@@ -22,6 +22,8 @@ Claude :mod:`chia.models.claude`
 
 Codex :mod:`chia.models.codex`
 
+Copilot :mod:`chia.models.copilot`
+
 OpenCode :mod:`chia.models.opencode`
 
 Antigravity :mod:`chia.models.antigravity`

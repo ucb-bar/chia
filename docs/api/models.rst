@@ -5,7 +5,7 @@ Model Backends
 
 We plan to in the near future expose an interface to the non-agent models (providers and servers), which is, instead of a primitive agent, the interface you would use to build your own agents.
 
-For most serious tasks that don't require on-premises LLM serving, we expect you will get better results using the agents (Claude Code, Codex, Antigravity, or OpenCode), with your preferred provider for credentials for the agent, as opposed to using the specific node for your provider (e.g. Claude Code with Bedrock credentials instead of the bedrock node).
+For most serious tasks that don't require on-premises LLM serving, we expect you will get better results using the agents (Claude Code, Codex, Copilot, Antigravity, or OpenCode), with your preferred provider for credentials for the agent, as opposed to using the specific node for your provider (e.g. Claude Code with Bedrock credentials instead of the bedrock node).
 
 API reference for :mod:`chia.models`. These pages are generated from the docstrings in the source, so they stay in sync with the code.
 
@@ -33,6 +33,11 @@ Codex
 -----
 
 .. automodule:: chia.models.codex
+
+Copilot
+-------
+
+.. automodule:: chia.models.copilot
 
 Opencode
 --------

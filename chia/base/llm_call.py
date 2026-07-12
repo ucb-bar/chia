@@ -70,8 +70,8 @@ class LLMCallBase(ABC):
             )
         # Maps ONLY to the backend's "dangerously skip permissions" CLI flag
         # (claude/opencode/antigravity --dangerously-skip-permissions, codex
-        # --dangerously-bypass-approvals-and-sandbox). Honored only where
-        # supports_dangerously_skip_permissions is True.
+        # --dangerously-bypass-approvals-and-sandbox, copilot --allow-all).
+        # Honored only where supports_dangerously_skip_permissions is True.
         self.dangerously_skip_permissions = (
             True if dangerously_skip_permissions is UNSET else dangerously_skip_permissions
         )

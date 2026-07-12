@@ -58,6 +58,7 @@ CHIA workflows compose the tools you already use across the hardware/software co
 <p align="center">
   <img src="docs/_static/project-logos/claude-code.svg" alt="Claude Code" height="40"/> &nbsp;&nbsp;
   <img src="docs/_static/project-logos/openai-codex.svg" alt="OpenAI Codex" height="40"/> &nbsp;&nbsp;
+  <img src="docs/_static/project-logos/github-copilot.svg" alt="GitHub Copilot" height="40"/> &nbsp;&nbsp;
   <img src="docs/_static/project-logos/google-antigravity.svg" alt="Google Antigravity" height="40"/> &nbsp;&nbsp;
   <img src="docs/_static/project-logos/alphaevolve.svg" alt="AlphaEvolve" height="40"/> &nbsp;&nbsp;
   <img src="docs/_static/project-logos/openevolve.png" alt="OpenEvolve" height="40"/> &nbsp;&nbsp;

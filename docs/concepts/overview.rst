@@ -126,6 +126,6 @@ A particular strength is how cleanly CHIA fits diverse components together. Ther
 are already CHIA nodes for hardware-design tools — Chipyard, FireSim, Hammer, CIRCT,
 gem5, ChampSim, and Verilator — for a wide range of LLM providers and local model
 serving (AWS Bedrock, Google Vertex, OpenAI and Anthropic APIs, Fireworks, Groq,
-OpenRouter, Ollama, vLLM) and agent CLIs (Claude Code, OpenAI Codex, Opencode,
-Google Antigravity), and for supporting tasks like maintaining relational databases,
-compiling software, and collating GitHub issues.
+OpenRouter, Ollama, vLLM) and agent CLIs (Claude Code, OpenAI Codex, GitHub Copilot,
+Opencode, Google Antigravity), and for supporting tasks like maintaining relational
+databases, compiling software, and collating GitHub issues.
