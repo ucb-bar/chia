@@ -6,6 +6,8 @@ name: ESP Image
 
 on:
   workflow_dispatch:
+  push:
+    branches: [esp]
 
 env:
   IMAGE: ghcr.io/ucb-bar/chia-esp
