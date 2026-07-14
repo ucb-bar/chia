@@ -6,6 +6,7 @@
 #   opencode     -> opencode_creds      (chia-opencode)
 #   antigravity  -> antigravity_creds   (chia-antigravity)
 #   codex        -> codex_creds          (codex CLI layered onto chia-claude-code)
+#   copilot      -> copilot_creds        (copilot CLI layered onto chia-claude-code)
 #   api          -> bedrock_creds, vertex_creds, openai_creds  (one chia-ollama
 #                   worker: the raw-API backends just make HTTPS calls, so a
 #                   single node with all three SDKs + creds serves all of them)
@@ -104,6 +105,27 @@ available_node_types:
                 # root so `npm install -g` can write to /usr/lib/node_modules
                 - "--user 0:0"
                 - "-v /scratch/${USER}/.codex:/home/ray/.codex"
+
+    # CopilotLLM.prompt gates on {"copilot_creds": 0.01}. No published copilot
+    # image, so layer the copilot CLI (a Node package) onto chia-claude-code,
+    # the same way as the codex node above. In a container copilot has no
+    # system credential store, so it reads credentials from the mounted
+    # ~/.copilot (or from a COPILOT_GITHUB_TOKEN / GH_TOKEN env var).
+    copilot:
+        resources: {"copilot_creds": 1}
+        num_workers: 1
+        compatible_ips: [127.0.0.1]
+        worker_setup_commands:
+            - npm install -g @github/copilot
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "chia_test_copilot_${USER}"
+            pull_before_run: false
+            pull_timeout: 1800
+            run_options:
+                # root so `npm install -g` can write to /usr/lib/node_modules
+                - "--user 0:0"
+                - "-v /scratch/${USER}/.copilot:/home/ray/.copilot"
 
     # --- Raw-API backends (no permission gate; one node serves all three since
     #     they only make HTTPS calls). chia-ollama already ships chia + ray +
