@@ -45,11 +45,11 @@ DEFAULT_AWS_SETUP_COMMANDS = [
     # so the known_hosts append would otherwise fail on a fresh box.
     "mkdir -p ~/.ssh && chmod 700 ~/.ssh",
     "ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null",
-    "git clone git@github.com:ucb-chia/chia-v0.git",
+    "git clone git@github.com:ucb-bar/chia.git",
     # Create conda env and install chia
     "conda create -y -n chia_env python=3.10.19",
     "conda activate chia_env",
-    "pip install -e chia-v0",
+    "pip install -e chia",
     # Install docker (distro-agnostic)
     "command -v docker >/dev/null 2>&1 || (command -v apt-get >/dev/null 2>&1 && (curl -fsSL https://get.docker.com | sudo sh) || (sudo yum install -y docker && sudo systemctl start docker && sudo systemctl enable docker))",
     "sudo usermod -aG docker $USER",

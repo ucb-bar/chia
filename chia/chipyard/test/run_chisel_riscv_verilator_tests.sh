@@ -10,7 +10,7 @@
 set -u                                        # error on undefined vars
 set -o pipefail                               # surface failures in pipelines
 
-# Paths relative to the chia-v0 repo root (the script can be invoked from
+# Paths relative to the chia repo root (the script can be invoked from
 # anywhere — `cd` to the repo root for consistent `ray job submit`'ed
 # working-dir behavior).
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
