@@ -1,0 +1,41 @@
+# Minimal single-machine cluster for an Apple-silicon Mac.
+#
+#   export THIS_MACHINE=$(ipconfig getifaddr en0)   # re-run when you change networks
+#   chia up examples/macos/cluster.yaml
+#   python examples/macos/loop.py
+#
+# The worker image is multi-arch. Do NOT add --platform=linux/amd64 to
+# run_options here: forcing the amd64 variant runs Ray under Rosetta
+# emulation, where its agents crash on the first task and the node dies.
+
+provider:
+    head_ip: ${THIS_MACHINE}
+
+auth:
+    ssh_user: ${USER}
+
+available_node_types:
+    mac_native:
+        resources: {"mac_native": 1}
+        num_workers: 1
+        compatible_ips: ["${THIS_MACHINE}"]
+        docker:
+            pull_before_run: False
+            image: "ghcr.io/ucb-bar/chia:latest"
+            container_name: "chia-macos-${USER}"
+            run_options:
+                - --shm-size=2g
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_start_ray_commands:
+    - "source ~/.bashrc && conda activate chia_env && ray stop"
+    # --node-ip-address is required on macOS: without it Ray binds the GCS
+    # to loopback only and workers in containers can never reach it.
+    - "source ~/.bashrc && conda activate chia_env && \
+        ray start --head --port=6379 --node-ip-address=${THIS_MACHINE} \
+        --include-dashboard=True --dashboard-agent-listen-port=0"
+
+worker_start_ray_commands:
+    - "ray stop"
+    - "ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0"
