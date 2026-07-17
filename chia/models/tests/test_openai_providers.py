@@ -16,6 +16,7 @@ from chia.models.openai_compat import QueryResult, OpenAICompatLLM
 from chia.models.openai_providers import (
     FireworksLLM,
     GroqLLM,
+    NvidiaLLM,
     OpenAILLM,
     OpenRouterLLM,
 )
@@ -26,6 +27,7 @@ PROVIDERS = {
     FireworksLLM: ("https://api.fireworks.ai/inference/v1", "fireworks_creds"),
     GroqLLM: ("https://api.groq.com/openai/v1", "groq_creds"),
     OpenRouterLLM: ("https://openrouter.ai/api/v1", "openrouter_creds"),
+    NvidiaLLM: ("https://integrate.api.nvidia.com/v1", "nvidia_nim_creds"),
 }
 
 
@@ -79,7 +81,7 @@ def test_explicit_base_url_overrides_default():
 
 def test_distinct_endpoints():
     urls = {url for url, _ in PROVIDERS.values()}
-    assert len([u for u in urls if u]) == 3  # OpenAI is None; other three distinct
+    assert len([u for u in urls if u]) == 4  # OpenAI is None; other four distinct
 
 
 # ---------------------------------------------------------------------------
@@ -413,6 +415,69 @@ def test_live_fireworks_with_bash_tool(local_bash_tool):
     assert "Tool Result" in cli.stream_result
 
 
+# ---------------------------------------------------------------------------
+# Live tests against NVIDIA (real API; need a key + openai installed)
+#
+# Same env-driven auth: NvidiaLLM bakes in the base_url and the openai SDK
+# reads the credential from OPENAI_API_KEY — pass NO api_key. Set
+# OPENAI_API_KEY to your NVIDIA key (nvapi-..., from build.nvidia.com).
+# Override the model with NVIDIA_TEST_MODEL; ids are the full "<vendor>/<name>"
+# strings — list them (no auth needed) with:
+#   curl -s https://integrate.api.nvidia.com/v1/models | python3 -m json.tool
+#
+# The default (Nemotron 3 Super) is a reasoning model: it spends output tokens
+# thinking before it answers, so even the "single word" test gets a roomy
+# max_tokens — 64 would truncate mid-reasoning.
+#
+# Select with `-k nvidia` (gates on OPENAI_API_KEY like the others).
+# ---------------------------------------------------------------------------
+
+nvidia_live = pytest.mark.skipif(
+    not os.environ.get("OPENAI_API_KEY"),
+    reason="OPENAI_API_KEY not set (set it to your NVIDIA key)",
+)
+
+_NVIDIA_DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+
+
+@nvidia_live
+def test_live_nvidia_simple_prompt():
+    pytest.importorskip("openai")
+    llm = NvidiaLLM(
+        model=os.environ.get("NVIDIA_TEST_MODEL", _NVIDIA_DEFAULT_MODEL),
+        system_message="You answer with a single word and nothing else.",
+        max_tokens=2048,
+    )
+    cli = llm.prompt("Reply with exactly the word: PONG", tools=[])
+    assert cli.success is True
+    assert "PONG" in cli.result.upper()
+    assert llm._last_metadata.get("output_tokens", 0) > 0
+
+
+@nvidia_live
+def test_live_nvidia_with_bash_tool(local_bash_tool):
+    llm = NvidiaLLM(
+        model=os.environ.get("NVIDIA_TEST_MODEL", _NVIDIA_DEFAULT_MODEL),
+        system_message=(
+            "You have a bash tool available. To answer the user you MUST run "
+            "the requested shell command with that tool and report its output "
+            "verbatim. Never guess the output."
+        ),
+        max_tokens=4096,
+    )
+    cli = llm.prompt(
+        "Run the shell command:  echo CHIA_TOOL_OK\n"
+        "Then reply with exactly the line it printed.",
+        tools=[local_bash_tool],
+    )
+
+    assert cli.success is True
+    assert "CHIA_TOOL_OK" in cli.result
+    assert llm._last_metadata.get("num_turns", 0) >= 2
+    assert "Tool Call" in cli.stream_result
+    assert "Tool Result" in cli.stream_result
+
+
 _TOOL_PROMPT = (
     "Run the shell command:  echo CHIA_TOOL_OK\n"
     "Then reply with exactly the line it printed."
@@ -491,6 +556,24 @@ def test_live_openai_stream_log_simple():
 def test_live_openai_stream_log_tool_conversation(local_bash_tool):
     model = os.environ.get("OPENAI_TEST_MODEL", _OPENAI_DEFAULT_MODEL)
     llm = OpenAILLM(model=model, system_message=_TOOL_SYSTEM, max_tokens=2048)
+    stream = llm.prompt(_TOOL_PROMPT, tools=[local_bash_tool]).stream_result
+    _assert_log_banner(stream, model)
+    _assert_tool_conversation_log(stream, local_bash_tool.name)
+
+
+@nvidia_live
+def test_live_nvidia_stream_log_simple():
+    pytest.importorskip("openai")
+    prompt = "Reply with exactly the word: PONG"
+    model = os.environ.get("NVIDIA_TEST_MODEL", _NVIDIA_DEFAULT_MODEL)
+    llm = NvidiaLLM(model=model, system_message="You answer with a single word and nothing else.", max_tokens=2048)
+    _assert_simple_log(llm.prompt(prompt, tools=[]).stream_result, model, prompt)
+
+
+@nvidia_live
+def test_live_nvidia_stream_log_tool_conversation(local_bash_tool):
+    model = os.environ.get("NVIDIA_TEST_MODEL", _NVIDIA_DEFAULT_MODEL)
+    llm = NvidiaLLM(model=model, system_message=_TOOL_SYSTEM, max_tokens=4096)
     stream = llm.prompt(_TOOL_PROMPT, tools=[local_bash_tool]).stream_result
     _assert_log_banner(stream, model)
     _assert_tool_conversation_log(stream, local_bash_tool.name)

@@ -1,0 +1,39 @@
+
+cluster_name: chia-nvidia-opencode
+
+provider:
+    # Head machine (where you invoke chia). The model is NVIDIA-hosted, so the
+    # only worker is the local opencode container — export THIS_MACHINE to this
+    # host's IP before `chia up` (e.g. $(hostname -I | awk '{print $1}')).
+    head_ip: ${THIS_MACHINE}
+
+auth:
+    ssh_user: ${USER}
+
+available_node_types:
+
+    opencode:
+        resources: {"opencode_creds": 1}
+        worker_setup_commands: ["source ~/.bashrc"]
+        num_workers: 1
+        compatible_ips:
+            - "${THIS_MACHINE}"
+        docker:
+            image: ghcr.io/ucb-bar/chia-opencode:latest
+            container_name: "chia-opencode-${USER}"
+
+head_env_commands:
+    - "source ~/.bashrc && conda activate nvidia_opencode"
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+
+min_workers: 1
+max_workers: 1
+
+file_mounts: {}

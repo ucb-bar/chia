@@ -84,3 +84,14 @@ class OpenRouterLLM(_OpenAICompatProvider):
     @ChiaFunction(resources={"openrouter_creds": 0.01})
     def prompt(self, user_message: str, tools: Optional[List[ChiaTool]] = []) -> QueryResult:
         return OpenAICompatLLM.prompt(self, user_message, tools)
+
+
+class NvidiaLLM(_OpenAICompatProvider):
+    """NVIDIA's hosted API (build.nvidia.com / NIM)."""
+
+    DEFAULT_BASE_URL = "https://integrate.api.nvidia.com/v1"
+    DEFAULT_LOGGING_NAME = "nvidia_nim"
+
+    @ChiaFunction(resources={"nvidia_nim_creds": 0.01})
+    def prompt(self, user_message: str, tools: Optional[List[ChiaTool]] = []) -> QueryResult:
+        return OpenAICompatLLM.prompt(self, user_message, tools)
