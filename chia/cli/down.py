@@ -4,9 +4,9 @@ import sys
 
 from chia.cluster.config import (
     ClusterConfig, ConfigError, NodeAssignment,
-    assign_nodes, build_config, load_raw_config,
+    apply_cloud_network_mode, assign_nodes, build_config, load_raw_config,
     parse_aws_nodes, parse_gcp_nodes,
-    _expand_node_placeholders, _inject_cloud_tunnel_overrides,
+    _expand_node_placeholders,
 )
 from chia.cluster.log import setup_logging
 from chia.cluster.node_setup import tear_down_cluster
@@ -71,10 +71,16 @@ def cmd_down(args):
     cloud_instance_count = sum(len(ips) for ips in ip_map.values())
     if ip_map:
         raw = _expand_node_placeholders(raw, ip_map)
-        if aws_result is not None:
-            _inject_cloud_tunnel_overrides(raw, aws_ip_map, aws_result[0])
-        if gcp_result is not None:
-            _inject_cloud_tunnel_overrides(raw, gcp_ip_map, gcp_result[0])
+        # Same tailnet-vs-tunnel routing as `chia up`, so tailnet cloud
+        # workers validate correctly. Teardown never joins anything, so
+        # a missing auth key must not block it.
+        try:
+            apply_cloud_network_mode(
+                raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
+                require_auth_key=False)
+        except ConfigError as e:
+            logger.error(f"Config error: {e}")
+            sys.exit(1)
 
     try:
         config = build_config(raw)

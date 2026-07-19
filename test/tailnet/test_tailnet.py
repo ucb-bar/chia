@@ -11,11 +11,15 @@ Run:
 import copy
 import unittest
 
-from chia.cluster.config import ConfigError, assign_nodes, build_config
+from chia.cluster.config import (
+    ConfigError, assign_nodes, build_config,
+    _inject_cloud_tailnet_overrides, parse_aws_nodes, parse_gcp_nodes,
+)
 from chia.cluster.node_setup import build_head_script, build_worker_script
 from chia.cluster.ssh import SSHClient
 from chia.cluster.tailnet import (
     allocate_tailnet_workers, build_relay_spec, head_ports,
+    tailscale_install_command, ts_hostname,
 )
 
 PROXY_CMD = "nc -X 5 -x 127.0.0.1:1055 %h %p"
@@ -237,6 +241,205 @@ class TestScripts(unittest.TestCase):
         self.assertIn(f"--node-ip-address={alloc.advertise_ip}", start)
         self.assertIn(f"--min-worker-port={alloc.worker_port_min}", start)
         self.assertNotIn("CHIA_TOOL_RELAY_HOST", "\n".join(script))
+
+
+class TestManageAll(unittest.TestCase):
+
+    def _reachable_raw(self):
+        """manage_all cluster whose workers have ordinary reachable IPs."""
+        raw = _make_raw()
+        raw["tailnet"] = {"manage_all": True, "auth_key": "tskey-auth-test"}
+        raw["available_node_types"]["tw"]["compatible_ips"] = \
+            ["10.0.0.5", "10.0.0.6"]
+        return raw
+
+    def test_manage_all_with_reachable_workers(self):
+        config = build_config(self._reachable_raw())
+        tn = config.tailnet_config
+        self.assertTrue(tn.manage_all)
+        self.assertEqual(tn.head_tailnet_ip, "")  # discovered at bring-up
+        for ip in ("10.0.0.5", "10.0.0.6"):
+            auth = config.get_ssh_auth(ip)
+            self.assertTrue(auth.manage_tailscale)
+            self.assertTrue(config.is_tailnet(ip))
+            self.assertIsNone(auth.ssh_proxy_command)  # dialed directly
+
+    def test_manage_all_rejects_tailnet_addressed_workers(self):
+        raw = _make_raw()  # workers at 100.64.0.2/3
+        raw["tailnet"]["manage_all"] = True
+        with self.assertRaises(ConfigError):
+            build_config(raw)
+
+    def test_optout_under_manage_all(self):
+        raw = self._reachable_raw()
+        raw["available_node_types"]["tw"]["compatible_ips"] = \
+            ["10.0.0.5", "100.64.0.9"]
+        raw["auth"]["overrides"] = {"100.64.0.9": {"manage_tailscale": False}}
+        config = build_config(raw)  # opted-out node is fine
+        self.assertFalse(config.get_ssh_auth("100.64.0.9").manage_tailscale)
+        self.assertIsNotNone(config.get_ssh_auth("100.64.0.9").ssh_proxy_command)
+        self.assertTrue(config.get_ssh_auth("10.0.0.5").manage_tailscale)
+
+    def test_explicit_manage_on_tailnet_address_rejected(self):
+        raw = _make_raw()  # no manage_all
+        raw["auth"]["overrides"] = {"100.64.0.2": {"manage_tailscale": True}}
+        with self.assertRaises(ConfigError):
+            build_config(raw)
+
+    def test_head_tailnet_ip_still_required_without_manage_all(self):
+        raw = _make_raw()
+        raw["tailnet"] = {}
+        with self.assertRaises(ConfigError):
+            build_config(raw)
+
+    def test_default_dir_is_per_cluster_and_sanitized(self):
+        raw = self._reachable_raw()
+        raw["cluster_name"] = "My Cluster/v2"
+        config = build_config(raw)
+        self.assertEqual(config.tailnet_config.tailscale_dir,
+                         "/tmp/My-Cluster-v2/tailscale")
+
+    def test_explicit_dir_wins(self):
+        raw = self._reachable_raw()
+        raw["tailnet"]["tailscale_dir"] = "/tmp/custom-ts"
+        config = build_config(raw)
+        self.assertEqual(config.tailnet_config.tailscale_dir, "/tmp/custom-ts")
+
+    def test_overlong_dir_rejected(self):
+        raw = self._reachable_raw()
+        raw["tailnet"]["tailscale_dir"] = "/tmp/" + "x" * 120
+        with self.assertRaises(ConfigError):
+            build_config(raw)
+
+
+def _make_cloud_raw(join_tailnet=None, with_tailnet_section=True):
+    """A raw config with one AWS node type (post-placeholder-expansion)."""
+    node = {"KeyName": "k", "InstanceType": "t3.large", "count": 2,
+            "ssh_user": "ubuntu", "ssh_private_key": "/keys/k.pem"}
+    if join_tailnet is not None:
+        node["join_tailnet"] = join_tailnet
+    raw = {
+        "cluster_name": "cloud-test",
+        "provider": {"head_ip": "10.0.0.1"},
+        "auth": {"ssh_user": "u"},
+        "aws_nodes": {"region": "us-west-2", "ec2_worker": node},
+        "available_node_types": {
+            "cw": {"resources": {"cw": 4}, "num_workers": 2,
+                   "compatible_ips": ["203.0.113.1", "203.0.113.2"]},
+        },
+        "head_start_ray_commands": ["ray start --head --port=6379"],
+        "worker_start_ray_commands": ["ray start --address=$RAY_HEAD_IP:6379"],
+    }
+    if with_tailnet_section:
+        raw["tailnet"] = {"head_tailnet_ip": "100.64.0.1",
+                          "auth_key": "tskey-auth-test"}
+    return raw
+
+
+class TestCloudTailnet(unittest.TestCase):
+
+    IP_MAP = {"ec2_worker": ["203.0.113.1", "203.0.113.2"]}
+
+    def _apply(self, raw):
+        from chia.cli.up import _apply_cloud_network_mode
+        aws_result = parse_aws_nodes(raw)
+        return _apply_cloud_network_mode(
+            raw, aws_result, self.IP_MAP, None, {}), raw
+
+    def test_aws_defaults_to_tailnet_when_section_present(self):
+        joining, raw = self._apply(_make_cloud_raw())
+        self.assertIn("ec2_worker", joining)
+        config = build_config(raw)
+        for ip in self.IP_MAP["ec2_worker"]:
+            self.assertTrue(config.is_tailnet(ip))
+            self.assertFalse(config.is_tunneled(ip))
+            auth = config.get_ssh_auth(ip)
+            self.assertTrue(auth.manage_tailscale)
+            self.assertEqual(auth.ssh_user, "ubuntu")
+            self.assertEqual(auth.ssh_private_key, "/keys/k.pem")
+            # Public IP → orchestration SSH is direct, no SOCKS proxy.
+            self.assertIsNone(auth.ssh_proxy_command)
+
+    def test_aws_defaults_to_tunnels_without_section(self):
+        joining, raw = self._apply(_make_cloud_raw(with_tailnet_section=False))
+        self.assertEqual(joining, {})
+        config = build_config(raw)
+        for ip in self.IP_MAP["ec2_worker"]:
+            self.assertTrue(config.is_tunneled(ip))
+
+    def test_explicit_opt_out_keeps_tunnels_but_mixing_fails(self):
+        # join_tailnet: false with a tailnet section → tunnels injected,
+        # and build_config rejects the tunnel/tailnet mix loudly.
+        joining, raw = self._apply(_make_cloud_raw(join_tailnet=False))
+        self.assertEqual(joining, {})
+        with self.assertRaises(ConfigError):
+            build_config(raw)
+
+    def test_explicit_join_without_section_fails(self):
+        with self.assertRaises(ConfigError):
+            self._apply(_make_cloud_raw(join_tailnet=True,
+                                        with_tailnet_section=False))
+
+    def test_missing_auth_key_fails(self):
+        raw = _make_cloud_raw()
+        del raw["tailnet"]["auth_key"]
+        with self.assertRaises(ConfigError):
+            self._apply(raw)
+
+    def test_gcp_join_tailnet_parses(self):
+        raw = {"gcp_nodes": {"project": "p", "gw": {
+            "machine_type": "n1-standard-1", "count": 1,
+            "join_tailnet": True}}}
+        node_configs, *_ = parse_gcp_nodes(raw)
+        self.assertTrue(node_configs["gw"].join_tailnet)
+
+    def test_alloc_uses_tailnet_ip_map(self):
+        joining, raw = self._apply(_make_cloud_raw())
+        config = build_config(raw)
+        assignments = assign_nodes(config)
+        ip_map = {"203.0.113.1": "100.64.0.11", "203.0.113.2": "100.64.0.12"}
+        allocs = allocate_tailnet_workers(config, assignments, ip_map)
+        by_cluster_ip = {k[0]: a for k, a in allocs.items()}
+        self.assertEqual(by_cluster_ip["203.0.113.1"].tailnet_ip, "100.64.0.11")
+        self.assertEqual(by_cluster_ip["203.0.113.2"].tailnet_ip, "100.64.0.12")
+
+    def test_relay_spec_excludes_own_workers_by_cluster_address(self):
+        joining, raw = self._apply(_make_cloud_raw())
+        config = build_config(raw)
+        assignments = assign_nodes(config)
+        ip_map = {"203.0.113.1": "100.64.0.11", "203.0.113.2": "100.64.0.12"}
+        allocs = allocate_tailnet_workers(config, assignments, ip_map)
+        spec = build_relay_spec(config, allocs, "203.0.113.1")
+        own = next(a for k, a in allocs.items() if k[0] == "203.0.113.1")
+        other = next(a for k, a in allocs.items() if k[0] == "203.0.113.2")
+        bind_ips = {e["bind_ip"] for e in spec["listeners"]}
+        self.assertNotIn(own.advertise_ip, bind_ips)
+        self.assertIn(other.advertise_ip, bind_ips)
+        # Dial destinations use the discovered tailnet IPs.
+        dests = {e["dest_ip"] for e in spec["listeners"]
+                 if e["bind_ip"] == other.advertise_ip}
+        self.assertEqual(dests, {"100.64.0.12"})
+
+    def test_install_command_and_hostname(self):
+        config = build_config(_make_cloud_raw())
+        # build_config leaves aws_nodes in raw; use the tailnet config
+        tn = config.tailnet_config
+        cmd = tailscale_install_command(tn)
+        self.assertIn(f"tailscale_{tn.tailscale_version}_", cmd)
+        self.assertIn("pkgs.tailscale.com", cmd)
+        self.assertIn(tn.tailscale_dir, cmd)
+        self.assertEqual(ts_hostname("My Cluster", "203.0.113.1"),
+                         "chia-my-cluster-203-0-113-1")
+
+    def test_injector_respects_existing_overrides(self):
+        raw = _make_cloud_raw()
+        raw["auth"]["overrides"] = {"203.0.113.1": {"ssh_user": "custom"}}
+        _inject_cloud_tailnet_overrides(
+            raw, self.IP_MAP, parse_aws_nodes(raw)[0])
+        entry = raw["auth"]["overrides"]["203.0.113.1"]
+        self.assertEqual(entry["ssh_user"], "custom")  # explicit wins
+        self.assertTrue(entry["tailnet"])
+        self.assertTrue(entry["manage_tailscale"])
 
 
 class TestSSHProxyCommand(unittest.TestCase):

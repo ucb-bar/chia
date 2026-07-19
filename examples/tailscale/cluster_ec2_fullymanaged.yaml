@@ -1,0 +1,66 @@
+# Fully managed tailnet cluster: CHIA runs tailscale on EVERY node —
+# the head, an on-prem worker, and an EC2 worker — no manual tailscaled
+# anywhere. Environment variables to set before `chia up` / `chia down`:
+#   HEAD_IP     how CHIA SSHes to the head (its real IP/hostname)
+#   WORKER_IP   the on-prem worker's real IP/hostname (NOT its tailscale
+#               address — tailscale can't be bootstrapped over tailscale,
+#               so managed nodes must be ordinarily SSH-reachable)
+#   TS_AUTHKEY  reusable tailscale auth key, e.g.:
+#               export TS_AUTHKEY=$(cat examples/tailscale/keyfile)
+#   AWS_KEYPAIR      EC2 key pair name in your account
+#   AWS_KEYPAIR_PEM  path to the matching private key
+
+cluster_name: TailscaleFullyManaged
+
+tailnet:
+    manage_all: true
+    auth_key: ${TS_AUTHKEY}
+    # head_tailnet_ip is omitted — discovered when CHIA joins the head.
+    # A non-default proxy port keeps this cluster's daemons fully
+    # independent of any personally-run tailscaled (which typically
+    # serves 1055). Binaries/state live in /tmp/<cluster_name>/tailscale.
+    socks_proxy: 127.0.0.1:1155
+
+provider:
+    head_ip: ${HEAD_IP}
+
+auth:
+    ssh_user: ${USER}
+
+aws_nodes:
+    region: us-east-1
+    ec2_worker:
+        KeyName: ${AWS_KEYPAIR}
+        InstanceType: t3.small
+        count: 1
+        ImageId: ami-0d001f8052688dc45   # Ubuntu 22.04 (us-east-1)
+        ssh_user: ubuntu
+        ssh_private_key: ${AWS_KEYPAIR_PEM}
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 24
+                  VolumeType: gp3
+
+available_node_types:
+    tailscale_worker:
+        resources: {"tailscale_worker": 4}
+        num_workers: 1
+        compatible_ips: ["${WORKER_IP}"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+    ec2_worker:
+        resources: {"ec2_worker": 2}
+        num_workers: 1
+        compatible_ips: ["@ec2_worker:0"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_start_ray_commands:
+    - ray stop
+    - ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

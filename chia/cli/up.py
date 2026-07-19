@@ -5,10 +5,14 @@ import sys
 
 from chia.cluster.config import (
     ClusterConfig, ConfigError, NodeAssignment,
-    assign_nodes, build_config, load_raw_config,
+    apply_cloud_network_mode, assign_nodes, build_config, load_raw_config,
     parse_aws_nodes, parse_gcp_nodes,
     _expand_node_placeholders, _inject_cloud_tunnel_overrides,
 )
+
+# Back-compat alias — the helper moved to chia.cluster.config so that
+# `chia down` can use the same cloud network-mode routing.
+_apply_cloud_network_mode = apply_cloud_network_mode
 from chia.cluster.log import get_logger, setup_logging
 from chia.cluster.node_setup import (
     add_nodes_to_cluster, allocate_worker_tunnels, bring_up_cluster,
@@ -75,8 +79,9 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
         tn = config.tailnet_config
         tailnet_allocs = allocate_tailnet_workers(config, assignments)
         if tailnet_allocs:
+            head_ts = tn.head_tailnet_ip or "(discovered at bring-up)"
             print(f"\nTailnet (via SOCKS5 {tn.socks_proxy}):")
-            print(f"  head {tn.head_tailnet_ip} advertises {tn.head_advertise_ip} "
+            print(f"  head {head_ts} advertises {tn.head_advertise_ip} "
                   f"(gcs={tn.gcs_port}, workers={tn.head_worker_port_min}-"
                   f"{tn.head_worker_port_max})")
             for (ip, nt_name, idx), ta in tailnet_allocs.items():
@@ -229,10 +234,13 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
 
     if ip_map:
         raw = _expand_node_placeholders(raw, ip_map)
-        if aws_result is not None:
-            _inject_cloud_tunnel_overrides(raw, aws_ip_map, aws_result[0])
-        if gcp_result is not None:
-            _inject_cloud_tunnel_overrides(raw, gcp_ip_map, gcp_result[0])
+        try:
+            _apply_cloud_network_mode(
+                raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
+                require_auth_key=not args.dry_run, logger=logger)
+        except ConfigError as e:
+            logger.error(f"Config error: {e}")
+            sys.exit(1)
 
     # --- Build config and assignments ---
     try:
@@ -287,6 +295,17 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     except Exception as e:
         logger.error(f"Add nodes failed: {e}")
         sys.exit(1)
+
+
+def _append_tailscale_install(joining_types, tailnet_config):
+    """Add the tailscale install step to joining types' setup commands."""
+    if not joining_types or tailnet_config is None:
+        return
+    from chia.cluster.tailnet import tailscale_install_command
+    install_cmd = tailscale_install_command(tailnet_config)
+    for cfg in joining_types.values():
+        if install_cmd not in cfg.setup_commands:
+            cfg.setup_commands = cfg.setup_commands + [install_cmd]
 
 
 def _run_cloud_setup(aws_result, aws_ip_map, gcp_result, gcp_ip_map,
@@ -400,20 +419,25 @@ def cmd_up(args):
                                  "Run 'chia down' to terminate them.")
                 sys.exit(1)
 
-    # Expand placeholders once over the merged map (the expander raises on
-    # unknown @node refs, so AWS and GCP refs must be resolved together).
-    ip_map = {**aws_ip_map, **gcp_ip_map}
-    if ip_map:
-        raw = _expand_node_placeholders(raw, ip_map)
-        if aws_result is not None:
-            _inject_cloud_tunnel_overrides(raw, aws_ip_map, aws_result[0])
-        if gcp_result is not None:
-            _inject_cloud_tunnel_overrides(raw, gcp_ip_map, gcp_result[0])
-
     def _warn_running():
         if provisioned:
             logger.error("WARNING: cloud instances are still running. "
                          "Run 'chia down' to terminate them.")
+
+    # Expand placeholders once over the merged map (the expander raises on
+    # unknown @node refs, so AWS and GCP refs must be resolved together).
+    ip_map = {**aws_ip_map, **gcp_ip_map}
+    joining_types = {}
+    if ip_map:
+        raw = _expand_node_placeholders(raw, ip_map)
+        try:
+            joining_types = _apply_cloud_network_mode(
+                raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
+                require_auth_key=not args.dry_run, logger=logger)
+        except ConfigError as e:
+            logger.error(f"Config error: {e}")
+            _warn_running()
+            sys.exit(1)
 
     try:
         config = build_config(raw)
@@ -432,6 +456,7 @@ def cmd_up(args):
     # Run cloud setup commands (install deps on fresh instances). Skip in
     # dry-run: ip_map there is placeholder IPs that don't resolve.
     if not args.dry_run:
+        _append_tailscale_install(joining_types, config.tailnet_config)
         _run_cloud_setup(aws_result, aws_ip_map, gcp_result, gcp_ip_map,
                          config, logger)
 

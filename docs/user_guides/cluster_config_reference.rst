@@ -404,6 +404,11 @@ under a named node type:
    * - ``ssh_timeout``
      - ``120``
      - Seconds to wait for SSH to come up.
+   * - ``join_tailnet``
+     - *auto*
+     - Join the cluster over the tailnet instead of reverse SSH tunnels.
+       Defaults to true when a top-level ``tailnet:`` section exists,
+       else false. See `Tailnet (tailscale) clusters`_.
    * - *(anything else)*
      -
      - Unknown keys (e.g. ``BlockDeviceMappings``, ``UserData``) are passed
@@ -487,6 +492,11 @@ Every other key lives under a named node type:
    * - ``ssh_timeout``
      - ``120``
      - Seconds to wait for SSH to come up.
+   * - ``join_tailnet``
+     - *auto*
+     - Join the cluster over the tailnet instead of reverse SSH tunnels.
+       Defaults to true when a top-level ``tailnet:`` section exists,
+       else false. See `Tailnet (tailscale) clusters`_.
    * - *(anything else)*
      -
      - Merged into the instance definition sent to the Compute API.
@@ -596,6 +606,48 @@ netcat). No per-IP overrides are required:
 ``auth.overrides.<ip>`` entries still win for special cases — a
 different ssh user/key for one host, or a custom ``ssh_proxy_command``
 when the head's ``nc`` is not OpenBSD netcat.
+
+**Cloud workers.** When a ``tailnet:`` section is present, ``aws_nodes``
+and ``gcp_nodes`` workers join the cluster over the tailnet **by
+default** instead of reverse SSH tunnels (set ``join_tailnet: false``
+on a node type to opt back into tunnels — but the two modes cannot mix
+in one cluster). CHIA handles the whole lifecycle: the userspace
+tailscale binaries are installed during node setup (static tarball, no
+root), ``tailscaled --tun=userspace-networking`` is started with the
+SOCKS5 proxy from ``socks_proxy``, the node is joined with
+``tailscale up --auth-key=<tailnet.auth_key>``, and its tailnet IP is
+discovered and wired into the relay mesh. Orchestration SSH continues
+over the instance's public IP. This requires ``tailnet.auth_key`` — use
+a **reusable** (ideally ephemeral, pre-authorized) key, referenced as
+``${TS_AUTHKEY}`` so it stays out of the file. On-prem hosts can opt
+into the same managed lifecycle with ``manage_tailscale: true`` in
+their ``auth.overrides`` entry; by default CHIA assumes on-prem tailnet
+hosts already run their own tailscaled.
+
+**Fully managed clusters.** Set ``manage_all: true`` in the
+``tailnet:`` section and CHIA manages tailscale on **every** node,
+including the head — no manual tailscaled anywhere, and
+``head_tailnet_ip`` may be omitted (it is discovered at bring-up).
+The constraint: tailscale cannot be bootstrapped over tailscale, so
+under ``manage_all`` every worker must be addressed by an ordinary
+SSH-reachable IP/hostname; a worker listed by a ``100.64.0.0/10``
+address fails loudly at config load. Opt individual machines out with
+``manage_tailscale: false`` in their ``auth.overrides`` entry (address
+those by their tailnet IP and run tailscaled there yourself). On
+``chia down``, CHIA-managed daemons are stopped (the head's last);
+their state persists in ``tailscale_dir``, so re-ups rejoin without
+consuming the auth key unless the directory was cleaned.
+
+Additional ``tailnet:`` fields for managed nodes: ``auth_key`` (as
+above), ``tailscale_version`` (pinned tarball version) and
+``tailscale_dir`` (install/state directory on managed nodes, default
+``/tmp/<cluster_name>/tailscale`` — per-cluster, so cluster daemons
+never collide with each other or a personally-run tailscaled; pair
+with a distinct ``socks_proxy`` port for full isolation. Keep the path
+short: the tailscaled control socket lives under it and Unix socket
+paths are limited to ~107 characters — checked at config load. Note
+``/tmp`` state does not survive reboots, so the next ``chia up``
+rejoins using the reusable auth key).
 
 Optional ``tailnet:`` port fields (defaults in parentheses):
 ``head_advertise_ip`` (127.200.0.1), ``gcs_port`` (6379 — must match

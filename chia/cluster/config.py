@@ -75,8 +75,33 @@ class TailnetConfig:
     head's worker port range must exceed the machine's CPU count — Ray
     prestarts one worker process per CPU and each needs a port.
     """
-    head_tailnet_ip: str = ""     # required: the head's tailscale 100.x address
+    # The head's tailscale 100.x address. Required — unless
+    # ``manage_all`` is set, in which case CHIA discovers it at bring-up.
+    head_tailnet_ip: str = ""
     socks_proxy: str = "127.0.0.1:1055"   # tailscaled --socks5-server on every node
+    # Auth key (tskey-auth-...) used when CHIA joins nodes to the tailnet
+    # itself (cloud nodes by default, on-prem via manage_tailscale). Use a
+    # reusable — ideally ephemeral, pre-authorized — key; reference it as
+    # ${TS_AUTHKEY} to keep it out of the YAML file.
+    auth_key: str = ""
+    # Manage tailscale on EVERY node, including the head: install the
+    # userspace binaries, start tailscaled, and join the tailnet. Every
+    # worker must then be addressed by an ordinary SSH-reachable IP —
+    # tailscale can't be bootstrapped over tailscale, so a worker listed
+    # by a 100.64.0.0/10 address is rejected at config load (opt single
+    # machines out with ``manage_tailscale: false`` in auth.overrides
+    # and run tailscaled there yourself).
+    manage_all: bool = False
+    # Userspace tailscale install used on CHIA-managed nodes (no root
+    # needed): the static tarball from pkgs.tailscale.com, unpacked into
+    # tailscale_dir with state/socket kept alongside. The default is
+    # per-cluster — /tmp/<cluster_name>/tailscale — so cluster daemons
+    # never collide with each other or with a personally-run tailscaled
+    # (pick a distinct socks_proxy port for full isolation). Note that
+    # /tmp state does not survive reboots: a rejoin (consuming the
+    # reusable auth key) happens on the next chia up.
+    tailscale_version: str = "1.98.9"
+    tailscale_dir: str = ""   # computed default: /tmp/<cluster_name>/tailscale
     head_advertise_ip: str = "127.200.0.1"
     gcs_port: int = 6379          # must match --port in head_start_ray_commands
     head_node_manager_port: int = 25800
@@ -108,6 +133,10 @@ class SSHAuthConfig:
     # True if this host participates in the cluster over the tailnet
     # (see TailnetConfig). Mutually exclusive with ``tunnel``.
     tailnet: bool = False
+    # True if CHIA installs/starts userspace tailscaled on this host and
+    # joins it to the tailnet itself (default for cloud nodes when a
+    # tailnet section exists; per-IP opt-in for on-prem hosts).
+    manage_tailscale: bool = False
 
 
 @dataclass
@@ -267,7 +296,7 @@ def parse_aws_nodes(raw: dict) -> tuple[dict[str, Any], str] | None:
     region = aws_nodes_raw.pop("region", DEFAULT_REGION)
 
     node_configs: dict[str, AWSNodeConfig] = {}
-    known_keys = {"KeyName", "InstanceType", "count", "ImageId", "ssh_user", "ssh_private_key", "skip_default_setup", "setup_commands", "setup_timeout", "ssh_timeout"}
+    known_keys = {"KeyName", "InstanceType", "count", "ImageId", "ssh_user", "ssh_private_key", "skip_default_setup", "setup_commands", "setup_timeout", "ssh_timeout", "join_tailnet"}
 
     for name, node_raw in aws_nodes_raw.items():
         if not isinstance(node_raw, dict):
@@ -294,6 +323,7 @@ def parse_aws_nodes(raw: dict) -> tuple[dict[str, Any], str] | None:
             setup_commands=node_raw.get("setup_commands", []),
             setup_timeout=node_raw.get("setup_timeout", 1800),
             ssh_timeout=node_raw.get("ssh_timeout", 120),
+            join_tailnet=node_raw.get("join_tailnet"),
         )
 
     return node_configs, region
@@ -329,6 +359,7 @@ def parse_gcp_nodes(
         "machine_type", "count", "image", "zone", "disk_size_gb", "spot",
         "ssh_user", "ssh_private_key", "ssh_public_key", "use_os_login",
         "skip_default_setup", "setup_commands", "setup_timeout", "ssh_timeout",
+        "join_tailnet",
     }
 
     for name, node_raw in gcp_raw.items():
@@ -365,6 +396,7 @@ def parse_gcp_nodes(
             setup_commands=node_raw.get("setup_commands", []),
             setup_timeout=node_raw.get("setup_timeout", 1800),
             ssh_timeout=node_raw.get("ssh_timeout", 120),
+            join_tailnet=node_raw.get("join_tailnet"),
         )
 
     return node_configs, project, zone, network, subnetwork
@@ -475,8 +507,24 @@ def _parse_tailnet_section(raw: dict) -> TailnetConfig | None:
             f"tailnet has unknown field(s): {sorted(unknown)} "
             f"(valid: {sorted(valid)})")
     cfg = TailnetConfig(**section)
-    if not cfg.head_tailnet_ip:
-        raise ConfigError("tailnet: missing required field 'head_tailnet_ip'")
+    if not cfg.head_tailnet_ip and not cfg.manage_all:
+        raise ConfigError(
+            "tailnet: missing required field 'head_tailnet_ip' "
+            "(or set 'manage_all: true' to have CHIA join the head and "
+            "discover it)")
+    if not cfg.tailscale_dir:
+        cluster = re.sub(r"[^A-Za-z0-9._-]+", "-",
+                         str(raw.get("cluster_name", "default")))
+        cfg.tailscale_dir = f"/tmp/{cluster}/tailscale"
+    # The tailscaled control socket lives under tailscale_dir; Unix
+    # socket paths are limited to ~107 bytes. Only checkable when the
+    # path has no remote-expanded $VARs.
+    if "$" not in cfg.tailscale_dir and \
+            len(cfg.tailscale_dir) + len("/run/tailscaled.sock") > 100:
+        raise ConfigError(
+            f"tailnet.tailscale_dir is too long ({cfg.tailscale_dir!r}) — "
+            f"the control socket under it would exceed the ~107-char Unix "
+            f"socket path limit")
     return cfg
 
 
@@ -526,6 +574,88 @@ def _inject_cloud_tunnel_overrides(
 
 # Back-compat alias (pre-GCP name).
 _inject_aws_tunnel_overrides = _inject_cloud_tunnel_overrides
+
+
+def _inject_cloud_tailnet_overrides(
+    raw: dict,
+    ip_map: dict[str, list[str]],
+    node_configs: dict | None = None,
+) -> None:
+    """Add tailnet auth overrides for cloud-provisioned IPs (AWS or GCP).
+
+    The tailnet counterpart of :func:`_inject_cloud_tunnel_overrides`:
+    marks each IP as a CHIA-managed tailnet node (``tailnet`` +
+    ``manage_tailscale``) instead of injecting an SSH tunnel, and
+    injects the node config's ``ssh_user`` / ``ssh_private_key``.
+    Mutates *raw* in place.
+    """
+    auth = raw.setdefault("auth", {})
+    overrides = auth.setdefault("overrides", {})
+
+    for name, ips in ip_map.items():
+        ssh_user = None
+        ssh_private_key = None
+        if node_configs and name in node_configs:
+            ssh_user = node_configs[name].ssh_user
+            ssh_private_key = node_configs[name].ssh_private_key
+
+        for ip in ips:
+            entry = overrides.setdefault(ip, {})
+            entry.setdefault("tailnet", True)
+            entry.setdefault("manage_tailscale", True)
+            if ssh_user and "ssh_user" not in entry:
+                entry["ssh_user"] = ssh_user
+            if ssh_private_key and "ssh_private_key" not in entry:
+                entry["ssh_private_key"] = ssh_private_key
+
+
+def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
+                             gcp_result, gcp_ip_map,
+                             require_auth_key=True, logger=None):
+    """Route each provisioned/discovered cloud node type to its network mode.
+
+    When the config has a top-level ``tailnet:`` section, cloud types
+    default to joining the tailnet (no SSH tunnels); a per-type
+    ``join_tailnet`` overrides the default either way. Injects the
+    matching auth overrides for every IP in the maps (mutating *raw*)
+    and returns ``{type_name: node_config}`` for the joining types.
+
+    Used by both ``chia up`` (with provisioned IPs) and ``chia down``
+    (with discovered IPs — pass ``require_auth_key=False`` there, since
+    teardown never joins anything).
+    """
+    has_tailnet = raw.get("tailnet") is not None
+
+    joining_types = {}
+    for result, ip_map in ((aws_result, aws_ip_map), (gcp_result, gcp_ip_map)):
+        if result is None or not ip_map:
+            continue
+        node_configs = result[0]
+        join_map, tunnel_map = {}, {}
+        for name, ips in ip_map.items():
+            cfg = node_configs.get(name)
+            explicit = cfg.join_tailnet if cfg is not None else None
+            joins = explicit if explicit is not None else has_tailnet
+            if joins and not has_tailnet:
+                raise ConfigError(
+                    f"cloud node type '{name}': join_tailnet requires a "
+                    f"top-level 'tailnet:' section")
+            (join_map if joins else tunnel_map)[name] = ips
+        if tunnel_map:
+            _inject_cloud_tunnel_overrides(raw, tunnel_map, node_configs)
+        if join_map:
+            _inject_cloud_tailnet_overrides(raw, join_map, node_configs)
+            joining_types.update({n: node_configs[n] for n in join_map})
+
+    if joining_types and not (raw.get("tailnet") or {}).get("auth_key"):
+        msg = ("tailnet.auth_key is required to join cloud nodes to the "
+               "tailnet — set it to a reusable (ideally ephemeral, "
+               "pre-authorized) tskey-auth-... key, e.g. via ${TS_AUTHKEY}")
+        if require_auth_key:
+            raise ConfigError(msg)
+        elif logger is not None:
+            logger.warning(msg)
+    return joining_types
 
 
 def load_raw_config(yaml_path: str) -> dict:
@@ -586,12 +716,24 @@ def build_config(raw: dict) -> ClusterConfig:
             raise ConfigError(
                 f"auth.overrides.{ip}: 'tailnet: true' requires a top-level "
                 f"'tailnet:' section (with at least 'head_tailnet_ip')")
+        # Explicit per-IP manage_tailscale wins either way; absent, it
+        # defaults to tailnet.manage_all.
+        manage_raw = override_raw.get("manage_tailscale")
+        if manage_raw is None:
+            manage_flag = bool(tailnet_config and tailnet_config.manage_all)
+        else:
+            manage_flag = bool(manage_raw)
+        if manage_raw and tailnet_config is None:
+            raise ConfigError(
+                f"auth.overrides.{ip}: 'manage_tailscale: true' requires a "
+                f"top-level 'tailnet:' section")
         auth_overrides[ip] = SSHAuthConfig(
             ssh_user=override_raw.get("ssh_user", auth.get("ssh_user", "")),
             ssh_private_key=override_raw.get("ssh_private_key", auth.get("ssh_private_key")),
             tunnel=tunnel_cfg,
             ssh_proxy_command=override_raw.get("ssh_proxy_command", global_proxy_command),
             tailnet=tailnet_flag,
+            manage_tailscale=manage_flag,
         )
 
     # NOTE: tunnel_ip auto-assignment is handled per-worker in
@@ -669,9 +811,16 @@ def build_config(raw: dict) -> ClusterConfig:
     # a tailnet node, so mark them automatically — no per-IP override
     # boilerplate needed. Anything set explicitly in auth.overrides
     # (ssh user/key, a custom ssh_proxy_command) still wins; only the
-    # missing pieces are filled in. The default ProxyCommand dials the
-    # head's local tailscaled SOCKS5 proxy (requires OpenBSD netcat on
-    # the head — override ssh_proxy_command per-IP or in auth: if not).
+    # missing pieces are filled in.
+    #
+    # Orchestration SSH reachability splits two ways:
+    #   - Hosts addressed BY a tailnet IP (100.64.0.0/10) or hostname
+    #     (e.g. MagicDNS) are dialed through the head's local SOCKS5
+    #     proxy — the default ProxyCommand requires OpenBSD netcat on
+    #     the head (override ssh_proxy_command per-IP or in auth: if not).
+    #   - Hosts addressed by an ordinary IP (e.g. a cloud node's public
+    #     IP, which CHIA joins to the tailnet itself) are dialed
+    #     directly; their tailnet IP is discovered at bring-up.
     if tailnet_config is not None:
         default_proxy = (global_proxy_command
                          or f"nc -X 5 -x {tailnet_config.socks_proxy} %h %p")
@@ -683,20 +832,38 @@ def build_config(raw: dict) -> ClusterConfig:
                 override = SSHAuthConfig(
                     ssh_user=auth.get("ssh_user", ""),
                     ssh_private_key=auth.get("ssh_private_key"),
+                    manage_tailscale=tailnet_config.manage_all,
                 )
                 auth_overrides[ip] = override
             if override.tunnel is not None:
                 continue  # rejected by the mixing check below
             override.tailnet = True
-            if override.ssh_proxy_command is None:
-                override.ssh_proxy_command = default_proxy
             try:
-                if ipaddress.ip_address(ip) not in ipaddress.ip_network("100.64.0.0/10"):
-                    logger.warning(
-                        f"tailnet worker {ip} is not a tailscale "
-                        f"(100.64.0.0/10) address — is this intended?")
+                is_ts_addr = (ipaddress.ip_address(ip)
+                              in ipaddress.ip_network("100.64.0.0/10"))
+                is_hostname = False
             except ValueError:
-                pass  # a hostname (e.g. MagicDNS) — fine
+                is_ts_addr, is_hostname = False, True
+            if is_ts_addr and override.manage_tailscale:
+                raise ConfigError(
+                    f"worker {ip} is addressed by its tailscale IP but "
+                    f"marked for CHIA-managed tailscale — tailscale cannot "
+                    f"be bootstrapped over tailscale. Address the machine "
+                    f"by an ordinary SSH-reachable IP/hostname, or set "
+                    f"'manage_tailscale: false' for it in auth.overrides "
+                    f"and run tailscaled there yourself.")
+            # Managed nodes are always dialed directly (bootstrap needs a
+            # non-tailnet path); unmanaged tailnet-addressed nodes (or
+            # MagicDNS hostnames) go through the SOCKS proxy.
+            if (is_ts_addr or is_hostname) and not override.manage_tailscale \
+                    and override.ssh_proxy_command is None:
+                override.ssh_proxy_command = default_proxy
+            if not is_ts_addr and not is_hostname and not override.manage_tailscale:
+                logger.warning(
+                    f"tailnet worker {ip} is neither a tailscale "
+                    f"(100.64.0.0/10) address nor managed by CHIA "
+                    f"(manage_tailscale) — Ray traffic to it will fail "
+                    f"unless tailscaled is already running there")
 
     config = ClusterConfig(
         cluster_name=raw.get("cluster_name", "default"),

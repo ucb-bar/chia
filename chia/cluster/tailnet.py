@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
 from dataclasses import dataclass
 
 from chia.cluster.config import (
@@ -170,9 +171,103 @@ def head_ports(tn: TailnetConfig) -> list[int]:
             + list(range(tn.head_tool_port_min, tn.head_tool_port_max + 1)))
 
 
+def _ts_ports(tn: TailnetConfig) -> tuple[int, int]:
+    """SOCKS5 and HTTP proxy ports for a CHIA-managed tailscaled."""
+    socks_port = int(tn.socks_proxy.rsplit(":", 1)[1])
+    return socks_port, socks_port + 1
+
+
+def ts_hostname(cluster_name: str, ip: str) -> str:
+    """A DNS-safe tailnet machine name: chia-<cluster>-<host>."""
+    name = f"chia-{cluster_name}-{ip}".lower()
+    name = re.sub(r"[^a-z0-9-]+", "-", name).strip("-")
+    return name[:63]
+
+
+def tailscale_install_command(tn: TailnetConfig) -> str:
+    """Idempotent shell command installing userspace tailscale binaries.
+
+    Downloads the static tarball (no root needed) into
+    ``tn.tailscale_dir`` unless ``tailscaled`` is already there.
+    Suitable for cloud node setup_commands.
+    """
+    if not tn.tailscale_dir:
+        raise ConfigError(
+            "tailnet.tailscale_dir is empty — configs built via "
+            "build_config() get a per-cluster default; set it explicitly "
+            "when constructing TailnetConfig directly")
+    d = tn.tailscale_dir
+    v = tn.tailscale_version
+    return (
+        f'TS_DIR="{d}"; '
+        f'if [ ! -x "$TS_DIR/tailscaled" ]; then '
+        f'case "$(uname -m)" in aarch64|arm64) TS_ARCH=arm64;; *) TS_ARCH=amd64;; esac; '
+        f'mkdir -p "$TS_DIR" && '
+        f'curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_{v}_${{TS_ARCH}}.tgz" '
+        f'| tar -xz -C "$TS_DIR" --strip-components=1; '
+        f'fi; mkdir -p "$TS_DIR/data" "$TS_DIR/run"'
+    )
+
+
+def ensure_tailscale(ssh: SSHClient, tn: TailnetConfig,
+                     hostname: str | None = None) -> str:
+    """Install/start userspace tailscaled on *ssh*'s host and join the
+    tailnet; return the host's tailnet IPv4 address.
+
+    Fully idempotent: skips the install if the binaries exist, the
+    daemon start if this install's daemon is already running (matched by
+    its absolute statedir, so a user-run tailscaled elsewhere on the
+    host is never touched), and the ``tailscale up`` if already joined
+    (state persists in the statedir across restarts).
+    """
+    socks_port, http_port = _ts_ports(tn)
+    hostname_flag = f" --hostname={hostname}" if hostname else ""
+    if tn.auth_key:
+        join_cmd = (
+            f'"$TS_DIR/tailscale" --socket="$TS_DIR/run/tailscaled.sock" up '
+            f'--auth-key={tn.auth_key} --accept-dns=false{hostname_flag}'
+        )
+    else:
+        join_cmd = (
+            'echo "chia: node is not joined to the tailnet and no '
+            'tailnet.auth_key is configured" >&2; exit 1'
+        )
+    script = [
+        tailscale_install_command(tn),
+        f'TS_DIR="{tn.tailscale_dir}"',
+        # Start this install's daemon if it isn't running (matched by
+        # absolute statedir so other tailscaled instances are ignored).
+        f'if ! pgrep -f -- "--statedir=$TS_DIR/data" >/dev/null 2>&1; then '
+        f'nohup "$TS_DIR/tailscaled" --tun=userspace-networking '
+        f'--statedir="$TS_DIR/data" --socket="$TS_DIR/run/tailscaled.sock" '
+        f'--socks5-server=localhost:{socks_port} '
+        f'--outbound-http-proxy-listen=localhost:{http_port} '
+        f'> "$TS_DIR/tailscaled.log" 2>&1 & fi',
+        'for i in $(seq 1 40); do [ -S "$TS_DIR/run/tailscaled.sock" ] && break; sleep 0.5; done',
+        'if [ ! -S "$TS_DIR/run/tailscaled.sock" ]; then '
+        'echo "chia: tailscaled socket never appeared:" >&2; '
+        'cat "$TS_DIR/tailscaled.log" >&2; exit 1; fi',
+        # Join unless already up (statedir persists the login).
+        f'if ! "$TS_DIR/tailscale" --socket="$TS_DIR/run/tailscaled.sock" '
+        f'status >/dev/null 2>&1; then {join_cmd}; fi',
+        'echo "CHIA_TS_IP=$("$TS_DIR/tailscale" --socket="$TS_DIR/run/tailscaled.sock" ip -4)"',
+    ]
+    result = ssh.run_script(script, timeout=300)
+    for line in result.stdout.splitlines():
+        if line.startswith("CHIA_TS_IP="):
+            ts_ip = line.split("=", 1)[1].strip()
+            if ts_ip:
+                logger.info(f"[{ssh.ip}] joined tailnet as {ts_ip}")
+                return ts_ip
+    raise RuntimeError(
+        f"Could not determine tailnet IP on {ssh.ip} — "
+        f"'tailscale ip -4' returned nothing.\nstdout: {result.stdout}")
+
+
 def allocate_tailnet_workers(
     config: ClusterConfig,
     assignments: list[NodeAssignment],
+    tailnet_ip_map: dict[str, str] | None = None,
 ) -> dict[tuple[str, str, int], TailnetWorkerAlloc]:
     """Compute per-worker advertise IPs and port blocks.
 
@@ -180,6 +275,11 @@ def allocate_tailnet_workers(
     every assignment on a tailnet IP.  Advertise IPs count up from
     127.0.0.2; port blocks are consecutive ``worker_block_size`` slices
     from ``worker_block_base``.
+
+    *tailnet_ip_map* maps a worker's cluster address (how CHIA SSHes to
+    it, e.g. an EC2 public IP) to its tailnet address, for nodes whose
+    tailnet IP is discovered at bring-up. Hosts absent from the map are
+    assumed to be addressed by their tailnet IP directly.
     """
     tn = config.tailnet_config
     assert tn is not None
@@ -205,7 +305,7 @@ def allocate_tailnet_workers(
         base = tn.worker_block_base + idx * tn.worker_block_size
         alloc = TailnetWorkerAlloc(
             advertise_ip=str(next_addr),
-            tailnet_ip=a.ip,
+            tailnet_ip=(tailnet_ip_map or {}).get(a.ip, a.ip),
             node_manager_port=base,
             object_manager_port=base + 1,
             tool_port_min=base + _TOOL_OFFSET,
@@ -254,8 +354,12 @@ def build_relay_spec(
         for port in head_ports(tn):
             listeners.append({"bind_ip": tn.head_advertise_ip, "port": port,
                               "dest_ip": tn.head_tailnet_ip})
-    for alloc in allocs.values():
-        if alloc.tailnet_ip == host_ip:
+    # Same-host peers are excluded by CLUSTER address (the alloc key):
+    # for managed cloud nodes the tailnet IP differs from the cluster
+    # address, and binding a host's own workers' advertise IPs would
+    # collide with the local Ray wildcard binds.
+    for (cluster_ip, _, _), alloc in allocs.items():
+        if cluster_ip == host_ip:
             continue  # same host: local wildcard binds serve these directly
         for port in alloc.ports():
             listeners.append({"bind_ip": alloc.advertise_ip, "port": port,
@@ -304,3 +408,18 @@ def stop_relay(ssh: SSHClient) -> None:
         f"rm -f {_REMOTE_BASE}.pid",
     ], check=False)
     logger.info(f"[{ssh.ip}] Tailnet relay stopped")
+
+
+def stop_tailscaled(ssh: SSHClient, tn: TailnetConfig) -> None:
+    """Stop the CHIA-managed tailscaled on *ssh*'s host (best effort).
+
+    Matches only the daemon whose statedir lives under
+    ``tn.tailscale_dir`` — a personally-run tailscaled is never touched.
+    State persists in the statedir, so a later ``chia up`` rejoins
+    without consuming the auth key (unless the dir was cleaned).
+    """
+    ssh.run_script([
+        f'TS_DIR="{tn.tailscale_dir}"',
+        'pkill -f -- "--statedir=$TS_DIR/data" 2>/dev/null || true',
+    ], check=False)
+    logger.info(f"[{ssh.ip}] Managed tailscaled stopped")

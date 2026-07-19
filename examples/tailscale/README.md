@@ -111,6 +111,57 @@ allow 128.
 Docker workers work unchanged (CHIA containers run with `--net=host`,
 so the loopback addressing carries into the container).
 
+## Cloud workers (EC2 / GCP)
+
+With a `tailnet:` section present, `aws_nodes` and `gcp_nodes` workers
+join over the tailnet **by default** — no reverse SSH tunnels, no
+`GatewayPorts`, no iptables. CHIA installs the userspace tailscale
+binaries during instance setup, starts `tailscaled`, joins with
+`tailnet.auth_key`, discovers each instance's tailnet IP, and wires it
+into the relay mesh. Just add your cloud section and an auth key:
+
+```yaml
+tailnet:
+    head_tailnet_ip: ${HEAD_TAILNET_IP}
+    auth_key: ${TS_AUTHKEY}        # reusable (ideally ephemeral) tskey-auth-...
+
+aws_nodes:
+    region: us-west-2
+    ec2_worker:
+        KeyName: my-keypair
+        InstanceType: c5.4xlarge
+        count: 2
+        ssh_user: ubuntu
+        ssh_private_key: ~/keys/my-keypair.pem
+
+available_node_types:
+    ec2_worker:
+        resources: {"verilator_run": 16}
+        num_workers: 2
+        compatible_ips: ["@ec2_worker:0", "@ec2_worker:1"]
+```
+
+Generate the key in the tailscale admin console (Settings → Keys):
+make it **reusable** and pre-authorized (ephemeral keys keep the
+tailnet tidy when instances terminate). Set `join_tailnet: false` on a
+node type to opt back into SSH tunnels — but tunnel and tailnet workers
+cannot mix in one cluster.
+
+## Fully managed: `manage_all`
+
+Add `manage_all: true` to the `tailnet:` section and CHIA runs
+tailscale on **every** node including the head — no manual `tailscaled`
+anywhere, and `head_tailnet_ip` may be omitted (discovered at
+bring-up). Binaries/state live in `/tmp/<cluster_name>/tailscale` per
+node (override with `tailscale_dir`), so cluster daemons are isolated
+from any tailscaled you run yourself — give the cluster its own
+`socks_proxy` port (e.g. `127.0.0.1:1155`) to avoid clashing with a
+personal daemon's proxy. The one constraint: tailscale can't be
+bootstrapped over tailscale, so every managed worker must be listed by
+an ordinary SSH-reachable IP (not its `100.x` address — rejected at
+config load). Opt a machine out with `manage_tailscale: false` and run
+its daemon yourself. `chia down` stops the managed daemons.
+
 ## Limitations
 
 - All workers must be tailnet workers (or live on the head machine):

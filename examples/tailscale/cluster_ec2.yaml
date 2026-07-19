@@ -1,0 +1,97 @@
+# A CHIA cluster whose machines are connected only through a tailscale
+# network running in userspace-networking mode (no root, no TUN device).
+#
+# See README.md in this directory for how this works. Set these
+# environment variables before running `chia up` / `chia down`:
+#   HEAD_IP            how CHIA SSHes to the head (its real IP/hostname)
+#   HEAD_TAILNET_IP    the head's tailscale address (`tailscale ip -4`)
+#   WORKER_TAILNET_IP  the worker's tailscale address
+#   TS_AUTHKEY         reusable tailscale auth key (e.g. from a local,
+#                      gitignored keyfile)
+#   AWS_KEYPAIR        EC2 key pair name in your account
+#   AWS_KEYPAIR_PEM    path to the matching private key
+#
+# On every machine, tailscaled must be running in userspace mode with a
+# SOCKS5 proxy, e.g.:
+#   ./tailscaled --tun=userspace-networking --statedir=./data \
+#       --socket=./run/tailscaled.sock --socks5-server=localhost:1055 \
+#       --outbound-http-proxy-listen=localhost:1056 > tailscaled.log 2>&1 &
+
+cluster_name: TailscaleExample
+
+# Cluster-wide tailnet settings — the presence of this block is the
+# opt-in. All cross-machine Ray traffic flows over the tailnet:
+# outbound through each node's local SOCKS5 proxy (via a small per-node
+# relay CHIA manages), inbound delivered by tailscaled to 127.0.0.1,
+# where Ray's wildcard-bound services listen. No SSH tunnels, no
+# reverse forwards, no root anywhere.
+#
+# Every worker IP that isn't the head machine is automatically treated
+# as a tailnet node, and SSH to it automatically dials through the
+# SOCKS5 proxy — no per-IP auth.overrides needed. (Overrides still work
+# for special cases: a different ssh key/user for one host, or a custom
+# ssh_proxy_command when the head's `nc` isn't OpenBSD netcat.)
+tailnet:
+    head_tailnet_ip: ${HEAD_TAILNET_IP}
+    socks_proxy: 127.0.0.1:1055        # tailscaled --socks5-server on every node
+    # Auth key used to join CHIA-managed nodes (the EC2 workers below).
+    # Keep it out of the file:  export TS_AUTHKEY=$(cat examples/tailscale/keyfile)
+    auth_key: ${TS_AUTHKEY}
+    # Port pins are configurable (defaults in the docs) — on shared
+    # machines, pick ranges no other Ray cluster or service uses.
+
+provider:
+    # Address CHIA uses to SSH into the head (the head machine's real
+    # IP/hostname — reached locally, not over the tailnet).
+    head_ip: ${HEAD_IP}
+
+auth:
+    ssh_user: ${USER}
+
+# EC2 workers — provisioned by CHIA and joined to the tailnet
+# automatically (the tailnet: section above makes that the default:
+# tailscale is installed during instance setup, tailscaled started,
+# `tailscale up` run with tailnet.auth_key, and the instance's tailnet
+# IP wired into the relay mesh; no SSH tunnels).
+aws_nodes:
+    region: us-east-1
+    ec2_worker:
+        KeyName: ${AWS_KEYPAIR}
+        InstanceType: t3.small
+        count: 1
+        ImageId: ami-0d001f8052688dc45   # Ubuntu 22.04 (us-east-1)
+        ssh_user: ubuntu
+        ssh_private_key: ${AWS_KEYPAIR_PEM}
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 24
+                  VolumeType: gp3
+
+available_node_types:
+    tailscale_worker:
+        resources: {"tailscale_worker": 4}
+        num_workers: 1
+        compatible_ips: ["${WORKER_TAILNET_IP}"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+    ec2_worker:
+        resources: {"ec2_worker": 2}
+        num_workers: 1
+        compatible_ips: ["@ec2_worker:0"]
+        # The default AWS setup creates chia_env (conda + ray + chia).
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_start_ray_commands:
+    - ray stop
+    # --include-dashboard=False keeps ports free on shared machines; CHIA
+    # injects --node-ip-address plus the pinned head ports automatically.
+    - ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    # CHIA rewrites the address to the head's advertised loopback IP and
+    # injects --node-ip-address, pinned ports, and --resources.
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
