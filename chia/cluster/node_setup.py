@@ -10,6 +10,10 @@ from chia.cluster.config import ClusterConfig, NodeAssignment, TunnelConfig, ass
 from chia.cluster.docker import DockerManager
 from chia.cluster.log import get_logger, log_phase
 from chia.cluster.ssh import SSHClient
+from chia.cluster.tailnet import (
+    TailnetWorkerAlloc, allocate_tailnet_workers, build_relay_spec,
+    start_relay, stop_relay,
+)
 from chia.cluster.tunnel import TunnelManager
 
 from dataclasses import replace
@@ -168,6 +172,12 @@ def add_nodes_to_cluster(
     if not new_assignments:
         logger.info("No new assignments to add.")
         return None
+
+    if config.tailnet_config is not None:
+        raise RuntimeError(
+            "chia up --add is not yet supported for tailnet clusters — "
+            "re-run a full 'chia up' instead (existing workers are detected "
+            "and skipped).")
 
     logger.info(f"Adding {len(new_assignments)} new worker(s) to cluster")
 
@@ -363,7 +373,8 @@ def _make_ssh(config: ClusterConfig, ip: str) -> SSHClient:
     # so a full ssh-agent can't exhaust sshd MaxAuthTries. On-prem nodes keep the
     # agent (they authenticate via forwarded agent keys, not the AWS key).
     return SSHClient(ip, auth.ssh_user, auth.ssh_private_key,
-                     identities_only=config.is_tunneled(ip))
+                     identities_only=config.is_tunneled(ip),
+                     proxy_command=auth.ssh_proxy_command)
 
 
 def _rsync_file_mounts(ssh: SSHClient, config: ClusterConfig) -> None:
@@ -383,6 +394,10 @@ def build_head_script(config: ClusterConfig) -> list[str]:
     When tunneled workers exist, the head's Ray worker ports are pinned
     to a known range so they can be reverse-tunneled to AWS workers for
     actor communication (e.g. ProfileCollectorActor).
+
+    In tailnet mode the head additionally advertises its loopback IP
+    (``head_advertise_ip``) so that tailnet workers' relays can serve
+    every head address the cluster hands out.
     """
     script: list[str] = []
     script.extend(config.head_env_commands)
@@ -397,8 +412,22 @@ def build_head_script(config: ClusterConfig) -> list[str]:
             tunnel_cfg = tc
             break
 
+    tn = config.tailnet_config
+    if tn is not None:
+        # ChiaTools hosted by Ray workers on the head node advertise the
+        # head's loopback IP, reachable from every tailnet worker.
+        script.append(f"export CHIA_TOOL_ADVERTISE_HOST={tn.head_advertise_ip}")
+        script.append(f"export CHIA_TOOL_BASE_PORT={tn.head_tool_port_min}")
+        script.append(f"export CHIA_TOOL_MAX_PORT={tn.head_tool_port_max}")
+
     for cmd in config.head_start_ray_commands:
-        if tunnel_cfg and "ray start" in cmd and "--head" in cmd:
+        if tn is not None and "ray start" in cmd and "--head" in cmd:
+            cmd += (f" --node-ip-address={tn.head_advertise_ip}"
+                    f" --node-manager-port={tn.head_node_manager_port}"
+                    f" --object-manager-port={tn.head_object_manager_port}"
+                    f" --min-worker-port={tn.head_worker_port_min}"
+                    f" --max-worker-port={tn.head_worker_port_max}")
+        elif tunnel_cfg and "ray start" in cmd and "--head" in cmd:
             cmd += (f" --node-manager-port={tunnel_cfg.head_node_manager_port}"
                     f" --object-manager-port={tunnel_cfg.head_object_manager_port}"
                     f" --min-worker-port={tunnel_cfg.head_worker_port_min}"
@@ -413,6 +442,7 @@ def build_worker_script(
     tunnel_config: TunnelConfig | None = None,
     skip_ray_stop: bool = False,
     head_ip: str | None = None,
+    tailnet_alloc: TailnetWorkerAlloc | None = None,
 ) -> list[str]:
     """Build the script that runs on a worker node.
 
@@ -423,6 +453,11 @@ def build_worker_script(
     - ``ray start --address`` is rewritten to ``<tunnel_ip>:<gcs_tunnel_port>``.
     - ``--node-ip-address`` is set to the tunnel IP.
     - Ray ports and tool ports are pinned to match the SSH tunnel forwards.
+
+    When *tailnet_alloc* is provided the worker joins over the tailscale
+    network: it registers under its advertised loopback IP, dials the
+    head GCS at the head's advertised loopback IP (served by the local
+    relay), and pins its ports to the allocated block.
 
     Non-tunneled workers let Ray auto-assign ports to avoid conflicts
     (especially when multiple --net=host containers share the same host).
@@ -444,7 +479,16 @@ def build_worker_script(
     resources_json = json.dumps(assignment.resources)
     is_head_ip = (ip == config.head_ip)
 
-    if tunnel_config is not None:
+    if tailnet_alloc is not None:
+        tn = config.tailnet_config
+        adv_ip = tailnet_alloc.advertise_ip
+        script.append(f"export RAY_HEAD_IP={tn.head_advertise_ip}")
+        script.append(f"export CHIA_TOOL_BASE_PORT={tailnet_alloc.tool_port_min}")
+        script.append(f"export CHIA_TOOL_MAX_PORT={tailnet_alloc.tool_port_max}")
+        # Tools on this worker advertise its loopback IP — reachable from
+        # every cluster node via the relays (no rewrite/relay-host needed).
+        script.append(f"export CHIA_TOOL_ADVERTISE_HOST={adv_ip}")
+    elif tunnel_config is not None:
         tun_ip = tunnel_config.tunnel_ip
         script.append(f"export RAY_HEAD_IP={tun_ip}")
         script.append(f"export CHIA_TOOL_BASE_PORT={tunnel_config.tool_port_min}")
@@ -460,7 +504,19 @@ def build_worker_script(
             continue
         if "ray start" in cmd and "--address" in cmd:
             cmd = f"{cmd} --resources='{resources_json}'"
-            if tunnel_config is not None:
+            if tailnet_alloc is not None:
+                cmd = cmd.replace(
+                    "--address=$RAY_HEAD_IP:6379",
+                    f"--address={tn.head_advertise_ip}:{tn.gcs_port}",
+                )
+                cmd += (
+                    f" --node-ip-address={adv_ip}"
+                    f" --node-manager-port={tailnet_alloc.node_manager_port}"
+                    f" --object-manager-port={tailnet_alloc.object_manager_port}"
+                    f" --min-worker-port={tailnet_alloc.worker_port_min}"
+                    f" --max-worker-port={tailnet_alloc.worker_port_max}"
+                )
+            elif tunnel_config is not None:
                 cmd = cmd.replace(
                     "--address=$RAY_HEAD_IP:6379",
                     f"--address={tun_ip}:{tunnel_config.gcs_tunnel_port}",
@@ -502,6 +558,7 @@ def setup_worker_node(
     tunnel_config: TunnelConfig | None = None,
     skip_ray_stop: bool = False,
     head_ip: str | None = None,
+    tailnet_alloc: TailnetWorkerAlloc | None = None,
 ) -> None:
     ip = assignment.ip
     nt = assignment.node_type
@@ -530,7 +587,8 @@ def setup_worker_node(
     # to avoid killing a sibling worker's Ray processes.
     effective_skip = skip_ray_stop and not docker_config
     script = build_worker_script(config, assignment, tunnel_config=tunnel_config,
-                                 skip_ray_stop=effective_skip, head_ip=head_ip)
+                                 skip_ray_stop=effective_skip, head_ip=head_ip,
+                                 tailnet_alloc=tailnet_alloc)
 
     with log_phase(logger, f"Running setup and starting Ray worker on {ip} ({nt.name})"):
         if docker_config:
@@ -642,6 +700,28 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
             with log_phase(logger, f"Setting up iptables DNAT for head ports on {ip}"):
                 ssh.run_commands([route_localnet_cmd] + iptables_cmds)
 
+    # --- Tailnet (tailscale) workers: start the per-node relays ---
+    # The head relay must be up before any tailnet worker registers
+    # (GCS health-checks the worker raylet immediately), and a worker's
+    # relay must be up before its `ray start` (which dials the head GCS
+    # through it). Relay listeners never collide with the local Ray's
+    # wildcard binds — port blocks are globally unique — so ordering
+    # against the local Ray processes doesn't matter.
+    tailnet_allocs: dict[tuple[str, str, int], TailnetWorkerAlloc] = {}
+    if config.tailnet_config is not None:
+        tailnet_allocs = allocate_tailnet_workers(config, assignments)
+    if tailnet_allocs:
+        with log_phase(logger, f"Starting tailnet relay on head {config.head_ip}"):
+            start_relay(_make_ssh(config, config.head_ip),
+                        build_relay_spec(config, tailnet_allocs, None))
+        for ip in sorted({a.tailnet_ip for a in tailnet_allocs.values()}):
+            ssh = _make_ssh(config, ip)
+            ssh.wait_for_ssh()
+            with log_phase(logger, f"Starting tailnet relay on {ip}"):
+                start_relay(ssh, build_relay_spec(config, tailnet_allocs, ip))
+        logger.info(f"Tailnet relays up on head + "
+                    f"{len({a.tailnet_ip for a in tailnet_allocs.values()})} node(s)")
+
     # Group assignments by IP so we set up workers on the same machine
     # sequentially (avoids overwhelming sshd MaxStartups), while still
     # parallelizing across different machines.
@@ -653,11 +733,14 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
         """Set up all workers on a single IP sequentially."""
         failed_local = []
         for i, a in enumerate(ip_assignments):
-            tc = worker_tunnel_configs.get((a.ip, a.node_type.name, a.worker_index))
+            key = (a.ip, a.node_type.name, a.worker_index)
+            tc = worker_tunnel_configs.get(key)
+            ta = tailnet_allocs.get(key)
             try:
                 setup_worker_node(config, a, tunnel_config=tc,
                                   skip_ray_stop=(i > 0),
-                                  head_ip=head_ip_resolved if tc else None)
+                                  head_ip=head_ip_resolved if tc else None,
+                                  tailnet_alloc=ta)
                 logger.info(f"Worker {a.ip} ({a.node_type.name}-{a.worker_index}) ready")
             except Exception as e:
                 logger.error(f"Worker {a.ip} ({a.node_type.name}-{a.worker_index}) FAILED: {e}")
@@ -779,6 +862,16 @@ def tear_down_cluster(
         ]
         if kill_ips:
             kill_orphaned_tunnels(kill_ips)
+
+    # Stop tailnet relays (workers + head), best effort.
+    if config.tailnet_config is not None:
+        tailnet_ips = sorted({ip for ip in config.worker_ips if config.is_tailnet(ip)})
+        for ip in tailnet_ips + [config.head_ip]:
+            try:
+                with log_phase(logger, f"Stopping tailnet relay on {ip}"):
+                    stop_relay(_make_ssh(config, ip))
+            except Exception as e:
+                logger.warning(f"Failed to stop tailnet relay on {ip}: {e}")
 
     tear_down_head_node(config)
     logger.info(f"Cluster '{config.cluster_name}' torn down")

@@ -53,8 +53,9 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
     for a in assignments:
         docker_str = f" [{a.node_type.docker.engine}: {a.node_type.docker.image}]" if a.node_type.docker else ""
         tunnel_str = " [tunneled]" if config.is_tunneled(a.ip) else ""
+        tailnet_str = " [tailnet]" if config.is_tailnet(a.ip) else ""
         print(f"  {a.ip} -> {a.node_type.name} "
-              f"(resources: {a.resources}){docker_str}{tunnel_str}")
+              f"(resources: {a.resources}){docker_str}{tunnel_str}{tailnet_str}")
 
     worker_tunnels = allocate_worker_tunnels(config, assignments)
     if worker_tunnels:
@@ -67,6 +68,22 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
             print(f"    Ray: node-mgr={tc.ray_node_manager_port}, obj-mgr={tc.ray_object_manager_port}, "
                   f"workers={tc.ray_worker_port_min}-{tc.ray_worker_port_max}")
             print(f"    Tools: {tc.tool_port_min}-{tc.tool_port_max} (on {head_ip_resolved})")
+
+    tailnet_allocs = {}
+    if config.tailnet_config is not None:
+        from chia.cluster.tailnet import allocate_tailnet_workers
+        tn = config.tailnet_config
+        tailnet_allocs = allocate_tailnet_workers(config, assignments)
+        if tailnet_allocs:
+            print(f"\nTailnet (via SOCKS5 {tn.socks_proxy}):")
+            print(f"  head {tn.head_tailnet_ip} advertises {tn.head_advertise_ip} "
+                  f"(gcs={tn.gcs_port}, workers={tn.head_worker_port_min}-"
+                  f"{tn.head_worker_port_max})")
+            for (ip, nt_name, idx), ta in tailnet_allocs.items():
+                print(f"  {ip} {nt_name}-{idx} advertises {ta.advertise_ip} "
+                      f"(node-mgr={ta.node_manager_port}, "
+                      f"workers={ta.worker_port_min}-{ta.worker_port_max}, "
+                      f"tools={ta.tool_port_min}-{ta.tool_port_max})")
     print()
 
     if show_scripts:
@@ -79,13 +96,16 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
         head_ip_for_scripts = socket.gethostbyname(config.head_ip) if worker_tunnels else None
         for a in assignments:
             tc = config.get_tunnel_config(a.ip)
+            ta = tailnet_allocs.get((a.ip, a.node_type.name, a.worker_index))
             worker_script = build_worker_script(
                 config, a, tunnel_config=tc,
                 head_ip=head_ip_for_scripts if tc else None,
+                tailnet_alloc=ta,
             )
             docker_str = f" [{a.node_type.docker.engine}: {a.node_type.docker.container_name}]" if a.node_type.docker else ""
             tunnel_str = " [tunneled]" if config.is_tunneled(a.ip) else ""
-            print(f"--- Script for worker {a.ip} ({a.node_type.name}){docker_str}{tunnel_str} ---")
+            tailnet_str = " [tailnet]" if config.is_tailnet(a.ip) else ""
+            print(f"--- Script for worker {a.ip} ({a.node_type.name}){docker_str}{tunnel_str}{tailnet_str} ---")
             for line in worker_script:
                 print(f"  {line}")
             print()

@@ -151,6 +151,8 @@ class TunnelManager:
             "-o", "ServerAliveCountMax=3",
             "-o", "ExitOnForwardFailure=yes",
         ]
+        if ssh_auth.ssh_proxy_command:
+            cmd += ["-o", f"ProxyCommand={ssh_auth.ssh_proxy_command}"]
         if ssh_auth.ssh_private_key:
             # Use only the dedicated key — the ambient ssh-agent's keys would
             # otherwise be offered first and exhaust sshd MaxAuthTries before it.

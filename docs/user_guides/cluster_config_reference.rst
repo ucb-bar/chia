@@ -185,12 +185,19 @@ with optional per-host overrides.
      - ``None``
      - Default private key path. Omit it if the relevant keys are already loaded
        into your SSH agent.
+   * - ``ssh_proxy_command``
+     - ``None``
+     - Default ssh ``ProxyCommand`` for reaching the machines (e.g.
+       ``nc -X 5 -x 127.0.0.1:1055 %h %p`` to dial through a tailscale
+       userspace SOCKS5 proxy, or a jump-host command). Applied to ssh,
+       rsync, and SSH tunnels alike.
    * - ``overrides``
      - ``{}``
      - Per-IP overrides, keyed by hostname/IP (or a ``@node_type:index``
-       placeholder). Each entry may set ``ssh_user``, ``ssh_private_key``, and a
-       ``tunnel`` block (see `Cloud nodes`_). CHIA populates tunnel overrides for
-       cloud nodes automatically.
+       placeholder). Each entry may set ``ssh_user``, ``ssh_private_key``,
+       ``ssh_proxy_command``, a ``tunnel`` block (see `Cloud nodes`_), or
+       ``tailnet: true`` (see `Tailnet (tailscale) clusters`_). CHIA populates
+       tunnel overrides for cloud nodes automatically.
 
 available_node_types
 --------------------
@@ -542,6 +549,73 @@ Other tunnel fields (with defaults) include ``gcs_tunnel_port`` (16379),
 (29801), ``kill_orphaned_tunnels`` (true), and ``pre_tunnel_commands`` (sshd
 ``GatewayPorts`` + file-limit setup, run once per physical cloud IP). A typo in
 any field name fails loudly at load time.
+
+Tailnet (tailscale) clusters
+----------------------------
+
+CHIA can form a cluster across machines whose only mutual connectivity is
+a `tailscale <https://tailscale.com>`_ network, including tailscaled in
+**userspace-networking mode** (no root, no TUN device, no sudo on any
+machine). Unlike the SSH-tunnel path for cloud nodes, tailnet mode uses
+no SSH tunnels, no reverse port forwards, no sshd configuration, and no
+iptables — and worker↔worker traffic between hosts works (full mesh).
+
+Userspace tailscaled delivers *inbound* tailnet TCP to
+``127.0.0.1:<port>`` and requires *outbound* dials to go through its
+local SOCKS5 proxy. Ray cannot speak SOCKS5, so CHIA runs one small
+stdlib-Python relay per node: every node registers in Ray under a unique
+loopback IP, and dialing a *peer's* loopback IP hits the local relay,
+which forwards through the SOCKS5 proxy to the peer's tailnet address.
+Because Ray services bind the wildcard address, each node's pinned port
+block must be globally unique — the ``tailnet:`` fields manage this.
+
+The presence of the ``tailnet:`` block opts the cluster in — every
+worker IP that is not the head machine is automatically treated as a
+tailnet node, and SSH to it automatically dials through the SOCKS5
+proxy (``nc -X 5 -x <socks_proxy> %h %p``; the head needs OpenBSD
+netcat). No per-IP overrides are required:
+
+.. code-block:: yaml
+
+   tailnet:
+       head_tailnet_ip: 100.64.0.1    # required: the head's tailscale IP
+       socks_proxy: 127.0.0.1:1055    # tailscaled --socks5-server on every node
+
+   provider:
+       head_ip: 10.0.0.1              # how CHIA SSHes to the head (real IP)
+
+   auth:
+       ssh_user: ${USER}
+
+   available_node_types:
+       tailscale_worker:
+           resources: {"tailscale_worker": 4}
+           num_workers: 1
+           compatible_ips: [100.64.0.2]   # workers by their tailscale IPs
+
+``auth.overrides.<ip>`` entries still win for special cases — a
+different ssh user/key for one host, or a custom ``ssh_proxy_command``
+when the head's ``nc`` is not OpenBSD netcat.
+
+Optional ``tailnet:`` port fields (defaults in parentheses):
+``head_advertise_ip`` (127.200.0.1), ``gcs_port`` (6379 — must match
+``--port`` in ``head_start_ray_commands``), ``head_node_manager_port``
+(25800), ``head_object_manager_port`` (25801),
+``head_worker_port_min``/``max`` (42000/42127),
+``head_tool_port_min``/``max`` (27000/27010), ``worker_block_base``
+(24000), ``worker_block_size`` (256), ``tool_port_count`` (11), and
+``worker_port_count`` (128). A node's Ray worker-port range must exceed
+its CPU count (Ray prestarts one worker process per CPU). CHIA injects
+``--node-ip-address`` and the pinned ports into the head's and workers'
+``ray start`` commands automatically, starts the relays before the
+workers, and stops them on ``chia down``.
+
+Constraints: every worker must be a tailnet node or colocated on the
+head machine (the head advertises a loopback IP that LAN workers cannot
+route to); mixing with SSH-tunneled/cloud workers is rejected at config
+load; ``chia up --add`` is not yet supported (re-run ``chia up`` —
+existing workers are detected and skipped). See
+``examples/tailscale/`` for a complete working example.
 
 A mixed on-prem + cloud example
 -------------------------------

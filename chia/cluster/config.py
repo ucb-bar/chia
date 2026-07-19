@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import re
 import yaml
@@ -53,10 +54,60 @@ class TunnelConfig:
 
 
 @dataclass
+class TailnetConfig:
+    """Cluster-wide config for tailnet (tailscale) native clusters.
+
+    In this mode all cross-machine Ray traffic flows over the tailscale
+    network instead of SSH tunnels.  Works with fully unprivileged
+    (userspace-networking) tailscaled on every node: outbound dials go
+    through each node's local SOCKS5 proxy via a small per-node relay
+    process, and inbound tailnet connections are delivered by tailscaled
+    to 127.0.0.1:<port>, where Ray's wildcard-bound services receive
+    them directly.
+
+    Every node (head and workers) advertises a unique loopback IP to
+    Ray and gets a globally unique block of pinned ports — required
+    because Ray services bind the wildcard address, so a relay can only
+    listen for a *peer's* ports if no local service uses the same
+    numbers.
+
+    ``worker_port_count`` (the per-worker Ray worker port range) and the
+    head's worker port range must exceed the machine's CPU count — Ray
+    prestarts one worker process per CPU and each needs a port.
+    """
+    head_tailnet_ip: str = ""     # required: the head's tailscale 100.x address
+    socks_proxy: str = "127.0.0.1:1055"   # tailscaled --socks5-server on every node
+    head_advertise_ip: str = "127.200.0.1"
+    gcs_port: int = 6379          # must match --port in head_start_ray_commands
+    head_node_manager_port: int = 25800
+    head_object_manager_port: int = 25801
+    head_worker_port_min: int = 42000
+    head_worker_port_max: int = 42127
+    head_tool_port_min: int = 27000
+    head_tool_port_max: int = 27010
+    # Each tailnet worker w gets advertise IP 127.0.0.(2+w) and a
+    # contiguous block of ports at worker_block_base + w * worker_block_size:
+    #   +0 node manager, +1 object manager,
+    #   +16 .. +16+tool_port_count-1  tool ports,
+    #   +64 .. +64+worker_port_count-1  Ray worker ports.
+    worker_block_base: int = 24000
+    worker_block_size: int = 256
+    tool_port_count: int = 11
+    worker_port_count: int = 128
+
+
+@dataclass
 class SSHAuthConfig:
     ssh_user: str
     ssh_private_key: str | None = None
     tunnel: TunnelConfig | None = None
+    # Optional ssh ProxyCommand for reaching this host (e.g.
+    # "nc -X 5 -x 127.0.0.1:1055 %h %p" for a tailscale userspace SOCKS5
+    # proxy). Used by SSHClient, rsync, and TunnelManager alike.
+    ssh_proxy_command: str | None = None
+    # True if this host participates in the cluster over the tailnet
+    # (see TailnetConfig). Mutually exclusive with ``tunnel``.
+    tailnet: bool = False
 
 
 @dataclass
@@ -129,17 +180,25 @@ class ClusterConfig:
     aws_config: AWSClusterConfig | None = None
     firesim_config: FireSimClusterConfig | None = None
     auth_overrides: dict[str, SSHAuthConfig] = field(default_factory=dict)
+    ssh_proxy_command: str | None = None
+    tailnet_config: TailnetConfig | None = None
 
     def get_ssh_auth(self, ip: str) -> SSHAuthConfig:
         """Return SSH auth for *ip*, falling back to the global config."""
         if ip in self.auth_overrides:
             return self.auth_overrides[ip]
-        return SSHAuthConfig(ssh_user=self.ssh_user, ssh_private_key=self.ssh_private_key)
+        return SSHAuthConfig(ssh_user=self.ssh_user, ssh_private_key=self.ssh_private_key,
+                             ssh_proxy_command=self.ssh_proxy_command)
 
     def is_tunneled(self, ip: str) -> bool:
         """Return True if *ip* requires an SSH tunnel."""
         override = self.auth_overrides.get(ip)
         return override is not None and override.tunnel is not None
+
+    def is_tailnet(self, ip: str) -> bool:
+        """Return True if *ip* joins the cluster over the tailnet."""
+        override = self.auth_overrides.get(ip)
+        return override is not None and override.tailnet
 
     def get_tunnel_config(self, ip: str) -> TunnelConfig | None:
         """Return the TunnelConfig for *ip*, or None if not tunneled."""
@@ -396,6 +455,31 @@ def _parse_tunnel_defaults(raw: dict) -> dict | bool:
 _parse_aws_tunnel_defaults = _parse_tunnel_defaults
 
 
+def _parse_tailnet_section(raw: dict) -> TailnetConfig | None:
+    """Parse the top-level ``tailnet`` block into a :class:`TailnetConfig`.
+
+    Raises :class:`ConfigError` on unknown keys so a typo fails loudly,
+    and on a missing ``head_tailnet_ip``.
+    """
+    section = raw.get("tailnet")
+    if section is None:
+        return None
+    if not isinstance(section, dict):
+        raise ConfigError(
+            f"tailnet must be a mapping of TailnetConfig fields, "
+            f"got {type(section).__name__}")
+    valid = {f.name for f in fields(TailnetConfig)}
+    unknown = set(section) - valid
+    if unknown:
+        raise ConfigError(
+            f"tailnet has unknown field(s): {sorted(unknown)} "
+            f"(valid: {sorted(valid)})")
+    cfg = TailnetConfig(**section)
+    if not cfg.head_tailnet_ip:
+        raise ConfigError("tailnet: missing required field 'head_tailnet_ip'")
+    return cfg
+
+
 def _inject_cloud_tunnel_overrides(
     raw: dict,
     ip_map: dict[str, list[str]],
@@ -476,6 +560,8 @@ def build_config(raw: dict) -> ClusterConfig:
             "derived from the union of every node type's compatible_ips.")
 
     auth = raw.get("auth", {})
+    global_proxy_command = auth.get("ssh_proxy_command")
+    tailnet_config = _parse_tailnet_section(raw)
 
     # Parse auth overrides
     auth_overrides: dict[str, SSHAuthConfig] = {}
@@ -488,10 +574,24 @@ def build_config(raw: dict) -> ClusterConfig:
             tunnel_cfg = TunnelConfig(**tunnel_raw)
         else:
             tunnel_cfg = None
+        # 'tailnet: true' per-IP is accepted for explicitness but redundant:
+        # when a 'tailnet:' section exists, every non-head worker is marked
+        # automatically (see below).
+        tailnet_flag = bool(override_raw.get("tailnet", False))
+        if tailnet_flag and tunnel_cfg is not None:
+            raise ConfigError(
+                f"auth.overrides.{ip}: 'tailnet' and 'tunnel' are mutually "
+                f"exclusive (tailnet nodes need no SSH tunnel)")
+        if tailnet_flag and tailnet_config is None:
+            raise ConfigError(
+                f"auth.overrides.{ip}: 'tailnet: true' requires a top-level "
+                f"'tailnet:' section (with at least 'head_tailnet_ip')")
         auth_overrides[ip] = SSHAuthConfig(
             ssh_user=override_raw.get("ssh_user", auth.get("ssh_user", "")),
             ssh_private_key=override_raw.get("ssh_private_key", auth.get("ssh_private_key")),
             tunnel=tunnel_cfg,
+            ssh_proxy_command=override_raw.get("ssh_proxy_command", global_proxy_command),
+            tailnet=tailnet_flag,
         )
 
     # NOTE: tunnel_ip auto-assignment is handled per-worker in
@@ -565,6 +665,39 @@ def build_config(raw: dict) -> ClusterConfig:
         )
         logger.debug(f"  FireSim config: chipyard={firesim_config.chipyard_path}")
 
+    # Tailnet clusters: every worker not colocated on the head machine IS
+    # a tailnet node, so mark them automatically — no per-IP override
+    # boilerplate needed. Anything set explicitly in auth.overrides
+    # (ssh user/key, a custom ssh_proxy_command) still wins; only the
+    # missing pieces are filled in. The default ProxyCommand dials the
+    # head's local tailscaled SOCKS5 proxy (requires OpenBSD netcat on
+    # the head — override ssh_proxy_command per-IP or in auth: if not).
+    if tailnet_config is not None:
+        default_proxy = (global_proxy_command
+                         or f"nc -X 5 -x {tailnet_config.socks_proxy} %h %p")
+        for ip in worker_ips:
+            if ip == provider["head_ip"]:
+                continue  # head-colocated workers stay local
+            override = auth_overrides.get(ip)
+            if override is None:
+                override = SSHAuthConfig(
+                    ssh_user=auth.get("ssh_user", ""),
+                    ssh_private_key=auth.get("ssh_private_key"),
+                )
+                auth_overrides[ip] = override
+            if override.tunnel is not None:
+                continue  # rejected by the mixing check below
+            override.tailnet = True
+            if override.ssh_proxy_command is None:
+                override.ssh_proxy_command = default_proxy
+            try:
+                if ipaddress.ip_address(ip) not in ipaddress.ip_network("100.64.0.0/10"):
+                    logger.warning(
+                        f"tailnet worker {ip} is not a tailscale "
+                        f"(100.64.0.0/10) address — is this intended?")
+            except ValueError:
+                pass  # a hostname (e.g. MagicDNS) — fine
+
     config = ClusterConfig(
         cluster_name=raw.get("cluster_name", "default"),
         head_ip=provider["head_ip"],
@@ -586,7 +719,28 @@ def build_config(raw: dict) -> ClusterConfig:
         aws_config=aws_config,
         firesim_config=firesim_config,
         auth_overrides=auth_overrides,
+        ssh_proxy_command=global_proxy_command,
+        tailnet_config=tailnet_config,
     )
+
+    if tailnet_config is not None:
+        # The head advertises a loopback IP in tailnet mode, so ordinary
+        # LAN workers could not find it — every worker must either be a
+        # tailnet node or live on the head machine itself.
+        bad = [ip for ip in config.worker_ips
+               if not config.is_tailnet(ip) and ip != config.head_ip]
+        if bad:
+            raise ConfigError(
+                f"tailnet clusters require every worker to be a tailnet node "
+                f"(auth.overrides.<ip>.tailnet: true) or colocated on the head "
+                f"machine; offending worker IP(s): {bad}")
+        tunneled = [ip for ip in config.worker_ips if config.is_tunneled(ip)]
+        if tunneled:
+            raise ConfigError(
+                f"tailnet clusters cannot mix with SSH-tunneled workers "
+                f"(including aws_nodes/gcp_nodes) — the head advertises a "
+                f"loopback IP that the tunnel path cannot route to; "
+                f"tunneled IP(s): {tunneled}")
 
     logger.debug(f"Cluster '{config.cluster_name}': head={config.head_ip}, "
                   f"workers={config.worker_ips}, node_types={list(config.node_types.keys())}")
