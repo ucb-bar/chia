@@ -21,29 +21,37 @@ Userspace tailscaled gives each machine two half-primitives:
 - **Outbound**: connections to other tailnet IPs are only possible
   through the local SOCKS5 proxy (`--socks5-server`).
 
-Ray can't speak SOCKS5, so CHIA bridges the gap with one small
-stdlib-Python **relay** per machine (`chia/cluster/tailnet.py`):
-
-```
-HEAD  (advertises 127.200.0.1)                WORKER 0  (advertises 127.0.0.2)
-ray head --node-ip-address=127.200.0.1        ray --node-ip-address=127.0.0.2
-services bind *:<head ports>                  services bind *:<worker-0 ports>
-
-relay listens on peers' addresses:            relay listens on peers' addresses:
-  127.0.0.2:<w0 ports> ─► SOCKS5 ─► 100.x.w0    127.200.0.1:<head ports> ─► SOCKS5 ─► 100.x.head
-```
-
 The head and every logical worker register in Ray under a unique
-loopback address. Dialing a
-*peer's* address hits the local relay, which forwards through the SOCKS5
-proxy to the peer's tailnet IP; the peer's tailscaled delivers to
-`127.0.0.1`, where the wildcard-bound Ray service accepts it. Dialing a
-*local* address hits the wildcard bind directly — no relay hop.
+**loopback** advertise IP (`127.200.0.1` for the head, `127.0.0.2`,
+`127.0.0.3`, … for workers) — bindable even in userspace mode, unlike
+the real tailnet IP. CHIA runs one small stdlib-Python **relay** per
+machine (`chia/cluster/tailnet.py`) with a single **HTTP CONNECT proxy**
+that Ray's gRPC is pointed at (`grpc_proxy`):
 
-Because Ray services bind the wildcard address, each participant's pinned port
-block must be **globally unique** — that's what the `tailnet:` port
-fields manage. SSH (for `chia up` orchestration and rsync only) reaches
-tailnet workers through the same SOCKS5 proxy via `ssh_proxy_command`.
+```
+WORKER 0 (advertise 127.0.0.2)                     HEAD (advertise 127.200.0.1)
+ray --node-ip-address=127.0.0.2                    ray head --node-ip-address=127.200.0.1
+grpc_proxy=http://127.0.0.1:13129                  services bind *:<ports>
+
+Ray dials 127.200.0.1:6379
+  └─ CONNECT 127.200.0.1:6379 ─► relay ─► SOCKS5 ─► 100.x.head:6379
+                                                     └─ tailscaled ─► 127.0.0.1:6379 ─► GCS
+```
+
+The relay reads the destination from each CONNECT request, maps the
+peer's advertise IP to its tailnet address, and forwards through the
+SOCKS5 proxy; the peer's tailscaled delivers to `127.0.0.1`, where the
+wildcard-bound Ray service accepts it. A node's dials to *its own*
+advertise IP bypass the proxy (`no_grpc_proxy`) and hit the local bind
+directly.
+
+Because there are **no per-port outbound listeners**, port blocks need
+only be unique **per machine** — two workers on different machines reuse
+the same ports, so port consumption doesn't grow with cluster size.
+ChiaTool traffic is plain HTTP (httpx can't use `grpc_proxy`), so peer
+tool ports keep small per-port SOCKS listeners. SSH (for `chia up`
+orchestration and rsync only) reaches tailnet workers through the same
+SOCKS5 proxy via `ssh_proxy_command`.
 
 ## Prerequisites
 
@@ -79,9 +87,15 @@ export HEAD_TAILNET_IP=<head 100.x address>    # `tailscale ip -4` on the head
 export WORKER_TAILNET_IP=<worker 100.x address>
 
 chia up examples/tailscale/cluster.yaml        # add --dry-run to inspect first
-export RAY_ADDRESS=127.200.0.1:6379            # head_advertise_ip:gcs_port —
-                                               # disambiguates on shared machines
-                                               # that host other Ray clusters
+
+# A driver (running a flow on the head) reaches the cluster the same way
+# the head's own Ray does: via GCS at the head advertise IP, and gRPC to
+# workers through the head's CONNECT proxy. Export these before any flow:
+export RAY_ADDRESS=127.200.0.1:6379            # head_advertise_ip:gcs_port
+export RAY_grpc_enable_http_proxy=1
+export grpc_proxy=http://127.0.0.1:13129       # the head relay's CONNECT proxy
+export no_grpc_proxy=127.200.0.1               # head self-dials go direct
+
 python examples/tailscale/loop.py              # smoke test
 python examples/tailscale/connectivity-matrix.py   # full NxN sweep: ChiaFunctions
                                                # dispatched from every machine to

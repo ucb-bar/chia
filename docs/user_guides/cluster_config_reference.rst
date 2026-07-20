@@ -572,13 +572,18 @@ iptables — and worker↔worker traffic between hosts works (full mesh).
 
 Userspace tailscaled delivers *inbound* tailnet TCP to
 ``127.0.0.1:<port>`` and requires *outbound* dials to go through its
-local SOCKS5 proxy. Ray cannot speak SOCKS5, so CHIA runs one small
-stdlib-Python relay per machine: the head and every logical worker
-register in Ray under a unique
-loopback IP, and dialing a *peer's* loopback IP hits the local relay,
-which forwards through the SOCKS5 proxy to the peer's tailnet address.
-Because Ray services bind the wildcard address, each participant's pinned port
-block must be globally unique — the ``tailnet:`` fields manage this.
+local SOCKS5 proxy. The head and every logical worker register in Ray
+under a unique loopback IP (bindable even in userspace mode, unlike the
+real tailnet IP). CHIA runs one small stdlib-Python relay per machine
+that carries all of Ray's gRPC through a single **HTTP CONNECT proxy**:
+Ray is pointed at it via ``grpc_proxy``, the proxy reads the destination
+from each CONNECT request, maps the peer's loopback IP to its tailnet
+address, and forwards through the SOCKS5 proxy. Because there are no
+per-port outbound listeners, port blocks need only be unique **per
+machine** — two workers on different machines reuse the same ports, so
+port consumption does not grow with cluster size. (ChiaTool traffic is
+plain HTTP and keeps small per-port SOCKS listeners for peer tool
+ports.) Worker↔worker traffic between hosts works (full mesh).
 
 The presence of the ``tailnet:`` block opts the cluster in — every
 worker IP that is not the head machine is automatically treated as a
@@ -652,18 +657,20 @@ rejoins using the reusable auth key).
 
 Optional ``tailnet:`` port fields (defaults in parentheses):
 ``head_advertise_ip`` (127.200.0.1), ``gcs_port`` (6379 — must match
-``--port`` in ``head_start_ray_commands``), ``head_node_manager_port``
-(23744), ``head_object_manager_port`` (23745),
-``head_tool_port_min``/``max`` (23760/23770),
-``head_worker_port_min``/``max`` (23808/23935), ``worker_block_base``
-(24000), ``worker_block_size`` (256), ``tool_port_count`` (11), and
-``worker_port_count`` (128). The head owns the port block immediately
-below ``worker_block_base`` (same sub-block layout as workers), so the
-worker blocks growing upward from it meet no head ports at all and can
-grow until the top of port space — with the defaults, 162 workers fit
-before allocation refuses. A machine's Ray worker-port range must exceed
-its CPU count (Ray prestarts one worker process per CPU). CHIA injects
-``--node-ip-address`` and the pinned ports into the head's and workers'
+``--port`` in ``head_start_ray_commands``), ``connect_proxy_port``
+(13129 — the relay's HTTP CONNECT listener that Ray's ``grpc_proxy``
+points at), ``head_node_manager_port`` (23744),
+``head_object_manager_port`` (23745), ``head_tool_port_min``/``max``
+(23760/23770), ``head_worker_port_min``/``max`` (23808/23935),
+``worker_block_base`` (24000), ``worker_block_size`` (256),
+``tool_port_count`` (11), and ``worker_port_count`` (128). Port blocks
+are indexed **per machine** (reused across machines), and grow upward
+from ``worker_block_base`` meeting no head port (the head owns the block
+just below it), so up to 162 workers fit **on a single machine** at the
+defaults before allocation refuses — cluster size is unbounded. A
+machine's Ray worker-port range must exceed its CPU count (Ray prestarts
+one worker process per CPU). CHIA injects ``--node-ip-address``, the
+pinned ports, and the ``grpc_proxy`` env into the head's and workers'
 ``ray start`` commands automatically, starts the relays before the
 workers, and stops them on ``chia down``.
 

@@ -393,6 +393,20 @@ def _rsync_file_mounts(ssh: SSHClient, config: ClusterConfig) -> None:
         )
 
 
+def _grpc_proxy_exports(tn, own_advertise_ip: str) -> list[str]:
+    """Env exports that route Ray's gRPC through the per-machine CONNECT
+    proxy. ``no_grpc_proxy`` excludes this participant's own advertise
+    IP so same-machine self-dials go direct to the wildcard bind — which
+    also lets the head's Ray start before its proxy is up (it does no
+    cross-machine dials until workers join).
+    """
+    return [
+        "export RAY_grpc_enable_http_proxy=1",
+        f"export grpc_proxy=http://127.0.0.1:{tn.connect_proxy_port}",
+        f"export no_grpc_proxy={own_advertise_ip}",
+    ]
+
+
 def build_head_script(config: ClusterConfig) -> list[str]:
     """Build the script that runs on the head node.
 
@@ -424,6 +438,7 @@ def build_head_script(config: ClusterConfig) -> list[str]:
         script.append(f"export CHIA_TOOL_ADVERTISE_HOST={tn.head_advertise_ip}")
         script.append(f"export CHIA_TOOL_BASE_PORT={tn.head_tool_port_min}")
         script.append(f"export CHIA_TOOL_MAX_PORT={tn.head_tool_port_max}")
+        script.extend(_grpc_proxy_exports(tn, tn.head_advertise_ip))
 
     for cmd in config.head_start_ray_commands:
         if tn is not None and "ray start" in cmd and "--head" in cmd:
@@ -493,6 +508,7 @@ def build_worker_script(
         # Tools on this worker advertise its loopback IP — reachable from
         # every machine in the cluster via the relays (no rewrite/relay-host needed).
         script.append(f"export CHIA_TOOL_ADVERTISE_HOST={adv_ip}")
+        script.extend(_grpc_proxy_exports(tn, adv_ip))
     elif tunnel_config is not None:
         tun_ip = tunnel_config.tunnel_ip
         script.append(f"export RAY_HEAD_IP={tun_ip}")
@@ -746,14 +762,14 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
         tailnet_allocs = allocate_tailnet_workers(config, assignments,
                                                   tailnet_ip_map)
 
-    # Then start the per-machine relays. The head relay must be up before
-    # any tailnet worker registers (GCS health-checks the worker raylet
-    # immediately), and a worker's relay must be up before its
-    # `ray start` (which dials the head GCS through it). Relay listeners
-    # never collide with the local Ray's wildcard binds — port blocks
-    # are globally unique — so ordering against the local Ray processes
-    # doesn't matter. Relays are addressed by CLUSTER address (SSH),
-    # which for managed cloud machines differs from their tailnet IP.
+    # Then start the per-machine relays. A worker's relay (its CONNECT
+    # proxy) must be up before its `ray start`, which dials the head GCS
+    # through it. The head's Ray started earlier without its proxy — that
+    # is safe because no_grpc_proxy excludes the head's own advertise IP,
+    # so the head's self-dials go direct and it makes no cross-machine
+    # dials until workers register (by which point its relay is up).
+    # Relays are addressed by CLUSTER address (SSH), which for managed
+    # cloud machines differs from their tailnet IP.
     if tailnet_allocs:
         tailnet_host_ips = sorted({key[0] for key in tailnet_allocs})
         with log_phase(logger, f"Starting tailnet relay on head {config.head_ip}"):

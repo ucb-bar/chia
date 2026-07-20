@@ -57,19 +57,25 @@ class TunnelConfig:
 class TailnetConfig:
     """Cluster-wide config for tailnet (tailscale) native clusters.
 
-    In this mode all cross-machine Ray traffic flows over the tailscale
-    network instead of SSH tunnels.  Works with fully unprivileged
-    (userspace-networking) tailscaled on every machine: outbound dials go
-    through each machine's local SOCKS5 proxy via a small per-machine relay
-    process, and inbound tailnet connections are delivered by tailscaled
-    to 127.0.0.1:<port>, where Ray's wildcard-bound services receive
-    them directly.
+    All cross-machine Ray traffic flows over the tailscale network
+    instead of SSH tunnels. Works with fully unprivileged
+    (userspace-networking) tailscaled on every machine. Each machine
+    runs a small relay process; the head and every logical worker
+    advertise a unique loopback IP to Ray (bindable even in userspace
+    mode, unlike the real tailnet IP).
 
-    The head and every logical worker advertise a unique loopback IP to
-    Ray and get a globally unique block of pinned ports — required
-    because Ray services bind the wildcard address, so a relay can only
-    listen for a *peer's* ports if no local service uses the same
-    numbers.
+    Outbound: Ray's gRPC is pointed at the relay's per-machine HTTP
+    CONNECT proxy (via grpc_proxy); the proxy reads the destination from
+    each CONNECT request and forwards it through the local tailscaled
+    SOCKS5 proxy to the owning machine's tailnet IP. Because there are no
+    per-port outbound listeners, port blocks need only be unique PER
+    MACHINE — two workers on different machines reuse the same ports.
+    ChiaTool traffic is plain HTTP (can't use grpc_proxy), so peer tool
+    ports keep small per-port SOCKS listeners.
+
+    Inbound: tailscaled delivers to 127.0.0.1:<port>, where Ray's
+    wildcard-bound services receive it directly (tool servers bind the
+    advertise IP, so a local bridge forwards their inbound).
 
     ``worker_port_count`` (the per-worker Ray worker port range) and the
     head's worker port range must exceed the machine's CPU count — Ray
@@ -79,6 +85,7 @@ class TailnetConfig:
     # ``manage_all`` is set, in which case CHIA discovers it at bring-up.
     head_tailnet_ip: str = ""
     socks_proxy: str = "127.0.0.1:1055"   # tailscaled --socks5-server on every machine
+    connect_proxy_port: int = 13129   # relay's HTTP CONNECT listener (Ray's grpc_proxy)
     # Auth key (tskey-auth-...) used when CHIA joins machines to the
     # tailnet itself (cloud machines by default, on-prem via
     # manage_tailscale). Use a reusable — ideally ephemeral,

@@ -149,19 +149,25 @@ class TestAllocation(unittest.TestCase):
         assignments = assign_nodes(config)
         return config, assignments, allocate_tailnet_workers(config, assignments)
 
-    def test_unique_advertise_ips_and_disjoint_ports(self):
+    def test_unique_advertise_ips_and_per_machine_disjoint_ports(self):
         config, assignments, allocs = self._alloc()
         self.assertEqual(len(allocs), 3)
+        # Advertise IPs are globally unique (the routing key)...
         adv_ips = [a.advertise_ip for a in allocs.values()]
         self.assertEqual(len(set(adv_ips)), 3)
         self.assertNotIn("127.0.0.1", adv_ips)
         self.assertNotIn(config.tailnet_config.head_advertise_ip, adv_ips)
-        # All port blocks pairwise disjoint and disjoint from head ports.
-        seen = set(head_ports(config.tailnet_config))
-        for a in allocs.values():
-            block = set(a.ports())
-            self.assertFalse(block & seen)
-            seen |= block
+        # ...but port blocks are only unique PER MACHINE: workers sharing
+        # a physical IP get disjoint blocks (also disjoint from head).
+        by_ip = {}
+        for (ip, _, _), a in allocs.items():
+            by_ip.setdefault(ip, []).append(a)
+        for ip, workers in by_ip.items():
+            seen = set(head_ports(config.tailnet_config))
+            for a in workers:
+                block = set(a.ports())
+                self.assertFalse(block & seen)
+                seen |= block
 
     def test_worker_port_count_sizing(self):
         config, _, allocs = self._alloc()
@@ -179,80 +185,112 @@ class TestAllocation(unittest.TestCase):
         with self.assertRaises(ConfigError):
             allocate_tailnet_workers(config, assignments)
 
-    def _alloc_n_workers(self, n):
-        """Allocate n workers on n distinct tailnet IPs with defaults."""
-        ips = [f"100.64.{1 + i // 250}.{2 + i % 250}" for i in range(n)]
+    def _alloc_n_on_one_machine(self, n):
+        """Allocate n workers all on ONE tailnet IP with defaults."""
         raw = _make_raw()
         raw["available_node_types"] = {
             "tw": {"resources": {"tw": 1}, "num_workers": n,
-                   "compatible_ips": ips},
+                   "compatible_ips": ["100.64.0.2"]},
         }
         config = build_config(raw)
         return allocate_tailnet_workers(config, assign_nodes(config))
 
-    def test_default_capacity_is_162_workers(self):
-        """The head owns the block immediately below worker_block_base,
-        so worker blocks growing upward meet no head port at all — they
-        can grow until the top of port space (65535). 162 blocks fit;
-        the 163rd would need ports past 65535 and is refused."""
-        allocs = self._alloc_n_workers(162)
+    def test_per_machine_capacity_is_162_workers(self):
+        """Port blocks are indexed per machine and grow upward from
+        worker_block_base, meeting no head port (head sits below it), so
+        they run to the top of port space (65535): 162 workers fit on ONE
+        machine; the 163rd would need ports past 65535 and is refused.
+        (Across machines, blocks are reused — capacity is per machine.)"""
+        allocs = self._alloc_n_on_one_machine(162)
         self.assertEqual(len(allocs), 162)
         head_ports_set = set(head_ports(build_config(_make_raw()).tailnet_config))
         self.assertTrue(all(p < 24000 for p in head_ports_set))
         top = max(p for a in allocs.values() for p in a.ports())
         self.assertLessEqual(top, 65535)
         with self.assertRaises(ConfigError):
-            self._alloc_n_workers(163)
+            self._alloc_n_on_one_machine(163)
 
 
-class TestRelaySpec(unittest.TestCase):
+class TestRelaySpecAndAlloc(unittest.TestCase):
 
-    def test_worker_spec_covers_head_and_remote_peers_only(self):
-        config = build_config(_make_raw())
+    def _cfg(self):
+        return build_config(_make_raw())
+
+    def test_per_machine_port_reuse(self):
+        raw = _make_raw()
+        raw["available_node_types"]["tw"]["num_workers"] = 2  # one per machine
+        config = build_config(raw)
+        allocs = allocate_tailnet_workers(config, assign_nodes(config))
+        by_ip = {k[0]: a for k, a in allocs.items()}
+        w2, w3 = by_ip["100.64.0.2"], by_ip["100.64.0.3"]
+        # different machines -> unique advertise IPs but IDENTICAL ports
+        self.assertNotEqual(w2.advertise_ip, w3.advertise_ip)
+        self.assertEqual(w2.ports(), w3.ports())
+
+    def test_two_workers_one_machine_get_distinct_blocks(self):
+        raw = _make_raw()
+        raw["available_node_types"]["tw"]["compatible_ips"] = ["100.64.0.2"]
+        raw["available_node_types"]["tw"]["num_workers"] = 2
+        config = build_config(raw)
+        allocs = allocate_tailnet_workers(config, assign_nodes(config))
+        blocks = sorted(a.node_manager_port for a in allocs.values())
+        self.assertEqual(len(set(blocks)), 2)  # same machine -> distinct blocks
+
+    def test_spec_is_connect_listener_plus_tool_listeners_only(self):
+        config = self._cfg()
+        allocs = allocate_tailnet_workers(config, assign_nodes(config))
+        tn = config.tailnet_config
+        spec = build_relay_spec(config, allocs, "100.64.0.2")
+        conn = [l for l in spec["listeners"] if l.get("via") == "connect"]
+        peer = [l for l in spec["listeners"] if l.get("via") not in ("connect", "direct")]
+        bridges = [l for l in spec["listeners"] if l.get("via") == "direct"]
+        self.assertEqual(len(conn), 1)
+        self.assertEqual(conn[0]["port"], tn.connect_proxy_port)
+        self.assertTrue(bridges)                    # own tool bridges remain
+        # The ONLY per-port peer listeners are TOOL ports (MCP is HTTP,
+        # can't use the CONNECT proxy). The big Ray worker/manager ranges
+        # never get per-port listeners — they ride the CONNECT proxy.
+        self.assertTrue(peer)
+        adv_to_alloc = {a.advertise_ip: a for a in allocs.values()}
+        for l in peer:
+            if l["bind_ip"] == tn.head_advertise_ip:
+                self.assertTrue(tn.head_tool_port_min <= l["port"] <= tn.head_tool_port_max)
+            else:
+                alloc = adv_to_alloc[l["bind_ip"]]
+                self.assertTrue(alloc.tool_port_min <= l["port"] <= alloc.tool_port_max)
+        # routes: own worker local (None), peers -> tailnet IP, head -> head tailnet
+        own = next(a for k, a in allocs.items() if k[0] == "100.64.0.2")
+        other = next(a for k, a in allocs.items() if k[0] == "100.64.0.3")
+        self.assertIsNone(spec["routes"][own.advertise_ip])
+        self.assertEqual(spec["routes"][other.advertise_ip], "100.64.0.3")
+        self.assertEqual(spec["routes"][tn.head_advertise_ip], tn.head_tailnet_ip)
+
+    def test_head_spec_routes_head_local(self):
+        config = self._cfg()
+        allocs = allocate_tailnet_workers(config, assign_nodes(config))
+        spec = build_relay_spec(config, allocs, None)
+        self.assertIsNone(spec["routes"][config.tailnet_config.head_advertise_ip])
+
+    def test_worker_script_sets_grpc_proxy(self):
+        config = self._cfg()
         assignments = assign_nodes(config)
         allocs = allocate_tailnet_workers(config, assignments)
-        tn = config.tailnet_config
+        a = assignments[0]
+        alloc = allocs[(a.ip, a.node_type.name, a.worker_index)]
+        script = "\n".join(build_worker_script(config, a, tailnet_alloc=alloc))
+        self.assertIn("export RAY_grpc_enable_http_proxy=1", script)
+        self.assertIn(f"grpc_proxy=http://127.0.0.1:{config.tailnet_config.connect_proxy_port}",
+                      script)
+        self.assertIn(f"no_grpc_proxy={alloc.advertise_ip}", script)
 
-        spec = build_relay_spec(config, allocs, "100.64.0.2")
-        self.assertEqual(spec["socks_proxy"], tn.socks_proxy)
-        socks = [e for e in spec["listeners"] if e.get("via", "socks") == "socks"]
-        direct = [e for e in spec["listeners"] if e.get("via") == "direct"]
-        bind_ips = {e["bind_ip"] for e in socks}
-        # Head listeners present...
-        self.assertIn(tn.head_advertise_ip, bind_ips)
-        # ...remote peers present, same-host peers excluded.
-        for key, a in allocs.items():
-            if a.tailnet_ip == "100.64.0.2":
-                self.assertNotIn(a.advertise_ip, bind_ips)
-            else:
-                self.assertIn(a.advertise_ip, bind_ips)
-        # SOCKS destinations are tailnet IPs.
-        for e in socks:
-            self.assertTrue(e["dest_ip"].startswith("100.64."))
-        # Self-inbound tool bridges: 127.0.0.1:<tool port> -> own
-        # advertise IP, direct dial (tools bind the worker's advertise IP while
-        # tailscaled delivers inbound to 127.0.0.1).
-        own = [a for k, a in allocs.items() if k[0] == "100.64.0.2"]
-        self.assertTrue(own)
-        for a in own:
-            for port in range(a.tool_port_min, a.tool_port_max + 1):
-                self.assertIn({"bind_ip": "127.0.0.1", "port": port,
-                               "dest_ip": a.advertise_ip, "via": "direct"},
-                              direct)
-
-    def test_head_spec_has_no_head_listeners(self):
+    def test_head_tool_bridges_present(self):
         config = build_config(_make_raw())
         tn = config.tailnet_config
         assignments = assign_nodes(config)
         allocs = allocate_tailnet_workers(config, assignments)
         spec = build_relay_spec(config, allocs, None)
-        socks = [e for e in spec["listeners"] if e.get("via", "socks") == "socks"]
-        bind_ips = {e["bind_ip"] for e in socks}
-        self.assertNotIn(tn.head_advertise_ip, bind_ips)
-        for a in allocs.values():
-            self.assertIn(a.advertise_ip, bind_ips)
-        # Head-local tool bridge covers the head tool range.
         direct = [e for e in spec["listeners"] if e.get("via") == "direct"]
+        # Head-local tool bridge covers the head tool range.
         for port in range(tn.head_tool_port_min, tn.head_tool_port_max + 1):
             self.assertIn({"bind_ip": "127.0.0.1", "port": port,
                            "dest_ip": tn.head_advertise_ip, "via": "direct"},

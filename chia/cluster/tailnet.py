@@ -74,17 +74,7 @@ def _pump(src, dst):
         pass
 
 
-def _handle(conn, proxy, dest_ip, dest_port, via="socks"):
-    try:
-        if via == "direct":
-            up = socket.create_connection((dest_ip, dest_port), timeout=15)
-        else:
-            up = socks5_connect(proxy, dest_ip, dest_port)
-    except Exception as e:
-        sys.stderr.write("relay: dial %s:%d (%s) failed: %s\n"
-                         % (dest_ip, dest_port, via, e))
-        conn.close()
-        return
+def _splice(conn, up):
     for s in (conn, up):
         try:
             s.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -100,6 +90,67 @@ def _handle(conn, proxy, dest_ip, dest_port, via="socks"):
             s.close()
         except OSError:
             pass
+
+
+def _handle_connect(conn, proxy, routes):
+    # Single-listener HTTP CONNECT proxy. Ray's gRPC (with grpc_proxy set)
+    # sends "CONNECT <advertise_ip>:<port>"; we map the advertise IP to its
+    # owning machine's tailnet IP via `routes` and dial through SOCKS — or
+    # straight to 127.0.0.1 when the destination is local to this machine
+    # (route value null). No per-port listeners: the destination rides in
+    # the request, so one socket serves every peer and port.
+    try:
+        buf = b""
+        while b"\r\n\r\n" not in buf:
+            d = conn.recv(4096)
+            if not d:
+                conn.close(); return
+            buf += d
+            if len(buf) > 65536:
+                conn.close(); return
+        head, _, rest = buf.partition(b"\r\n\r\n")
+        line = head.split(b"\r\n", 1)[0].decode("latin1")
+        parts = line.split()
+        if len(parts) < 2 or parts[0].upper() != "CONNECT":
+            conn.sendall(b"HTTP/1.1 400 Bad Request\r\n\r\n"); conn.close(); return
+        host, _, port_s = parts[1].rpartition(":")
+        port = int(port_s)
+        if host not in routes:
+            sys.stderr.write("relay: CONNECT no route for %s\n" % host)
+            conn.sendall(b"HTTP/1.1 502 No Route\r\n\r\n"); conn.close(); return
+        tailnet_ip = routes[host]   # null => local
+        try:
+            if tailnet_ip is None:
+                up = socket.create_connection(("127.0.0.1", port), timeout=15)
+            else:
+                up = socks5_connect(proxy, tailnet_ip, port)
+        except Exception as e:
+            sys.stderr.write("relay: CONNECT %s:%d dial failed: %s\n"
+                             % (host, port, e))
+            conn.sendall(b"HTTP/1.1 502 Dial Failed\r\n\r\n"); conn.close(); return
+        conn.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+        if rest:                       # bytes the client pipelined after CONNECT
+            up.sendall(rest)
+        _splice(conn, up)
+    except Exception:
+        try:
+            conn.close()
+        except OSError:
+            pass
+
+
+def _handle(conn, proxy, dest_ip, dest_port, via="socks"):
+    try:
+        if via == "direct":
+            up = socket.create_connection((dest_ip, dest_port), timeout=15)
+        else:
+            up = socks5_connect(proxy, dest_ip, dest_port)
+    except Exception as e:
+        sys.stderr.write("relay: dial %s:%d (%s) failed: %s\n"
+                         % (dest_ip, dest_port, via, e))
+        conn.close()
+        return
+    _splice(conn, up)
 
 
 def main():
@@ -132,12 +183,17 @@ def main():
                 continue
             conn.setblocking(True)
             entry = key.data
-            threading.Thread(
-                target=_handle,
-                args=(conn, proxy, entry["dest_ip"], entry["port"],
-                      entry.get("via", "socks")),
-                daemon=True,
-            ).start()
+            if entry.get("via") == "connect":
+                t = threading.Thread(target=_handle_connect,
+                                     args=(conn, proxy, spec.get("routes", {})),
+                                     daemon=True)
+            else:
+                t = threading.Thread(
+                    target=_handle,
+                    args=(conn, proxy, entry["dest_ip"], entry["port"],
+                          entry.get("via", "socks")),
+                    daemon=True)
+            t.start()
 
 
 if __name__ == "__main__":
@@ -149,10 +205,11 @@ if __name__ == "__main__":
 class TailnetWorkerAlloc:
     """Per-worker addressing for a tailnet cluster.
 
-    Each tailnet worker registers in Ray under a unique loopback
-    ``advertise_ip`` and owns a globally unique block of pinned ports —
-    Ray services bind the wildcard address, so peers' relay listeners
-    may only use port numbers no local service binds.
+    Each tailnet worker registers in Ray under a globally unique
+    loopback ``advertise_ip`` (the routing key) and owns a block of
+    pinned ports that need only be unique per machine — Ray's gRPC is
+    reached through the per-machine CONNECT proxy, so no per-port
+    listeners exist to force cluster-wide uniqueness.
     """
     advertise_ip: str
     tailnet_ip: str  # the host's tailscale 100.x address
@@ -278,8 +335,13 @@ def allocate_tailnet_workers(
 
     Returns a dict keyed by ``(ip, node_type_name, worker_index)`` for
     every assignment on a tailnet IP.  Advertise IPs count up from
-    127.0.0.2; port blocks are consecutive ``worker_block_size`` slices
-    from ``worker_block_base``.
+    127.0.0.2 (globally unique — they're the routing key).
+
+    Port blocks are consecutive ``worker_block_size`` slices from
+    ``worker_block_base``, indexed PER MACHINE: two workers on different
+    machines reuse the same block (no per-port listeners exist to
+    collide), only workers sharing a physical machine need distinct
+    blocks.
 
     *tailnet_ip_map* maps a worker's cluster address (how CHIA SSHes to
     it, e.g. an EC2 public IP) to its tailnet address, for machines whose
@@ -303,11 +365,13 @@ def allocate_tailnet_workers(
     next_addr = ipaddress.IPv4Address("127.0.0.2")
     head_port_set = set(head_ports(tn))
 
-    idx = 0
+    idx_by_machine: dict[str, int] = {}
     for a in assignments:
         if not config.is_tailnet(a.ip):
             continue
-        base = tn.worker_block_base + idx * tn.worker_block_size
+        block_idx = idx_by_machine.get(a.ip, 0)
+        idx_by_machine[a.ip] = block_idx + 1
+        base = tn.worker_block_base + block_idx * tn.worker_block_size
         alloc = TailnetWorkerAlloc(
             advertise_ip=str(next_addr),
             tailnet_ip=(tailnet_ip_map or {}).get(a.ip, a.ip),
@@ -335,7 +399,6 @@ def allocate_tailnet_workers(
                 f"count or worker_block_size, or lower worker_block_base")
         result[(a.ip, a.node_type.name, a.worker_index)] = alloc
 
-        idx += 1
         next_addr += 1
         if next_addr == ipaddress.IPv4Address("127.0.0.1"):
             next_addr += 1
@@ -348,50 +411,61 @@ def build_relay_spec(
     allocs: dict[tuple[str, str, int], TailnetWorkerAlloc],
     host_ip: str | None,
 ) -> dict:
-    """Build the relay listener spec for one host.
+    """Build the relay spec for one host.
 
-    *host_ip* is the machine's tailnet IP, or ``None`` for the head machine.
-    The relay listens on the advertised loopback addresses of every
-    PEER machine's workers (never its own — same-host peers are reached directly via
-    the local wildcard binds, and binding them would collide).
+    *host_ip* is the machine's cluster address (how CHIA SSHes to it),
+    or ``None`` for the head machine.
+
+    The relay carries all of Ray's gRPC through a single HTTP CONNECT
+    listener, with a ``routes`` table mapping every advertise IP to its
+    owning machine's tailnet IP (null for this machine's own
+    participants → dialed locally, skipping a tailscale hairpin).
+
+    ChiaTool traffic is plain HTTP (httpx) which can't use the CONNECT
+    proxy, so peer TOOL ports keep small per-port SOCKS listeners; and
+    since tool servers bind the advertise IP (not wildcard) while
+    tailscaled delivers inbound to 127.0.0.1, each host also runs a
+    local ``direct`` bridge for its OWN tool ports.
     """
     tn = config.tailnet_config
     assert tn is not None
 
-    listeners: list[dict] = []
+    # routes: advertise_ip -> owning machine's tailnet IP, or None when
+    # the participant lives on THIS machine (dial 127.0.0.1 directly).
+    routes: dict[str, str | None] = {
+        tn.head_advertise_ip: None if host_ip is None else tn.head_tailnet_ip
+    }
+    for (cluster_ip, _, _), alloc in allocs.items():
+        routes[alloc.advertise_ip] = None if cluster_ip == host_ip else alloc.tailnet_ip
+
+    listeners: list[dict] = [
+        {"bind_ip": "127.0.0.1", "port": tn.connect_proxy_port, "via": "connect"}
+    ]
+
+    # PEER tool ports: per-port SOCKS listeners (head is a peer to
+    # workers and vice versa).
     if host_ip is not None:
-        # Workers dial the head at its advertised loopback IP.
-        for port in head_ports(tn):
+        for port in range(tn.head_tool_port_min, tn.head_tool_port_max + 1):
             listeners.append({"bind_ip": tn.head_advertise_ip, "port": port,
                               "dest_ip": tn.head_tailnet_ip})
-    # Same-host peers are excluded by CLUSTER address (the alloc key):
-    # for managed cloud machines the tailnet IP differs from the cluster
-    # address, and binding a host's own workers' advertise IPs would
-    # collide with the local Ray wildcard binds.
-    for (cluster_ip, _, _), alloc in allocs.items():
-        if cluster_ip == host_ip:
-            # Same host — Ray's wildcard binds serve inbound traffic
-            # directly, but ChiaTool uvicorn servers bind the worker's
-            # advertise IP specifically, while tailscaled delivers
-            # inbound to 127.0.0.1. Bridge the tool ports with a local
-            # direct hop: 127.0.0.1:<port> -> <advertise_ip>:<port>.
-            for port in range(alloc.tool_port_min, alloc.tool_port_max + 1):
-                listeners.append({"bind_ip": "127.0.0.1", "port": port,
-                                  "dest_ip": alloc.advertise_ip,
-                                  "via": "direct"})
-            continue
-        for port in alloc.ports():
-            listeners.append({"bind_ip": alloc.advertise_ip, "port": port,
-                              "dest_ip": alloc.tailnet_ip})
-    if host_ip is None:
-        # Same bridge for tools hosted on the head (bound to
-        # head_advertise_ip by the tool server).
+    else:
+        # OWN (head) tool bridge.
         for port in range(tn.head_tool_port_min, tn.head_tool_port_max + 1):
             listeners.append({"bind_ip": "127.0.0.1", "port": port,
-                              "dest_ip": tn.head_advertise_ip,
-                              "via": "direct"})
+                              "dest_ip": tn.head_advertise_ip, "via": "direct"})
+    for (cluster_ip, _, _), alloc in allocs.items():
+        if cluster_ip == host_ip:
+            # OWN tools: inbound bridge 127.0.0.1:<port> -> advertise IP.
+            for port in range(alloc.tool_port_min, alloc.tool_port_max + 1):
+                listeners.append({"bind_ip": "127.0.0.1", "port": port,
+                                  "dest_ip": alloc.advertise_ip, "via": "direct"})
+        else:
+            for port in range(alloc.tool_port_min, alloc.tool_port_max + 1):
+                listeners.append({"bind_ip": alloc.advertise_ip, "port": port,
+                                  "dest_ip": alloc.tailnet_ip})
 
-    return {"socks_proxy": tn.socks_proxy, "listeners": listeners}
+    return {"socks_proxy": tn.socks_proxy, "listeners": listeners,
+            "routes": routes}
 
 
 def start_relay(ssh: SSHClient, spec: dict) -> None:
