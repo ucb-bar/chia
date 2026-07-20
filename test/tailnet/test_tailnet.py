@@ -64,7 +64,7 @@ class TestTailnetConfig(unittest.TestCase):
             auth = config.get_ssh_auth(ip)
             self.assertEqual(auth.ssh_proxy_command, PROXY_CMD)
             self.assertEqual(auth.ssh_user, "u")
-        # The head is dialed directly — no proxy, not a tailnet node.
+        # The head is dialed directly — no proxy, not a tailnet worker.
         self.assertFalse(config.is_tailnet("10.0.0.1"))
         self.assertIsNone(config.get_ssh_auth("10.0.0.1").ssh_proxy_command)
 
@@ -179,6 +179,31 @@ class TestAllocation(unittest.TestCase):
         with self.assertRaises(ConfigError):
             allocate_tailnet_workers(config, assignments)
 
+    def _alloc_n_workers(self, n):
+        """Allocate n workers on n distinct tailnet IPs with defaults."""
+        ips = [f"100.64.{1 + i // 250}.{2 + i % 250}" for i in range(n)]
+        raw = _make_raw()
+        raw["available_node_types"] = {
+            "tw": {"resources": {"tw": 1}, "num_workers": n,
+                   "compatible_ips": ips},
+        }
+        config = build_config(raw)
+        return allocate_tailnet_workers(config, assign_nodes(config))
+
+    def test_default_capacity_is_162_workers(self):
+        """The head owns the block immediately below worker_block_base,
+        so worker blocks growing upward meet no head port at all — they
+        can grow until the top of port space (65535). 162 blocks fit;
+        the 163rd would need ports past 65535 and is refused."""
+        allocs = self._alloc_n_workers(162)
+        self.assertEqual(len(allocs), 162)
+        head_ports_set = set(head_ports(build_config(_make_raw()).tailnet_config))
+        self.assertTrue(all(p < 24000 for p in head_ports_set))
+        top = max(p for a in allocs.values() for p in a.ports())
+        self.assertLessEqual(top, 65535)
+        with self.assertRaises(ConfigError):
+            self._alloc_n_workers(163)
+
 
 class TestRelaySpec(unittest.TestCase):
 
@@ -205,7 +230,7 @@ class TestRelaySpec(unittest.TestCase):
         for e in socks:
             self.assertTrue(e["dest_ip"].startswith("100.64."))
         # Self-inbound tool bridges: 127.0.0.1:<tool port> -> own
-        # advertise IP, direct dial (tools bind the node IP while
+        # advertise IP, direct dial (tools bind the worker's advertise IP while
         # tailscaled delivers inbound to 127.0.0.1).
         own = [a for k, a in allocs.items() if k[0] == "100.64.0.2"]
         self.assertTrue(own)
@@ -294,7 +319,7 @@ class TestManageAll(unittest.TestCase):
         raw["available_node_types"]["tw"]["compatible_ips"] = \
             ["10.0.0.5", "100.64.0.9"]
         raw["auth"]["overrides"] = {"100.64.0.9": {"manage_tailscale": False}}
-        config = build_config(raw)  # opted-out node is fine
+        config = build_config(raw)  # opted-out machine is fine
         self.assertFalse(config.get_ssh_auth("100.64.0.9").manage_tailscale)
         self.assertIsNotNone(config.get_ssh_auth("100.64.0.9").ssh_proxy_command)
         self.assertTrue(config.get_ssh_auth("10.0.0.5").manage_tailscale)
@@ -332,7 +357,7 @@ class TestManageAll(unittest.TestCase):
 
 
 def _make_cloud_raw(join_tailnet=None, with_tailnet_section=True):
-    """A raw config with one AWS node type (post-placeholder-expansion)."""
+    """A raw config with one AWS machine type (post-placeholder-expansion)."""
     node = {"KeyName": "k", "InstanceType": "t3.large", "count": 2,
             "ssh_user": "ubuntu", "ssh_private_key": "/keys/k.pem"}
     if join_tailnet is not None:
@@ -360,9 +385,9 @@ class TestCloudTailnet(unittest.TestCase):
     IP_MAP = {"ec2_worker": ["203.0.113.1", "203.0.113.2"]}
 
     def _apply(self, raw):
-        from chia.cli.up import _apply_cloud_network_mode
+        from chia.cluster.config import apply_cloud_network_mode
         aws_result = parse_aws_nodes(raw)
-        return _apply_cloud_network_mode(
+        return apply_cloud_network_mode(
             raw, aws_result, self.IP_MAP, None, {}), raw
 
     def test_aws_defaults_to_tailnet_when_section_present(self):

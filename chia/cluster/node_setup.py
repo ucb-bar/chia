@@ -369,10 +369,10 @@ def allocate_worker_tunnels(
 
 def _make_ssh(config: ClusterConfig, ip: str) -> SSHClient:
     auth = config.get_ssh_auth(ip)
-    # Cloud nodes accept only their dedicated key — use it exclusively
+    # Cloud machines accept only their dedicated key — use it exclusively
     # so a full ssh-agent can't exhaust sshd MaxAuthTries. That's every
-    # tunneled node, and tailnet cloud nodes (managed + dedicated key).
-    # On-prem nodes keep the agent (they authenticate via forwarded
+    # tunneled machine, and tailnet cloud machines (managed + dedicated
+    # key). On-prem machines keep the agent (they authenticate via forwarded
     # agent keys).
     dedicated_key_only = (config.is_tunneled(ip)
                           or (auth.manage_tailscale
@@ -419,7 +419,7 @@ def build_head_script(config: ClusterConfig) -> list[str]:
 
     tn = config.tailnet_config
     if tn is not None:
-        # ChiaTools hosted by Ray workers on the head node advertise the
+        # ChiaTools hosted by Ray workers on the head machine advertise the
         # head's loopback IP, reachable from every tailnet worker.
         script.append(f"export CHIA_TOOL_ADVERTISE_HOST={tn.head_advertise_ip}")
         script.append(f"export CHIA_TOOL_BASE_PORT={tn.head_tool_port_min}")
@@ -491,7 +491,7 @@ def build_worker_script(
         script.append(f"export CHIA_TOOL_BASE_PORT={tailnet_alloc.tool_port_min}")
         script.append(f"export CHIA_TOOL_MAX_PORT={tailnet_alloc.tool_port_max}")
         # Tools on this worker advertise its loopback IP — reachable from
-        # every cluster node via the relays (no rewrite/relay-host needed).
+        # every machine in the cluster via the relays (no rewrite/relay-host needed).
         script.append(f"export CHIA_TOOL_ADVERTISE_HOST={adv_ip}")
     elif tunnel_config is not None:
         tun_ip = tunnel_config.tunnel_ip
@@ -706,7 +706,7 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
                 ssh.run_commands([route_localnet_cmd] + iptables_cmds)
 
     # --- Tailnet (tailscale) workers ---
-    # First, CHIA-managed hosts (cloud nodes by default, on-prem opt-in
+    # First, CHIA-managed machines (cloud machines by default, on-prem opt-in
     # via manage_tailscale) are joined to the tailnet: install userspace
     # tailscale if missing, start tailscaled, `tailscale up`, and
     # discover the host's tailnet IP — which the relays then use as the
@@ -746,14 +746,14 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
         tailnet_allocs = allocate_tailnet_workers(config, assignments,
                                                   tailnet_ip_map)
 
-    # Then start the per-node relays. The head relay must be up before
+    # Then start the per-machine relays. The head relay must be up before
     # any tailnet worker registers (GCS health-checks the worker raylet
     # immediately), and a worker's relay must be up before its
     # `ray start` (which dials the head GCS through it). Relay listeners
     # never collide with the local Ray's wildcard binds — port blocks
     # are globally unique — so ordering against the local Ray processes
     # doesn't matter. Relays are addressed by CLUSTER address (SSH),
-    # which for managed cloud nodes differs from their tailnet IP.
+    # which for managed cloud machines differs from their tailnet IP.
     if tailnet_allocs:
         tailnet_host_ips = sorted({key[0] for key in tailnet_allocs})
         with log_phase(logger, f"Starting tailnet relay on head {config.head_ip}"):
@@ -764,7 +764,7 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
             ssh.wait_for_ssh()
             with log_phase(logger, f"Starting tailnet relay on {ip}"):
                 start_relay(ssh, build_relay_spec(config, tailnet_allocs, ip))
-        logger.info(f"Tailnet relays up on head + {len(tailnet_host_ips)} node(s)")
+        logger.info(f"Tailnet relays up on head + {len(tailnet_host_ips)} machine(s)")
 
     # Group assignments by IP so we set up workers on the same machine
     # sequentially (avoids overwhelming sshd MaxStartups), while still

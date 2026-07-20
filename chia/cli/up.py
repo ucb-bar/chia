@@ -10,9 +10,6 @@ from chia.cluster.config import (
     _expand_node_placeholders, _inject_cloud_tunnel_overrides,
 )
 
-# Back-compat alias — the helper moved to chia.cluster.config so that
-# `chia down` can use the same cloud network-mode routing.
-_apply_cloud_network_mode = apply_cloud_network_mode
 from chia.cluster.log import get_logger, setup_logging
 from chia.cluster.node_setup import (
     add_nodes_to_cluster, allocate_worker_tunnels, bring_up_cluster,
@@ -235,7 +232,7 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     if ip_map:
         raw = _expand_node_placeholders(raw, ip_map)
         try:
-            _apply_cloud_network_mode(
+            apply_cloud_network_mode(
                 raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
                 require_auth_key=not args.dry_run, logger=logger)
         except ConfigError as e:
@@ -431,7 +428,7 @@ def cmd_up(args):
     if ip_map:
         raw = _expand_node_placeholders(raw, ip_map)
         try:
-            joining_types = _apply_cloud_network_mode(
+            joining_types = apply_cloud_network_mode(
                 raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
                 require_auth_key=not args.dry_run, logger=logger)
         except ConfigError as e:

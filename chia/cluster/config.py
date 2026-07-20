@@ -59,14 +59,14 @@ class TailnetConfig:
 
     In this mode all cross-machine Ray traffic flows over the tailscale
     network instead of SSH tunnels.  Works with fully unprivileged
-    (userspace-networking) tailscaled on every node: outbound dials go
-    through each node's local SOCKS5 proxy via a small per-node relay
+    (userspace-networking) tailscaled on every machine: outbound dials go
+    through each machine's local SOCKS5 proxy via a small per-machine relay
     process, and inbound tailnet connections are delivered by tailscaled
     to 127.0.0.1:<port>, where Ray's wildcard-bound services receive
     them directly.
 
-    Every node (head and workers) advertises a unique loopback IP to
-    Ray and gets a globally unique block of pinned ports — required
+    The head and every logical worker advertise a unique loopback IP to
+    Ray and get a globally unique block of pinned ports — required
     because Ray services bind the wildcard address, so a relay can only
     listen for a *peer's* ports if no local service uses the same
     numbers.
@@ -78,13 +78,14 @@ class TailnetConfig:
     # The head's tailscale 100.x address. Required — unless
     # ``manage_all`` is set, in which case CHIA discovers it at bring-up.
     head_tailnet_ip: str = ""
-    socks_proxy: str = "127.0.0.1:1055"   # tailscaled --socks5-server on every node
-    # Auth key (tskey-auth-...) used when CHIA joins nodes to the tailnet
-    # itself (cloud nodes by default, on-prem via manage_tailscale). Use a
-    # reusable — ideally ephemeral, pre-authorized — key; reference it as
-    # ${TS_AUTHKEY} to keep it out of the YAML file.
+    socks_proxy: str = "127.0.0.1:1055"   # tailscaled --socks5-server on every machine
+    # Auth key (tskey-auth-...) used when CHIA joins machines to the
+    # tailnet itself (cloud machines by default, on-prem via
+    # manage_tailscale). Use a reusable — ideally ephemeral,
+    # pre-authorized — key; reference it as ${TS_AUTHKEY} to keep it
+    # out of the YAML file.
     auth_key: str = ""
-    # Manage tailscale on EVERY node, including the head: install the
+    # Manage tailscale on EVERY machine, including the head: install the
     # userspace binaries, start tailscaled, and join the tailnet. Every
     # worker must then be addressed by an ordinary SSH-reachable IP —
     # tailscale can't be bootstrapped over tailscale, so a worker listed
@@ -92,7 +93,7 @@ class TailnetConfig:
     # machines out with ``manage_tailscale: false`` in auth.overrides
     # and run tailscaled there yourself).
     manage_all: bool = False
-    # Userspace tailscale install used on CHIA-managed nodes (no root
+    # Userspace tailscale install used on CHIA-managed machines (no root
     # needed): the static tarball from pkgs.tailscale.com, unpacked into
     # tailscale_dir with state/socket kept alongside. The default is
     # per-cluster — /tmp/<cluster_name>/tailscale — so cluster daemons
@@ -104,12 +105,18 @@ class TailnetConfig:
     tailscale_dir: str = ""   # computed default: /tmp/<cluster_name>/tailscale
     head_advertise_ip: str = "127.200.0.1"
     gcs_port: int = 6379          # must match --port in head_start_ray_commands
-    head_node_manager_port: int = 25800
-    head_object_manager_port: int = 25801
-    head_worker_port_min: int = 42000
-    head_worker_port_max: int = 42127
-    head_tool_port_min: int = 27000
-    head_tool_port_max: int = 27010
+    # The head owns the port block immediately BELOW worker_block_base,
+    # with the same sub-block layout workers use (+0/+1 managers,
+    # +16.. tools, +64.. Ray worker ports). Worker blocks growing upward
+    # from worker_block_base therefore meet no head ports at all — they
+    # can grow until the top of port space (65535), which with the
+    # defaults fits 162 workers.
+    head_node_manager_port: int = 23744
+    head_object_manager_port: int = 23745
+    head_tool_port_min: int = 23760
+    head_tool_port_max: int = 23770
+    head_worker_port_min: int = 23808
+    head_worker_port_max: int = 23935
     # Each tailnet worker w gets advertise IP 127.0.0.(2+w) and a
     # contiguous block of ports at worker_block_base + w * worker_block_size:
     #   +0 node manager, +1 object manager,
@@ -134,7 +141,7 @@ class SSHAuthConfig:
     # (see TailnetConfig). Mutually exclusive with ``tunnel``.
     tailnet: bool = False
     # True if CHIA installs/starts userspace tailscaled on this host and
-    # joins it to the tailnet itself (default for cloud nodes when a
+    # joins it to the tailnet itself (default for cloud machines when a
     # tailnet section exists; per-IP opt-in for on-prem hosts).
     manage_tailscale: bool = False
 
@@ -584,9 +591,9 @@ def _inject_cloud_tailnet_overrides(
     """Add tailnet auth overrides for cloud-provisioned IPs (AWS or GCP).
 
     The tailnet counterpart of :func:`_inject_cloud_tunnel_overrides`:
-    marks each IP as a CHIA-managed tailnet node (``tailnet`` +
+    marks each IP as a CHIA-managed tailnet machine (``tailnet`` +
     ``manage_tailscale``) instead of injecting an SSH tunnel, and
-    injects the node config's ``ssh_user`` / ``ssh_private_key``.
+    injects the machine type's ``ssh_user`` / ``ssh_private_key``.
     Mutates *raw* in place.
     """
     auth = raw.setdefault("auth", {})
@@ -612,7 +619,7 @@ def _inject_cloud_tailnet_overrides(
 def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
                              gcp_result, gcp_ip_map,
                              require_auth_key=True, logger=None):
-    """Route each provisioned/discovered cloud node type to its network mode.
+    """Route each provisioned/discovered cloud machine type to its network mode.
 
     When the config has a top-level ``tailnet:`` section, cloud types
     default to joining the tailnet (no SSH tunnels); a per-type
@@ -638,7 +645,7 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
             joins = explicit if explicit is not None else has_tailnet
             if joins and not has_tailnet:
                 raise ConfigError(
-                    f"cloud node type '{name}': join_tailnet requires a "
+                    f"cloud machine type '{name}': join_tailnet requires a "
                     f"top-level 'tailnet:' section")
             (join_map if joins else tunnel_map)[name] = ips
         if tunnel_map:
@@ -648,7 +655,7 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
             joining_types.update({n: node_configs[n] for n in join_map})
 
     if joining_types and not (raw.get("tailnet") or {}).get("auth_key"):
-        msg = ("tailnet.auth_key is required to join cloud nodes to the "
+        msg = ("tailnet.auth_key is required to join cloud machines to the "
                "tailnet — set it to a reusable (ideally ephemeral, "
                "pre-authorized) tskey-auth-... key, e.g. via ${TS_AUTHKEY}")
         if require_auth_key:
@@ -711,7 +718,7 @@ def build_config(raw: dict) -> ClusterConfig:
         if tailnet_flag and tunnel_cfg is not None:
             raise ConfigError(
                 f"auth.overrides.{ip}: 'tailnet' and 'tunnel' are mutually "
-                f"exclusive (tailnet nodes need no SSH tunnel)")
+                f"exclusive (tailnet machines need no SSH tunnel)")
         if tailnet_flag and tailnet_config is None:
             raise ConfigError(
                 f"auth.overrides.{ip}: 'tailnet: true' requires a top-level "
@@ -808,7 +815,7 @@ def build_config(raw: dict) -> ClusterConfig:
         logger.debug(f"  FireSim config: chipyard={firesim_config.chipyard_path}")
 
     # Tailnet clusters: every worker not colocated on the head machine IS
-    # a tailnet node, so mark them automatically — no per-IP override
+    # a tailnet worker, so mark them automatically — no per-IP override
     # boilerplate needed. Anything set explicitly in auth.overrides
     # (ssh user/key, a custom ssh_proxy_command) still wins; only the
     # missing pieces are filled in.
@@ -818,7 +825,7 @@ def build_config(raw: dict) -> ClusterConfig:
     #     (e.g. MagicDNS) are dialed through the head's local SOCKS5
     #     proxy — the default ProxyCommand requires OpenBSD netcat on
     #     the head (override ssh_proxy_command per-IP or in auth: if not).
-    #   - Hosts addressed by an ordinary IP (e.g. a cloud node's public
+    #   - Hosts addressed by an ordinary IP (e.g. a cloud machine's public
     #     IP, which CHIA joins to the tailnet itself) are dialed
     #     directly; their tailnet IP is discovered at bring-up.
     if tailnet_config is not None:
@@ -852,8 +859,8 @@ def build_config(raw: dict) -> ClusterConfig:
                     f"by an ordinary SSH-reachable IP/hostname, or set "
                     f"'manage_tailscale: false' for it in auth.overrides "
                     f"and run tailscaled there yourself.")
-            # Managed nodes are always dialed directly (bootstrap needs a
-            # non-tailnet path); unmanaged tailnet-addressed nodes (or
+            # Managed machines are always dialed directly (bootstrap needs
+            # a non-tailnet path); unmanaged tailnet-addressed machines (or
             # MagicDNS hostnames) go through the SOCKS proxy.
             if (is_ts_addr or is_hostname) and not override.manage_tailscale \
                     and override.ssh_proxy_command is None:
@@ -893,12 +900,12 @@ def build_config(raw: dict) -> ClusterConfig:
     if tailnet_config is not None:
         # The head advertises a loopback IP in tailnet mode, so ordinary
         # LAN workers could not find it — every worker must either be a
-        # tailnet node or live on the head machine itself.
+        # tailnet worker or live on the head machine itself.
         bad = [ip for ip in config.worker_ips
                if not config.is_tailnet(ip) and ip != config.head_ip]
         if bad:
             raise ConfigError(
-                f"tailnet clusters require every worker to be a tailnet node "
+                f"tailnet clusters require every worker to be a tailnet worker "
                 f"(auth.overrides.<ip>.tailnet: true) or colocated on the head "
                 f"machine; offending worker IP(s): {bad}")
         tunneled = [ip for ip in config.worker_ips if config.is_tunneled(ip)]

@@ -1,10 +1,10 @@
-# Fully managed tailnet cluster: CHIA runs tailscale on EVERY node —
+# Fully managed tailnet cluster: CHIA runs tailscale on EVERY machine —
 # the head, an on-prem worker, and an EC2 worker — no manual tailscaled
 # anywhere. Environment variables to set before `chia up` / `chia down`:
 #   HEAD_IP     how CHIA SSHes to the head (its real IP/hostname)
 #   WORKER_IP   the on-prem worker's real IP/hostname (NOT its tailscale
 #               address — tailscale can't be bootstrapped over tailscale,
-#               so managed nodes must be ordinarily SSH-reachable)
+#               so managed machines must be ordinarily SSH-reachable)
 #   TS_AUTHKEY  reusable tailscale auth key, e.g.:
 #               export TS_AUTHKEY=$(cat examples/tailscale/keyfile)
 #   AWS_KEYPAIR      EC2 key pair name in your account
@@ -59,7 +59,7 @@ head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
 
 head_start_ray_commands:
     - ray stop
-    - ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0 --resources='{"head_node":4}'
+    - ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0 --resources='{"head":4}'
 
 worker_start_ray_commands:
     - ray stop

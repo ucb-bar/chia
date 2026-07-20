@@ -22,8 +22,8 @@ _WORKER_PORT_OFFSET = 64
 # Remote file paths ($USER is expanded by the remote shell).
 _REMOTE_BASE = "/tmp/chia_tailnet_relay_$USER"
 
-# The relay that runs on every tailnet node (and the head). Pure-stdlib
-# Python 3: listens on peer nodes' advertised loopback addresses and
+# The relay that runs on every tailnet machine (including the head).
+# Pure-stdlib Python 3: listens on peer workers' advertised loopback addresses and
 # forwards each accepted connection through the local tailscaled SOCKS5
 # proxy to the peer's tailnet IP (same port). Inbound tailnet traffic
 # needs no relay: userspace tailscaled delivers it to 127.0.0.1:<port>,
@@ -194,7 +194,7 @@ def tailscale_install_command(tn: TailnetConfig) -> str:
 
     Downloads the static tarball (no root needed) into
     ``tn.tailscale_dir`` unless ``tailscaled`` is already there.
-    Suitable for cloud node setup_commands.
+    Suitable for cloud machine setup_commands.
     """
     if not tn.tailscale_dir:
         raise ConfigError(
@@ -234,7 +234,7 @@ def ensure_tailscale(ssh: SSHClient, tn: TailnetConfig,
         )
     else:
         join_cmd = (
-            'echo "chia: node is not joined to the tailnet and no '
+            'echo "chia: machine is not joined to the tailnet and no '
             'tailnet.auth_key is configured" >&2; exit 1'
         )
     script = [
@@ -282,7 +282,7 @@ def allocate_tailnet_workers(
     from ``worker_block_base``.
 
     *tailnet_ip_map* maps a worker's cluster address (how CHIA SSHes to
-    it, e.g. an EC2 public IP) to its tailnet address, for nodes whose
+    it, e.g. an EC2 public IP) to its tailnet address, for machines whose
     tailnet IP is discovered at bring-up. Hosts absent from the map are
     assumed to be addressed by their tailnet IP directly.
     """
@@ -328,6 +328,11 @@ def allocate_tailnet_workers(
                 f"tailnet: worker port block [{base}, {base + tn.worker_block_size}) "
                 f"overlaps the head port ranges — adjust worker_block_base/"
                 f"head_worker_port_min or reduce worker count")
+        if alloc.worker_port_max > 65535:
+            raise ConfigError(
+                f"tailnet: worker port block [{base}, {base + tn.worker_block_size}) "
+                f"exceeds the top of port space (65535) — reduce worker "
+                f"count or worker_block_size, or lower worker_block_base")
         result[(a.ip, a.node_type.name, a.worker_index)] = alloc
 
         idx += 1
@@ -345,9 +350,9 @@ def build_relay_spec(
 ) -> dict:
     """Build the relay listener spec for one host.
 
-    *host_ip* is the host's tailnet IP, or ``None`` for the head node.
+    *host_ip* is the machine's tailnet IP, or ``None`` for the head machine.
     The relay listens on the advertised loopback addresses of every
-    PEER node (never its own — same-host peers are reached directly via
+    PEER machine's workers (never its own — same-host peers are reached directly via
     the local wildcard binds, and binding them would collide).
     """
     tn = config.tailnet_config
@@ -360,13 +365,13 @@ def build_relay_spec(
             listeners.append({"bind_ip": tn.head_advertise_ip, "port": port,
                               "dest_ip": tn.head_tailnet_ip})
     # Same-host peers are excluded by CLUSTER address (the alloc key):
-    # for managed cloud nodes the tailnet IP differs from the cluster
+    # for managed cloud machines the tailnet IP differs from the cluster
     # address, and binding a host's own workers' advertise IPs would
     # collide with the local Ray wildcard binds.
     for (cluster_ip, _, _), alloc in allocs.items():
         if cluster_ip == host_ip:
             # Same host — Ray's wildcard binds serve inbound traffic
-            # directly, but ChiaTool uvicorn servers bind the node's
+            # directly, but ChiaTool uvicorn servers bind the worker's
             # advertise IP specifically, while tailscaled delivers
             # inbound to 127.0.0.1. Bridge the tool ports with a local
             # direct hop: 127.0.0.1:<port> -> <advertise_ip>:<port>.

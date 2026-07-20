@@ -6,13 +6,13 @@ CHIA's communication styles:
 1. **ChiaFunctions** — FROM each machine, dispatch a ChiaFunction pinned
    TO each machine (including itself) and collect the result: N x N runs
    exercising nested scheduling, argument shipping, and result return
-   across every ordered pair of nodes.
+   across every ordered pair of machines.
 2. **ChiaTools** — host a BashTool on each machine, then FROM each
    machine call every tool over its MCP HTTP endpoint: N x N real tool
    invocations across the relay mesh.
 
 Machines are identified by the custom Ray resources the example configs
-advertise: ``head_node`` (the head's `ray start`), ``tailscale_worker``,
+advertise: ``head`` (the head's `ray start`), ``tailscale_worker``,
 and ``ec2_worker``. Only the tags present in the running cluster are
 swept, so this works on any of the example clusters.
 
@@ -31,7 +31,7 @@ import ray
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.base.tools.BashTool import BashTool
 
-MACHINE_TAGS = ["head_node", "tailscale_worker", "ec2_worker"]
+MACHINE_TAGS = ["head", "tailscale_worker", "ec2_worker"]
 # Tiny resource slices so a dispatcher pinned to a machine can nest a
 # probe pinned to the same machine without exhausting its resource tag.
 FRACTION = 0.05

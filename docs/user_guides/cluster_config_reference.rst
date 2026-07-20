@@ -566,22 +566,23 @@ Tailnet (tailscale) clusters
 CHIA can form a cluster across machines whose only mutual connectivity is
 a `tailscale <https://tailscale.com>`_ network, including tailscaled in
 **userspace-networking mode** (no root, no TUN device, no sudo on any
-machine). Unlike the SSH-tunnel path for cloud nodes, tailnet mode uses
+machine). Unlike the SSH-tunnel path for cloud machines, tailnet mode uses
 no SSH tunnels, no reverse port forwards, no sshd configuration, and no
 iptables — and worker↔worker traffic between hosts works (full mesh).
 
 Userspace tailscaled delivers *inbound* tailnet TCP to
 ``127.0.0.1:<port>`` and requires *outbound* dials to go through its
 local SOCKS5 proxy. Ray cannot speak SOCKS5, so CHIA runs one small
-stdlib-Python relay per node: every node registers in Ray under a unique
+stdlib-Python relay per machine: the head and every logical worker
+register in Ray under a unique
 loopback IP, and dialing a *peer's* loopback IP hits the local relay,
 which forwards through the SOCKS5 proxy to the peer's tailnet address.
-Because Ray services bind the wildcard address, each node's pinned port
+Because Ray services bind the wildcard address, each participant's pinned port
 block must be globally unique — the ``tailnet:`` fields manage this.
 
 The presence of the ``tailnet:`` block opts the cluster in — every
 worker IP that is not the head machine is automatically treated as a
-tailnet node, and SSH to it automatically dials through the SOCKS5
+tailnet machine, and SSH to it automatically dials through the SOCKS5
 proxy (``nc -X 5 -x <socks_proxy> %h %p``; the head needs OpenBSD
 netcat). No per-IP overrides are required:
 
@@ -589,7 +590,7 @@ netcat). No per-IP overrides are required:
 
    tailnet:
        head_tailnet_ip: 100.64.0.1    # required: the head's tailscale IP
-       socks_proxy: 127.0.0.1:1055    # tailscaled --socks5-server on every node
+       socks_proxy: 127.0.0.1:1055    # tailscaled --socks5-server on every machine
 
    provider:
        head_ip: 10.0.0.1              # how CHIA SSHes to the head (real IP)
@@ -610,11 +611,11 @@ when the head's ``nc`` is not OpenBSD netcat.
 **Cloud workers.** When a ``tailnet:`` section is present, ``aws_nodes``
 and ``gcp_nodes`` workers join the cluster over the tailnet **by
 default** instead of reverse SSH tunnels (set ``join_tailnet: false``
-on a node type to opt back into tunnels — but the two modes cannot mix
+on a machine type to opt back into tunnels — but the two modes cannot mix
 in one cluster). CHIA handles the whole lifecycle: the userspace
-tailscale binaries are installed during node setup (static tarball, no
+tailscale binaries are installed during instance setup (static tarball, no
 root), ``tailscaled --tun=userspace-networking`` is started with the
-SOCKS5 proxy from ``socks_proxy``, the node is joined with
+SOCKS5 proxy from ``socks_proxy``, the machine is joined with
 ``tailscale up --auth-key=<tailnet.auth_key>``, and its tailnet IP is
 discovered and wired into the relay mesh. Orchestration SSH continues
 over the instance's public IP. This requires ``tailnet.auth_key`` — use
@@ -625,7 +626,7 @@ their ``auth.overrides`` entry; by default CHIA assumes on-prem tailnet
 hosts already run their own tailscaled.
 
 **Fully managed clusters.** Set ``manage_all: true`` in the
-``tailnet:`` section and CHIA manages tailscale on **every** node,
+``tailnet:`` section and CHIA manages tailscale on **every** machine,
 including the head — no manual tailscaled anywhere, and
 ``head_tailnet_ip`` may be omitted (it is discovered at bring-up).
 The constraint: tailscale cannot be bootstrapped over tailscale, so
@@ -638,9 +639,9 @@ those by their tailnet IP and run tailscaled there yourself). On
 their state persists in ``tailscale_dir``, so re-ups rejoin without
 consuming the auth key unless the directory was cleaned.
 
-Additional ``tailnet:`` fields for managed nodes: ``auth_key`` (as
+Additional ``tailnet:`` fields for managed machines: ``auth_key`` (as
 above), ``tailscale_version`` (pinned tarball version) and
-``tailscale_dir`` (install/state directory on managed nodes, default
+``tailscale_dir`` (install/state directory on managed machines, default
 ``/tmp/<cluster_name>/tailscale`` — per-cluster, so cluster daemons
 never collide with each other or a personally-run tailscaled; pair
 with a distinct ``socks_proxy`` port for full isolation. Keep the path
@@ -652,17 +653,21 @@ rejoins using the reusable auth key).
 Optional ``tailnet:`` port fields (defaults in parentheses):
 ``head_advertise_ip`` (127.200.0.1), ``gcs_port`` (6379 — must match
 ``--port`` in ``head_start_ray_commands``), ``head_node_manager_port``
-(25800), ``head_object_manager_port`` (25801),
-``head_worker_port_min``/``max`` (42000/42127),
-``head_tool_port_min``/``max`` (27000/27010), ``worker_block_base``
+(23744), ``head_object_manager_port`` (23745),
+``head_tool_port_min``/``max`` (23760/23770),
+``head_worker_port_min``/``max`` (23808/23935), ``worker_block_base``
 (24000), ``worker_block_size`` (256), ``tool_port_count`` (11), and
-``worker_port_count`` (128). A node's Ray worker-port range must exceed
+``worker_port_count`` (128). The head owns the port block immediately
+below ``worker_block_base`` (same sub-block layout as workers), so the
+worker blocks growing upward from it meet no head ports at all and can
+grow until the top of port space — with the defaults, 162 workers fit
+before allocation refuses. A machine's Ray worker-port range must exceed
 its CPU count (Ray prestarts one worker process per CPU). CHIA injects
 ``--node-ip-address`` and the pinned ports into the head's and workers'
 ``ray start`` commands automatically, starts the relays before the
 workers, and stops them on ``chia down``.
 
-Constraints: every worker must be a tailnet node or colocated on the
+Constraints: every worker must be a tailnet worker or colocated on the
 head machine (the head advertises a loopback IP that LAN workers cannot
 route to); mixing with SSH-tunneled/cloud workers is rejected at config
 load; ``chia up --add`` is not yet supported (re-run ``chia up`` —

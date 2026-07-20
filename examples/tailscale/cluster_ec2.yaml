@@ -21,20 +21,20 @@ cluster_name: TailscaleExample
 
 # Cluster-wide tailnet settings — the presence of this block is the
 # opt-in. All cross-machine Ray traffic flows over the tailnet:
-# outbound through each node's local SOCKS5 proxy (via a small per-node
+# outbound through each machine's local SOCKS5 proxy (via a small per-machine
 # relay CHIA manages), inbound delivered by tailscaled to 127.0.0.1,
 # where Ray's wildcard-bound services listen. No SSH tunnels, no
 # reverse forwards, no root anywhere.
 #
 # Every worker IP that isn't the head machine is automatically treated
-# as a tailnet node, and SSH to it automatically dials through the
+# as a tailnet machine, and SSH to it automatically dials through the
 # SOCKS5 proxy — no per-IP auth.overrides needed. (Overrides still work
 # for special cases: a different ssh key/user for one host, or a custom
 # ssh_proxy_command when the head's `nc` isn't OpenBSD netcat.)
 tailnet:
     head_tailnet_ip: ${HEAD_TAILNET_IP}
-    socks_proxy: 127.0.0.1:1055        # tailscaled --socks5-server on every node
-    # Auth key used to join CHIA-managed nodes (the EC2 workers below).
+    socks_proxy: 127.0.0.1:1055        # tailscaled --socks5-server on every machine
+    # Auth key used to join CHIA-managed machines (the EC2 workers below).
     # Keep it out of the file:  export TS_AUTHKEY=$(cat examples/tailscale/keyfile)
     auth_key: ${TS_AUTHKEY}
     # Port pins are configurable (defaults in the docs) — on shared
@@ -88,7 +88,7 @@ head_start_ray_commands:
     - ray stop
     # --include-dashboard=False keeps ports free on shared machines; CHIA
     # injects --node-ip-address plus the pinned head ports automatically.
-    - ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0 --resources='{"head_node":4}'
+    - ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0 --resources='{"head":4}'
 
 worker_start_ray_commands:
     - ray stop
