@@ -639,6 +639,50 @@ to add more cloud capacity, raise ``count`` and add matching placeholders.
        - ray stop
        - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
 
+Multiple heads on a single physical machine
+-------------------------------------------
+
+On shared lab machines it is common for two users (or two clusters) to want a
+Ray *head* on the same host. A head binds several fixed TCP ports, so the
+second cluster must move every one of them off the defaults or ``ray start``
+(or the first cluster) will fail. Four ports matter — the GCS port (default
+6379), the dashboard (8265), the Ray client server (10001), and the head's
+dashboard agent (52365) — and the worker join address must follow the new GCS
+port. Pick replacements that are free on the host, and note that an
+explicitly assigned port must **not** fall inside Ray's worker-port range
+(10002–19999 by default): ``ray start`` rejects the overlap, which is why the
+client-server port below jumps to 20101 rather than 10101.
+
+.. code-block:: yaml
+
+   head_start_ray_commands:
+       - ray stop
+       - ray start --head --port=6479 --include-dashboard=True
+         --dashboard-port=8365 --ray-client-server-port=20101
+         --dashboard-agent-listen-port=52465
+
+   worker_start_ray_commands:
+       - ray stop
+       - ray start --address=$RAY_HEAD_IP:6479 --dashboard-agent-listen-port=0
+
+Nothing else needs to move: worker nodes already use
+``--dashboard-agent-listen-port=0`` (OS-assigned) in the examples above, and
+the remaining head ports (object manager, node manager, metrics export, …)
+are randomized by default. Containerized workers coexist regardless. ``ray
+stop`` is also safe on a shared host — it can only signal processes owned by
+the invoking user, so it never touches the other cluster.
+
+Two operational consequences of non-default ports:
+
+* **Drivers must be pinned to the cluster address** — connect with
+  ``ray.init(address="<head_ip>:6479")`` (or the ``RAY_ADDRESS`` environment
+  variable), never ``address="auto"``: with several Ray instances alive on
+  one machine, auto-discovery picks one arbitrarily, and it may be the other
+  user's cluster.
+* **Job submission must name the dashboard** — ``chia job submit --address
+  http://127.0.0.1:8365 ...`` (the dashboard listens on localhost on the
+  head, so submit from the head or tunnel to it).
+
 Command execution order
 -----------------------
 
