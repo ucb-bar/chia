@@ -781,4 +781,12 @@ def tear_down_cluster(
             kill_orphaned_tunnels(kill_ips)
 
     tear_down_head_node(config)
+
+    # Close persistent ssh masters; nothing needs them past teardown.
+    for ip in dict.fromkeys([config.head_ip, *config.worker_ips]):
+        try:
+            _make_ssh(config, ip).close_master()
+        except Exception as e:
+            logger.debug(f"[{ip}] closing ssh master failed: {e}")
+
     logger.info(f"Cluster '{config.cluster_name}' torn down")

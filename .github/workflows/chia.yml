@@ -38,6 +38,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # Needed to cross-build the arm64 variant on the amd64 runner
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -53,6 +57,9 @@ jobs:
         with:
           file: dockerfiles/ChiaDockerfile
           context: .
+          # Apple-silicon Macs must not fall back to Rosetta emulation: the
+          # Ray agents crash under it on the first task, killing the node.
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.IMAGE }}:latest

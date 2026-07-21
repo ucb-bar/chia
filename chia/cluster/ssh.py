@@ -8,6 +8,18 @@ from chia.cluster.log import get_logger
 
 logger = get_logger("ssh")
 
+# One multiplexed ssh connection per endpoint (%C = endpoint hash), kept alive
+# in the background until close_master() at teardown. Load-bearing on macOS:
+# a daemon gets local network permission only if its spawning sshd session is
+# still alive at its first connection attempt. One-shot sessions exit before
+# the Ray GCS first dials a worker, so macOS silently drops its traffic
+# (EHOSTUNREACH) and every worker fails health checks.
+_CONTROL_ARGS = [
+    "-o", "ControlMaster=auto",
+    "-o", "ControlPath=/tmp/chia_ssh_%C",
+    "-o", "ControlPersist=yes",
+]
+
 
 class SSHError(Exception):
     pass
@@ -38,6 +50,7 @@ class SSHClient:
             "-o", "ServerAliveInterval=60",
             "-o", "ServerAliveCountMax=10",
             "-o", "LogLevel=ERROR",
+            *_CONTROL_ARGS,
         ]
         if self.private_key:
             args += ["-i", self.private_key]
@@ -47,7 +60,8 @@ class SSHClient:
         return args
 
     def _rsync_base_args(self) -> list[str]:
-        ssh_cmd = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+        ssh_cmd = ("ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+                   "-o LogLevel=ERROR " + " ".join(_CONTROL_ARGS))
         if self.private_key:
             ssh_cmd += f" -i {self.private_key}"
             if self.identities_only:
@@ -94,6 +108,15 @@ class SSHClient:
                 f"stderr: {result.stderr.strip()}"
             )
         return result
+
+    def close_master(self) -> None:
+        """Stop this endpoint's persistent connection master (no-op if absent)."""
+        result = subprocess.run(
+            ["ssh", *_CONTROL_ARGS, "-O", "exit", f"{self.user}@{self.ip}"],
+            capture_output=True, text=True, timeout=15,
+        )
+        if result.returncode == 0:
+            logger.debug(f"[{self.ip}] closed ssh connection master")
 
     def run_commands(self, commands: list[str], timeout: int = 300) -> None:
         for cmd in commands:
