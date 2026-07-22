@@ -75,7 +75,11 @@ class SSHClient:
                     )
                     time.sleep(retry_delay)
                     continue
-                raise
+                logger.error(
+                    f"[{self.ip}] Command timed out after {timeout}s: {cmd}")
+                raise SSHError(
+                    f"Command on {self.ip} timed out after {timeout}s: {cmd}"
+                )
 
         if result.stdout.strip():
             logger.debug(f"[{self.ip}] stdout: {result.stdout.strip()}")
@@ -120,10 +124,24 @@ class SSHClient:
         for c in cmds:
             logger.debug(f"[{self.ip}]   {c}")
 
-        result = subprocess.run(
-            full_cmd, input=script, capture_output=True, text=True,
-            timeout=timeout,
-        )
+        try:
+            result = subprocess.run(
+                full_cmd, input=script, capture_output=True, text=True,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired:
+            # The script is piped over stdin, so it is absent from the raw
+            # TimeoutExpired (its .cmd is only 'ssh ... bash --login'). Surface
+            # the commands that were running so the timeout is diagnosable.
+            cmd_list = "\n".join(f"  {c}" for c in cmds)
+            logger.error(
+                f"[{self.ip}] Script timed out after {timeout}s. "
+                f"Commands running when it timed out:\n{cmd_list}")
+            raise SSHError(
+                f"Script on {self.ip} timed out after {timeout}s. "
+                f"A command was still running (a slow 'docker run'/image pull "
+                f"is the usual cause). Commands:\n{script}"
+            )
 
         if result.stdout.strip():
             logger.debug(f"[{self.ip}] stdout: {result.stdout.strip()}")

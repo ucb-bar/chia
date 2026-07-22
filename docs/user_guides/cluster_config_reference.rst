@@ -276,7 +276,7 @@ inside any node type; the node-type block overrides the cluster-wide one.
    docker:
        image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
        container_name: "chia-verilator-run-${USER}"
-       pull_before_run: False
+       pull_before_run: True
        pull_timeout: 3600
        run_options:
            - --ulimit nofile=65536:65536

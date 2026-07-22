@@ -36,6 +36,10 @@ def log_phase(logger: logging.Logger, description: str):
     start = time.monotonic()
     try:
         yield
-    finally:
+    except BaseException:
+        elapsed = time.monotonic() - start
+        logger.debug(f"{description} failed after {elapsed:.1f}s")
+        raise
+    else:
         elapsed = time.monotonic() - start
         logger.debug(f"{description} completed in {elapsed:.1f}s")
