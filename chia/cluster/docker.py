@@ -54,10 +54,9 @@ class DockerManager:
 
         run_opts = " ".join(self.config.run_options)
 
-        no_pull = "--pull=never " if self.config.pull_before_run else ""
         docker_run = (
             f"{engine} run -d --name {shlex.quote(name)} "
-            f"--net=host --shm-size=8g {no_pull}{run_opts} "
+            f"--net=host --shm-size=8g --pull=never {run_opts} "
             f"{shlex.quote(self.config.image)} sleep infinity"
         )
 
