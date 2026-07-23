@@ -1,0 +1,18 @@
+cluster_name: cluster_b
+
+provider:
+    type: local
+    head_ip: ${THIS_MACHINE}
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: /home/eecs/${USER}/.ssh/${USER}
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+
+head_start_ray_commands:
+    - ulimit -c unlimited && ray start --head --port=6378 --dashboard-port=8265 --include-dashboard=True --dashboard-agent-listen-port=0 --temp-dir=/tmp/${USER}/generic
+
+worker_start_ray_commands:
+    - ray start --address=$RAY_HEAD_IP:6378 --temp-dir=/tmp/${USER}/generic

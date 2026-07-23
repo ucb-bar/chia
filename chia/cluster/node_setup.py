@@ -91,7 +91,7 @@ def query_ray_cluster_nodes(config: ClusterConfig) -> list[dict] | None:
     query_script = list(config.head_env_commands) + [
         "python3 << 'CHIA_QUERY_EOF'",
         "import ray, json",
-        "ray.init(address='auto', ignore_reinit_error=True)",
+        f"ray.init(address='{config.head_ray_address}', ignore_reinit_error=True)",
         "nodes = [{'NodeName': n['NodeName'], 'Alive': n['Alive'], 'Resources': n.get('Resources', {})} for n in ray.nodes()]",
         "print('CHIA_NODES:' + json.dumps(nodes))",
         "CHIA_QUERY_EOF",
