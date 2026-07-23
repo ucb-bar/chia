@@ -1,7 +1,6 @@
 cluster_name: cluster_b
 
 provider:
-    type: local
     head_ip: ${THIS_MACHINE}
 
 auth:

@@ -9,7 +9,6 @@ available_node_types:
         compatible_ips: ["${THIS_MACHINE}"]
 
 provider:
-    type: local
     head_ip: ${THIS_MACHINE}
 
 auth:
