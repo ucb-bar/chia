@@ -15,7 +15,8 @@ class SSHError(Exception):
 
 class SSHClient:
     def __init__(self, ip: str, user: str, private_key: str | None = None,
-                 connect_timeout: int = 30, identities_only: bool = False):
+                 connect_timeout: int = 30, identities_only: bool = False,
+                 proxy_command: str | None = None):
         self.ip = ip
         self.user = user
         self.private_key = private_key
@@ -27,6 +28,10 @@ class SSHClient:
         # dedicated key is ever tried. On-prem nodes keep identities_only=False
         # so they can authenticate via their forwarded agent keys.
         self.identities_only = identities_only
+        # Optional ssh ProxyCommand (e.g. "nc -X 5 -x 127.0.0.1:1055 %h %p" to
+        # reach a host through a tailscale userspace-networking SOCKS5 proxy,
+        # or a jump-host command). Applied to ssh and rsync alike.
+        self.proxy_command = proxy_command
 
     def _ssh_base_args(self) -> list[str]:
         args = [
@@ -39,6 +44,8 @@ class SSHClient:
             "-o", "ServerAliveCountMax=10",
             "-o", "LogLevel=ERROR",
         ]
+        if self.proxy_command:
+            args += ["-o", f"ProxyCommand={self.proxy_command}"]
         if self.private_key:
             args += ["-i", self.private_key]
             if self.identities_only:
@@ -48,6 +55,10 @@ class SSHClient:
 
     def _rsync_base_args(self) -> list[str]:
         ssh_cmd = "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR"
+        if self.proxy_command:
+            # rsync splits the -e string on whitespace but keeps quoted
+            # segments together, so the ProxyCommand value must be quoted.
+            ssh_cmd += f' -o "ProxyCommand={self.proxy_command}"'
         if self.private_key:
             ssh_cmd += f" -i {self.private_key}"
             if self.identities_only:

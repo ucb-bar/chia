@@ -5,10 +5,11 @@ import sys
 
 from chia.cluster.config import (
     ClusterConfig, ConfigError, NodeAssignment,
-    assign_nodes, build_config, load_raw_config,
+    apply_cloud_network_mode, assign_nodes, build_config, load_raw_config,
     parse_aws_nodes, parse_gcp_nodes,
-    _expand_node_placeholders, _inject_cloud_tunnel_overrides,
+    _expand_node_placeholders,
 )
+
 from chia.cluster.log import get_logger, setup_logging
 from chia.cluster.node_setup import (
     add_nodes_to_cluster, allocate_worker_tunnels, bring_up_cluster,
@@ -53,8 +54,9 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
     for a in assignments:
         docker_str = f" [{a.node_type.docker.engine}: {a.node_type.docker.image}]" if a.node_type.docker else ""
         tunnel_str = " [tunneled]" if config.is_tunneled(a.ip) else ""
+        tailnet_str = " [tailnet]" if config.is_tailnet(a.ip) else ""
         print(f"  {a.ip} -> {a.node_type.name} "
-              f"(resources: {a.resources}){docker_str}{tunnel_str}")
+              f"(resources: {a.resources}){docker_str}{tunnel_str}{tailnet_str}")
 
     worker_tunnels = allocate_worker_tunnels(config, assignments)
     if worker_tunnels:
@@ -67,6 +69,23 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
             print(f"    Ray: node-mgr={tc.ray_node_manager_port}, obj-mgr={tc.ray_object_manager_port}, "
                   f"workers={tc.ray_worker_port_min}-{tc.ray_worker_port_max}")
             print(f"    Tools: {tc.tool_port_min}-{tc.tool_port_max} (on {head_ip_resolved})")
+
+    tailnet_allocs = {}
+    if config.tailnet_config is not None:
+        from chia.cluster.tailnet import allocate_tailnet_workers
+        tn = config.tailnet_config
+        tailnet_allocs = allocate_tailnet_workers(config, assignments)
+        if tailnet_allocs:
+            head_ts = tn.head_tailnet_ip or "(discovered at bring-up)"
+            print(f"\nTailnet (via SOCKS5 {tn.socks_proxy}):")
+            print(f"  head {head_ts} advertises {tn.head_advertise_ip} "
+                  f"(gcs={tn.gcs_port}, workers={tn.head_worker_port_min}-"
+                  f"{tn.head_worker_port_max})")
+            for (ip, nt_name, idx), ta in tailnet_allocs.items():
+                print(f"  {ip} {nt_name}-{idx} advertises {ta.advertise_ip} "
+                      f"(node-mgr={ta.node_manager_port}, "
+                      f"workers={ta.worker_port_min}-{ta.worker_port_max}, "
+                      f"tools={ta.tool_port_min}-{ta.tool_port_max})")
     print()
 
     if show_scripts:
@@ -79,13 +98,16 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
         head_ip_for_scripts = socket.gethostbyname(config.head_ip) if worker_tunnels else None
         for a in assignments:
             tc = config.get_tunnel_config(a.ip)
+            ta = tailnet_allocs.get((a.ip, a.node_type.name, a.worker_index))
             worker_script = build_worker_script(
                 config, a, tunnel_config=tc,
                 head_ip=head_ip_for_scripts if tc else None,
+                tailnet_alloc=ta,
             )
             docker_str = f" [{a.node_type.docker.engine}: {a.node_type.docker.container_name}]" if a.node_type.docker else ""
             tunnel_str = " [tunneled]" if config.is_tunneled(a.ip) else ""
-            print(f"--- Script for worker {a.ip} ({a.node_type.name}){docker_str}{tunnel_str} ---")
+            tailnet_str = " [tailnet]" if config.is_tailnet(a.ip) else ""
+            print(f"--- Script for worker {a.ip} ({a.node_type.name}){docker_str}{tunnel_str}{tailnet_str} ---")
             for line in worker_script:
                 print(f"  {line}")
             print()
@@ -209,10 +231,13 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
 
     if ip_map:
         raw = _expand_node_placeholders(raw, ip_map)
-        if aws_result is not None:
-            _inject_cloud_tunnel_overrides(raw, aws_ip_map, aws_result[0])
-        if gcp_result is not None:
-            _inject_cloud_tunnel_overrides(raw, gcp_ip_map, gcp_result[0])
+        try:
+            apply_cloud_network_mode(
+                raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
+                require_auth_key=not args.dry_run, logger=logger)
+        except ConfigError as e:
+            logger.error(f"Config error: {e}")
+            sys.exit(1)
 
     # --- Build config and assignments ---
     try:
@@ -267,6 +292,17 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     except Exception as e:
         logger.error(f"Add nodes failed: {e}")
         sys.exit(1)
+
+
+def _append_tailscale_install(joining_types, tailnet_config):
+    """Add the tailscale install step to joining types' setup commands."""
+    if not joining_types or tailnet_config is None:
+        return
+    from chia.cluster.tailnet import tailscale_install_command
+    install_cmd = tailscale_install_command(tailnet_config)
+    for cfg in joining_types.values():
+        if install_cmd not in cfg.setup_commands:
+            cfg.setup_commands = cfg.setup_commands + [install_cmd]
 
 
 def _run_cloud_setup(aws_result, aws_ip_map, gcp_result, gcp_ip_map,
@@ -380,20 +416,25 @@ def cmd_up(args):
                                  "Run 'chia down' to terminate them.")
                 sys.exit(1)
 
-    # Expand placeholders once over the merged map (the expander raises on
-    # unknown @node refs, so AWS and GCP refs must be resolved together).
-    ip_map = {**aws_ip_map, **gcp_ip_map}
-    if ip_map:
-        raw = _expand_node_placeholders(raw, ip_map)
-        if aws_result is not None:
-            _inject_cloud_tunnel_overrides(raw, aws_ip_map, aws_result[0])
-        if gcp_result is not None:
-            _inject_cloud_tunnel_overrides(raw, gcp_ip_map, gcp_result[0])
-
     def _warn_running():
         if provisioned:
             logger.error("WARNING: cloud instances are still running. "
                          "Run 'chia down' to terminate them.")
+
+    # Expand placeholders once over the merged map (the expander raises on
+    # unknown @node refs, so AWS and GCP refs must be resolved together).
+    ip_map = {**aws_ip_map, **gcp_ip_map}
+    joining_types = {}
+    if ip_map:
+        raw = _expand_node_placeholders(raw, ip_map)
+        try:
+            joining_types = apply_cloud_network_mode(
+                raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
+                require_auth_key=not args.dry_run, logger=logger)
+        except ConfigError as e:
+            logger.error(f"Config error: {e}")
+            _warn_running()
+            sys.exit(1)
 
     try:
         config = build_config(raw)
@@ -412,6 +453,7 @@ def cmd_up(args):
     # Run cloud setup commands (install deps on fresh instances). Skip in
     # dry-run: ip_map there is placeholder IPs that don't resolve.
     if not args.dry_run:
+        _append_tailscale_install(joining_types, config.tailnet_config)
         _run_cloud_setup(aws_result, aws_ip_map, gcp_result, gcp_ip_map,
                          config, logger)
 

@@ -79,9 +79,12 @@ Cloud integration
 
 Public-cloud machines can be folded directly into a cluster to add compute on
 demand. Spanning owned (on-prem) and borrowed (cloud) resources makes for
-cost-effective, efficient clusters. In firewalled environments, CHIA uses SSH
-reverse tunneling to connect local and cloud machines, with some small limitations
-on orchestration.
+cost-effective, efficient clusters. When machines can't reach each other
+directly (the usual case across firewalls), CHIA connects them over a
+`tailscale <https://tailscale.com>`_ network by default — the recommended path
+for cloud workers, and fully unprivileged (userspace networking, no root or VPN
+setup). SSH reverse tunneling remains available as a fallback, with some small
+limitations on orchestration.
 
 The cluster config and CLI
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

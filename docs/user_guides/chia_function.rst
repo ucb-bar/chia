@@ -314,9 +314,8 @@ features, all of which are transparent to your function's body:
      # The _chia_tag names this call for both caching and bypass.
      ref = run_verilator_test.chia_remote(design, _chia_tag=f"iter{i}_opt{j}")
 
-These features compose: a single dispatch can be profiled, served from cache,
-and relayed through the head's dispatch proxy (on reverse-tunneled workers) all
-at once, with no change to the decorated function.
+These features compose: a single dispatch can be profiled and served from cache
+with no change to the decorated function.
 
 See also
 --------

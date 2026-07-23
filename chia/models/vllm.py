@@ -7,8 +7,8 @@ another OpenAI-compatible provider: point ``base_url`` at the vLLM server and th
 whole :class:`~chia.models.openai_compat.OpenAICompatLLM` loop/tool/error stack
 applies unchanged — the same pattern as :class:`~chia.models.ollama.OllamaLLM`.
 
-Default hosting to port 8200 (not vLLM's usual 8000): chia uses the low 8000s heavily — on tunneled
-workers (e.g. AWS) its SSH tunnels reserve 8000-8010 (``head_tool_port``), and
+Default hosting to port 8200 (not vLLM's usual 8000): chia uses the low 8000s heavily — on workers
+using the SSH-tunnel fallback its SSH tunnels reserve 8000-8010 (``head_tool_port``), and
 ChiaTool MCP servers probe ports 8000-8099 (``start_router`` base 8000 + 100
 tries; Ray Serve's proxy also defaults to 8000). Since chia runs containers
 ``--net=host``, vLLM on 8000 would collide. 8200 clears the tool range with

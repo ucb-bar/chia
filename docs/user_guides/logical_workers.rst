@@ -68,9 +68,9 @@ Anatomy of a worker definition
        - ray stop
        - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
 
-CHIA injects ``--resources`` (and, for tunneled cloud workers, pinned ports)
-into the ``ray start`` line automatically — you never write the resources into
-``worker_start_ray_commands`` yourself.
+CHIA injects ``--resources`` (and, for tailnet or tunneled workers, pinned
+ports) into the ``ray start`` line automatically — you never write the resources
+into ``worker_start_ray_commands`` yourself.
 
 Dockerized vs. non-dockerized workers
 -------------------------------------
@@ -170,8 +170,8 @@ licenses they can reach:
 Here workers landing on ``machine1`` / ``machine2`` run as ``${USER}``, while
 the one on ``machine3`` runs as the ``vlsi-svc`` service account. CHIA fills in
 ``auth.overrides`` entries automatically for cloud-provisioned machines (SSH
-user, key, and tunnel config), so you normally only write them by hand for
-on-prem hosts.
+user, key, and tailnet or tunnel config), so you normally only write them by
+hand for on-prem hosts.
 
 A ``docker:`` block may also be given once at the top level as a cluster-wide
 default that individual node types override. The head node is never
@@ -317,8 +317,9 @@ twice in ``compatible_ips`` biases more workers onto it.
 
 Cloud machines fold into the same mechanism: declare instances under
 ``aws_nodes`` / ``gcp_nodes`` and reference them in ``compatible_ips`` with
-``@<node_type>:<index>`` placeholders. CHIA provisions the instances,
-reverse-tunnels them to the head, and pins the worker's Ray ports
+``@<node_type>:<index>`` placeholders. CHIA provisions the instances, joins
+them to the cluster over tailscale by default (the recommended path; SSH
+reverse tunnels are an opt-in fallback), and pins the worker's Ray ports
 automatically — the logical-worker definition itself is unchanged. See
 `Cloud nodes <cluster_config_reference.html#cloud-nodes>`_.
 

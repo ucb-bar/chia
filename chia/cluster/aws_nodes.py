@@ -70,6 +70,11 @@ class AWSNodeConfig:
     setup_commands: list[str] = field(default_factory=list)
     setup_timeout: int = 1800
     ssh_timeout: int = 120
+    # Join the cluster over the tailnet instead of reverse SSH tunnels.
+    # None (default) resolves to True when the cluster config has a
+    # top-level ``tailnet:`` section, else False. Set explicitly to
+    # override either way.
+    join_tailnet: bool | None = None
 
     @property
     def effective_setup_commands(self) -> list[str]:
