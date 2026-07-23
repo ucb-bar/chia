@@ -5,7 +5,7 @@ provider:
 
 auth:
     ssh_user: ${USER}
-    ssh_private_key: /home/eecs/${USER}/.ssh/${USER}
+    ssh_private_key: ${HOME}/.ssh/${USER}
 
 head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
 head_setup_commands: []
