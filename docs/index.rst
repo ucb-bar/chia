@@ -43,6 +43,7 @@ Originally CHIA stood for:
    :maxdepth: 2
    :caption: User Guides
 
+   user_guides/reference
    user_guides/chia_function
    user_guides/chia_tool
    user_guides/cluster_config_reference
@@ -61,12 +62,6 @@ Originally CHIA stood for:
    case-studies/timing-optimization
    case-studies/architectural-discovery-basic
    case-studies/circt-issue-solving
-
-.. toctree::
-   :maxdepth: 2
-   :caption: CLI Reference
-
-   cli/reference
 
 .. toctree::
    :maxdepth: 2
