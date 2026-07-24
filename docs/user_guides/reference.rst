@@ -2,7 +2,7 @@ CLI Reference
 =============
 
 The ``chia`` console script (``chia/cli/main.py``) manages clusters, visualizes
-flows, and wraps Ray job management.
+flows, and proxies Ray's CLI (with optional per-cluster targeting).
 
 .. code-block:: text
 
@@ -83,12 +83,66 @@ Visualize a ``ChiaProfileCollector`` JSONL log. See the
    * - ``--x-scale F``
      - Horizontal inches per second of wall-clock (default 0.5).
 
-Jobs
-----
+Cluster Status
+----------------
 
-``chia job <subcommand>`` — ``submit``, ``status``, ``logs``, ``list``, and ``delete`` are
-**pass-throughs** to ``ray job`` (so ``--help`` shows Ray's own help). ``stop`` is
-custom:
+``chia status [...]``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Print cluster status. Proxies to ``ray status``.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Flag
+     - Meaning
+   * - ``--chia-cluster {path/to/cluster.yaml}``
+     - Specify the Chia cluster YAML file to target.
+   * - ``...``
+     - all other args (including ``--help``) go to Ray.
+
+
+``chia list [...]``
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+List all states of a given resource. Proxies to ``ray list`` (e.g. ``chia list nodes``).
+
+.. list-table::
+   :header-rows: 1
+
+   * - Flag
+     - Meaning
+   * - ``--chia-cluster {path/to/cluster.yaml}``
+     - Specify the Chia cluster YAML file to target.
+   * - ``...``
+     - all other args (including ``--help``) go to Ray.
+
+Job Management
+------------------
+
+``chia job <subcommand> [...]``
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Submit, stop, delete, or list Ray jobs.
+
+Proxies to ``ray job`` — ``submit``, ``status``, ``logs``, ``list``, ``delete``,
+etc. all forward, so ``chia job --help`` shows Ray's own job help. Supports
+``--chia-cluster``. The one exception is ``stop``, which
+chia *overrides* with an augmented implementation; use ``chia ray job stop`` for
+Ray's unmodified behavior.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Flag
+     - Meaning
+   * - ``--chia-cluster {path/to/cluster.yaml}``
+     - Specify the Chia cluster YAML file to target.
+   * - ``stop {job_id}``
+     - Stop a job by its ID.
+   * - ``...``
+     - all other args (including ``--help``) go to Ray.
+
 
 ``chia job stop <job_id>``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -110,6 +164,26 @@ completes in well under the grace period.
    * - ``--grace-period SEC``
      - Seconds to wait for each tracked subprocess to exit after SIGTERM before
        escalating to SIGKILL (only used with ``--kill-tracked-pids``; default 25).
+
+.. _cli-ray-fallback:
+
+Fallback to Ray (``chia ray ...``)
+----------------------------------
+
+``chia ray <anything>`` forwards to ``ray <anything>`` verbatim, so every
+current and future Ray command (``ray memory``, ``ray timeline``, ``ray
+attach`` …) is reachable — not just the promoted ``status``/``list``/``job``.
+Using an explicit gateway also means chia's own ``up``/``down`` never shadow
+``ray up``/``ray down``, and ``chia ray --help`` shows Ray's complete command
+list.
+
+Supports ``--chia-cluster``. Unlike the promoted
+commands, the fallback applies **no** overrides — ``chia ray job stop`` runs
+Ray's stop, not chia's augmented one::
+
+   chia ray memory --chia-cluster=cluster_a.yaml
+   chia ray timeline
+   chia ray job stop <job_id>
 
 FireSim
 -------

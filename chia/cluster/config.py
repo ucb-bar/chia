@@ -250,6 +250,24 @@ class ClusterConfig:
             return override.tunnel
         return None
 
+    @property
+    def head_gcs_port(self) -> int:
+        """GCS port of the head node.
+
+        Parsed from the ``--port`` flag in ``head_start_ray_commands``.
+        Falls back to Ray's default (6379) if the flag is absent.
+        """
+        for cmd in self.head_start_ray_commands:
+            m = re.search(r"--port[=\s]+(\d+)", cmd)
+            if m:
+                return int(m.group(1))
+        return 6379
+
+    @property
+    def head_ray_address(self) -> str:
+        """Explicit GCS address (``head_ip:port``) for ``ray.init``/``--address``."""
+        return f"{self.head_ip}:{self.head_gcs_port}"
+
 
 @dataclass
 class NodeAssignment:

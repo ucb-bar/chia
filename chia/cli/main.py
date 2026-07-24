@@ -2,18 +2,94 @@ import argparse
 import sys
 
 
-# `ray job` subcommands wrapped as verbatim pass-throughs (`stop` is custom).
-RAY_JOB_PASSTHROUGH_COMMANDS = ("submit", "status", "logs", "list", "delete")
+PROMOTED_RAY_COMMANDS = ("status", "list", "job")
+
+def _extract_cluster_opt(ray_argv):
+    """Pull the chia-level ``--chia-cluster`` option out of *ray_argv*, wherever
+    it appears — so both ``chia job --chia-cluster=X status`` and ``chia job
+    status --chia-cluster=X`` work.
+
+    Scanning stops at a ``--`` separator: everything from ``--`` onward belongs
+    to a forwarded entrypoint (e.g. ``chia ray job submit -- python app.py
+    --chia-cluster foo``) and is passed through verbatim.
+
+    To specify chia cluster in the above case, use chia ray job submit --chia-cluster foo
+     -- python app.py
+
+    Returns ``(cluster_path_or_None, remaining_ray_argv)``.
+    """
+    cluster = None
+    rest = []
+    i = 0
+    while i < len(ray_argv):
+        a = ray_argv[i]
+        if a == "--":
+            rest.extend(ray_argv[i:])  # separator + entrypoint args, verbatim
+            break
+        if a == "--chia-cluster":
+            if i + 1 >= len(ray_argv):
+                sys.exit("chia: --chia-cluster requires a path argument")
+            cluster = ray_argv[i + 1]
+            i += 2
+        elif a.startswith("--chia-cluster="):
+            cluster = a[len("--chia-cluster="):]
+            i += 1
+        else:
+            rest.append(a)
+            i += 1
+    return cluster, rest
+
+
+def _find_override(ray_argv):
+    """Return ``(handler, sub_argv)`` if chia overrides this command path with
+    its own implementation instead of proxying to ray, else ``(None, None)``.
+
+    Overrides are matched on the longest command-path prefix, so ``job stop``
+    can be chia-native while ``job submit`` falls through to ray.
+    """
+    from chia.cli.job import run_job_stop
+
+    overrides = {
+        ("job", "stop"): run_job_stop,
+    }
+    for depth in (2, 1):
+        handler = overrides.get(tuple(ray_argv[:depth]))
+        if handler is not None:
+            return handler, ray_argv[depth:]
+    return None, None
+
+
+def _dispatch_ray(ray_argv, cluster, *, apply_overrides):
+    """Run *ray_argv* as a ray command, pinned to *cluster* if given.
+
+    With *apply_overrides*, a chia-native override (e.g. ``job stop``) handles
+    the command instead of proxying; ``chia ray ...`` sets this False to get
+    ray's exact behaviour.
+    """
+    if apply_overrides:
+        handler, sub_argv = _find_override(ray_argv)
+        if handler is not None:
+            handler(sub_argv, cluster)
+            return
+    from chia.cli.ray_passthrough import cmd_ray_passthrough
+    cmd_ray_passthrough(ray_argv, cluster=cluster)
 
 
 def main():
-    # Dispatch pass-throughs before argparse: REMAINDER can't capture a leading
-    # option-like token (e.g. `chia job submit --working-dir ...`), and this
-    # also forwards `--help` to ray's own, complete help text.
     argv = sys.argv[1:]
-    if len(argv) >= 2 and argv[0] == "job" and argv[1] in RAY_JOB_PASSTHROUGH_COMMANDS:
-        from chia.cli.job import cmd_job_passthrough
-        cmd_job_passthrough(argv[1], argv[2:])
+
+    # `chia ray ...` — raw ray gateway: forward everything after `ray` to the
+    # ray CLI verbatim, no chia overrides.
+    if argv and argv[0] == "ray":
+        cluster, ray_argv = _extract_cluster_opt(argv[1:])
+        _dispatch_ray(ray_argv, cluster, apply_overrides=False)
+        return
+
+    # Promoted ray commands (`chia status/list/job ...`): proxy to ray, but let
+    # chia override specific paths like `job stop`
+    if argv and argv[0] in PROMOTED_RAY_COMMANDS:
+        cluster, ray_argv = _extract_cluster_opt(argv)
+        _dispatch_ray(ray_argv, cluster, apply_overrides=True)
         return
 
     parser = argparse.ArgumentParser(
@@ -116,26 +192,17 @@ def main():
                            help="Skip confirmation prompt")
     fc_parser.add_argument("-v", "--verbose", action="store_true",
                            help="Enable verbose (DEBUG) logging")
-    # chia job stop
-    job_parser = subparsers.add_parser("job", help="Job management commands")
-    job_sub = job_parser.add_subparsers(dest="job_command")
-    job_stop_parser = job_sub.add_parser(
-        "stop", help="Stop a Ray job (optionally kill tracked subprocesses first)")
-    job_stop_parser.add_argument("job_id", help="Ray job ID to stop")
-    job_stop_parser.add_argument(
-        "--kill-tracked-pids", action="store_true",
-        help="Kill tracked subprocesses (via the PID registry) before stopping the job")
-    job_stop_parser.add_argument(
-        "--grace-period", type=int, default=25,
-        help="Seconds to wait for each tracked subprocess to exit after "
-             "SIGTERM before escalating to SIGKILL "
-             "(only used with --kill-tracked-pids; default: 25)")
-    # chia job submit/status/logs/list/delete — registered here only so they
-    # show up in `chia job --help`; real invocations are dispatched verbatim
-    # to `ray job` before argparse runs (see top of main()).
-    for name in RAY_JOB_PASSTHROUGH_COMMANDS:
-        job_sub.add_parser(name, add_help=False,
-                           help=f"Pass-through to `ray job {name}`")
+
+    _RAY_BACKED_HELP = {
+        "status": "Show cluster status (proxies to `ray status`)",
+        "list": "List cluster resources (proxies to `ray list`)",
+        "job": "Ray job commands (`stop` is chia-augmented; others proxy to `ray job`)",
+        "ray": "Run any ray command (e.g. `chia ray status`)",
+    }
+    for name, help_text in _RAY_BACKED_HELP.items():
+        help_text += "; supports --chia-cluster PATH" if name != "ray" \
+            else ", optionally pinned with --chia-cluster PATH"
+        subparsers.add_parser(name, add_help=False, help=help_text)
 
     # chia viz-profile
     viz_profile_parser = subparsers.add_parser(
@@ -169,7 +236,7 @@ def main():
         "--x-scale", type=float, default=0.5,
         help="Horizontal inches per second of wall-clock time (default: 0.5)")
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     if args.command == "up":
         from chia.cli.up import cmd_up
@@ -192,13 +259,6 @@ def main():
     elif args.command == "firesim-cleanup":
         from chia.cli.firesim_cmds import cmd_firesim_cleanup
         cmd_firesim_cleanup(args)
-    elif args.command == "job":
-        if args.job_command == "stop":
-            from chia.cli.job import cmd_job_stop
-            cmd_job_stop(args)
-        else:
-            job_parser.print_help()
-            sys.exit(1)
     elif args.command == "viz-profile":
         from chia.cli.viz_profile_cmd import cmd_viz_profile
         cmd_viz_profile(args)

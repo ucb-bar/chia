@@ -1,0 +1,25 @@
+cluster_name: cluster_b
+
+available_node_types:
+    worker:
+        resources: {"generic": 1}
+        min_workers: 1
+        max_workers: 1
+        worker_setup_commands: ["source ~/.bashrc && conda activate chia_env"]
+        compatible_ips: ["${THIS_MACHINE}"]
+
+provider:
+    head_ip: ${THIS_MACHINE}
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: ${HOME}/.ssh/${USER}
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+
+head_start_ray_commands:
+    - ulimit -c unlimited && ray start --head --port=6378 --dashboard-port=8265 --include-dashboard=True --dashboard-agent-listen-port=0 --temp-dir=/tmp/${USER}/generic
+
+worker_start_ray_commands:
+    - ray start --address=$RAY_HEAD_IP:6378 --temp-dir=/tmp/${USER}/generic

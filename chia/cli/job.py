@@ -1,9 +1,42 @@
-"""``chia job`` commands — stop (optionally killing tracked subprocesses) plus thin pass-throughs to ``ray job``."""
+"""``chia job stop`` — chia's augmented override of ``ray job stop`` (optionally
+killing tracked subprocesses first). Every other ``chia job <cmd>`` proxies to
+``ray job <cmd>`` (see chia/cli/main.py)."""
 
 from __future__ import annotations
 
+import argparse
+import os
 import subprocess
 import sys
+
+
+def run_job_stop(stop_argv, cluster=None) -> None:
+    """Parse the args after ``chia job stop`` and run the augmented stop.
+
+    This is the override entrypoint dispatched from ``main()``; it owns its own
+    argument parsing (so ``chia job stop --help`` shows chia's flags, not ray's)
+    and, if *cluster* is given, pins ``RAY_ADDRESS`` so both the ``ray.init``
+    below and the ``ray job stop`` subprocess target that cluster.
+    """
+    parser = argparse.ArgumentParser(
+        prog="chia job stop",
+        description="Stop a Ray job (optionally kill tracked subprocesses first)")
+    parser.add_argument("job_id", help="Ray job ID to stop")
+    parser.add_argument(
+        "--kill-tracked-pids", action="store_true",
+        help="Kill tracked subprocesses (via the PID registry) before stopping the job")
+    parser.add_argument(
+        "--grace-period", type=int, default=25,
+        help="Seconds to wait for each tracked subprocess to exit after SIGTERM "
+             "before escalating to SIGKILL (only used with --kill-tracked-pids; "
+             "default: 25)")
+    args = parser.parse_args(stop_argv)
+
+    if cluster is not None:
+        from chia.cli.ray_passthrough import resolve_cluster_address
+        os.environ["RAY_ADDRESS"] = resolve_cluster_address(cluster)
+
+    cmd_job_stop(args)
 
 
 def cmd_job_stop(args) -> None:
@@ -45,10 +78,4 @@ def cmd_job_stop(args) -> None:
     job_id = args.job_id
     print(f"Running: ray job stop {job_id}")
     result = subprocess.run(["ray", "job", "stop", job_id])
-    sys.exit(result.returncode)
-
-
-def cmd_job_passthrough(job_command: str, ray_args: list[str]) -> None:
-    """Forward ``chia job <cmd> ...`` verbatim to ``ray job <cmd> ...``."""
-    result = subprocess.run(["ray", "job", job_command, *ray_args])
     sys.exit(result.returncode)
