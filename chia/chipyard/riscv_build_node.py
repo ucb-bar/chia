@@ -1,20 +1,10 @@
-"""Cross-compile a C/asm source into a RISC-V ELF.
+"""Build RISC-V programs inside the ``chia-riscv-cross`` image.
 
-Environment this node needs:
-    * `riscv64-unknown-elf-*` baremetal toolchain on PATH (target=verilator).
-    * `riscv64-unknown-linux-gnu-*` Linux toolchain on PATH (target=linux).
-    * The harness Makefile at `/opt/riscv-harness/Makefile` plus its
-      `include/` headers (rocc.h, mmio.h, marchid.h).
-
-All three are provisioned by the `chia-riscv-cross` Docker image
-(`dockerfiles/RiscvCrossDockerfile`).
-
-Where it sits in the pipeline:
-
-    Source bytes gets passed into RiscvBuildNode.build(target="verilator" | "linux"), which calls
-    `make -f /opt/riscv-harness/Makefile ...`
-
-    RiscvBuildNode.build returns RiscvBuildArtifact (binary_content + target + success + std{out,err} + rc)
+``build_program`` runs an arbitrary build command (bash/make/cmake) over
+caller-supplied files and collects requested outputs as bytes. ``build`` is a
+thin single-source-C/asm-to-ELF wrapper over it using the harness Makefile at
+``/opt/riscv-harness/Makefile``. Both run on ``riscv_build`` workers and never
+raise on build failure — callers branch on the artifact's ``success``.
 """
 
 import logging
@@ -22,64 +12,82 @@ import os
 import shutil
 import subprocess
 import uuid
+from pathlib import Path
 from typing import Literal
 
 from chia.base.ChiaFunction import ChiaFunction
-from chia.chipyard.state_def import RiscvBuildArtifact
+from chia.chipyard.state_def import ProgramBuildArtifact, RiscvBuildArtifact
 
 
 HARNESS_MAKEFILE = "/opt/riscv-harness/Makefile"
 
 BuildTarget = Literal["verilator", "linux"]
 
-# Single source of truth for output naming. Mirrors the Makefile's per-TARGET
-# OUTPUT setting; bump both together if a new target is added.
+# Output filename per target; mirrors the harness Makefile's OUTPUT.
 _OUTPUT_NAME: dict[str, "callable[[str], str]"] = {
     "verilator": lambda program: f"{program}.riscv",
     "linux":     lambda program: program,
 }
 
-# Source-language -> file extension. The harness Makefile already has both
-# `%.o: %.c` and `%.o: %.S` rules and derives OBJS from $(basename $(SRCS)),
-# so picking a language is just naming the source file and passing SRCS= to
-# make — no Makefile change (and no image rebuild) required.
+# Source language -> file extension (the harness Makefile has rules for both).
 SourceLang = Literal["c", "asm"]
 _LANG_EXT: dict[str, str] = {"c": ".c", "asm": ".S"}
 
 
-# TODO: this class currently assumes the harness Makefile baked into the
-# `chia-riscv-cross` image at /opt/riscv-harness/Makefile is the build
-# recipe. We may want callers to supply their own Makefile — either as an
-# extra `makefile_path` kwarg on build(), or via a separate
-# `build_with_make(makefile, ...)` entry point. Revisit when a workload
-# needs flags or rules the baked-in harness doesn't cover.
 class RiscvBuildNode:
-    """Cross-compiles a C/asm source into a RISC-V ELF via the harness Makefile.
-
-    Each :meth:`build` writes its source into an
-    isolated per-call task dir and shells out to the baked-in harness Makefile.
-    Runs inside the ``chia-riscv-cross`` image on workers tagged with the
-    ``riscv_build`` resource (see module docstring for the toolchain/Makefile
-    it depends on).
-    """
+    """Cross-compiles RISC-V programs via the ``chia-riscv-cross`` toolchain."""
 
     logging_name = "RiscvBuildNode"
 
-    def __init__(
-        self,
-        timeout_seconds: int = 300,
-        logging_level: int = logging.DEBUG,
-    ):
+    def __init__(self, timeout_seconds: int = 300, logging_level: int = logging.DEBUG):
         """
         Args:
-            timeout_seconds: Wall-clock limit applied to each ``make`` invocation
-                in :meth:`build`. On expiry the build returns ``returncode=-1``
-                (never raises); defaults to 300s.
-            logging_level: Python logging level for this node's logger.
+            timeout_seconds: Wall-clock limit per build command; on expiry the
+                build returns ``returncode=-1`` (never raises).
+            logging_level: Logging level for this node's logger.
         """
         self.timeout_seconds = timeout_seconds
         self.logger = logging.getLogger(self.logging_name)
         self.logger.setLevel(logging_level)
+
+    @ChiaFunction(resources={"riscv_build": 1})
+    def build_program(
+        self,
+        input_files: dict[str, bytes],
+        command: "list[str] | str",
+        work_dir: str,
+        outputs: "list[str] | None" = None,
+        cleanup_task_dir: bool = True,
+    ) -> ProgramBuildArtifact:
+        """Run ``command`` over ``input_files`` in a task dir and collect outputs.
+
+        Args:
+            input_files: Files to drop into the task dir, keyed by relative path
+                (nested paths allowed; parent dirs are created).
+            command: Build command — a ``list`` is exec'd; a ``str`` runs via a shell.
+            work_dir: Base dir; a uuid task subdir is created under it per call.
+            outputs: Path/glob patterns (relative to the task dir) to read back as
+                bytes; a directory pattern is walked recursively.
+            cleanup_task_dir: Remove the task dir after collecting outputs.
+
+        Returns:
+            ProgramBuildArtifact with the collected ``files`` and the command's
+            ``success``/``stdout``/``stderr``/``returncode`` (``-1`` on timeout).
+        """
+        task_dir = self._setup(input_files, work_dir)
+        self.logger.info(f"Running: {command!r} (cwd={task_dir})")
+        stdout, stderr, returncode = self._run(command, cwd=task_dir)
+        files = self._collect(task_dir, outputs or [])
+        if returncode != 0:
+            self.logger.warning(
+                f"build_program failed (rc={returncode}); stderr tail: {stderr[-500:]}"
+            )
+        if cleanup_task_dir:
+            shutil.rmtree(task_dir, ignore_errors=True)
+        return ProgramBuildArtifact(
+            files=files, success=returncode == 0,
+            stdout=stdout, stderr=stderr, returncode=returncode,
+        )
 
     @ChiaFunction(resources={"riscv_build": 1})
     def build(
@@ -94,133 +102,103 @@ class RiscvBuildNode:
         cleanup_task_dir: bool = True,
         lang: SourceLang = "c",
     ) -> RiscvBuildArtifact:
-        """Cross-compile `source_content` into a RISC-V ELF.
+        """Cross-compile one C/asm source into a RISC-V ELF via the harness Makefile.
 
         Args:
-            source_content: Raw bytes of the source file to compile.
-            program_name: Base name of the program. Names the source file
-                (``<program_name>.c`` / ``.S``), the ``PROGRAM=`` Make variable,
-                and the output binary.
-            work_dir: Base directory; a uuid-namespaced task subdir is created
-                under it so concurrent builds on one worker don't collide.
-            target: ``"verilator"`` for a baremetal ELF (output
-                ``<program_name>.riscv``) or ``"linux"`` for a userspace ELF
-                (output ``<program_name>``). Selects the toolchain prefix.
-            extra_cflags: Forwarded verbatim as ``EXTRA_CFLAGS=`` to the harness
-                Makefile (e.g. ``"-march=rv64gc_zba_zbb"`` for extension ISAs).
-            extra_ldflags: Forwarded verbatim as ``EXTRA_LDFLAGS=``.
-            include_dump: If True, also run the Makefile's ``dump`` target and
-                read the ``objdump -D`` output back into the artifact's ``dump``.
-            cleanup_task_dir: If True (default), remove the task dir after the
-                build (and after reading back the binary/dump).
-            lang: ``"c"`` writes ``<program_name>.c``; ``"asm"`` writes
-                ``<program_name>.S`` (preprocessed assembly). Both compile via
-                the same Makefile rules.
+            source_content: Raw source bytes.
+            program_name: Base name for the source, ``PROGRAM=``, and output binary.
+            work_dir: Base dir; a uuid task subdir is created under it per call.
+            target: ``"verilator"`` (baremetal ``<name>.riscv``) or ``"linux"``
+                (userspace ``<name>``); selects the toolchain prefix.
+            extra_cflags: Forwarded as ``EXTRA_CFLAGS=`` to the harness Makefile.
+            extra_ldflags: Forwarded as ``EXTRA_LDFLAGS=``.
+            include_dump: Also build the ``dump`` target and return the disassembly.
+            cleanup_task_dir: Remove the task dir after the build.
+            lang: ``"c"`` -> ``.c``, ``"asm"`` -> ``.S``.
 
         Returns:
-            RiscvBuildArtifact: Carries the compiled ELF bytes, output
-            ``binary_name``, ``target``, and (if ``include_dump``) the
-            disassembly. On compile failure/timeout, ``success=False`` with
-            empty ``binary_content`` and the captured stdout/stderr/returncode.
+            RiscvBuildArtifact with the ELF bytes, ``binary_name``, ``target``,
+            optional ``dump``, and ``success``/std streams/``returncode``.
 
         Raises:
-            ValueError: If ``target`` or ``lang`` is not a recognized value.
+            ValueError: If ``target`` or ``lang`` is unrecognized.
         """
         if target not in _OUTPUT_NAME:
-            raise ValueError(
-                f"target must be one of {sorted(_OUTPUT_NAME)} (got {target!r})"
-            )
+            raise ValueError(f"target must be one of {sorted(_OUTPUT_NAME)} (got {target!r})")
         if lang not in _LANG_EXT:
-            raise ValueError(
-                f"lang must be one of {sorted(_LANG_EXT)} (got {lang!r})"
-            )
+            raise ValueError(f"lang must be one of {sorted(_LANG_EXT)} (got {lang!r})")
 
         source_filename = f"{program_name}{_LANG_EXT[lang]}"
-        task_dir = self._setup(source_content, source_filename, work_dir)
         binary_name = _OUTPUT_NAME[target](program_name)
-        binary_path = os.path.join(task_dir, binary_name)
+        dump_name = f"{program_name}.dump"
 
         cmd = [
             "make", "-f", HARNESS_MAKEFILE,
-            f"TARGET={target}",
-            f"PROGRAM={program_name}",
-            f"SRCS={source_filename}",
-            f"EXTRA_CFLAGS={extra_cflags}",
-            f"EXTRA_LDFLAGS={extra_ldflags}",
+            f"TARGET={target}", f"PROGRAM={program_name}", f"SRCS={source_filename}",
+            f"EXTRA_CFLAGS={extra_cflags}", f"EXTRA_LDFLAGS={extra_ldflags}",
         ]
+        outputs = [binary_name]
         if include_dump:
             cmd.append("dump")
-        self.logger.info(f"Running: {cmd} (cwd={task_dir})")
-        stdout, stderr, returncode = self._run(cmd, cwd=task_dir)
+            outputs.append(dump_name)
 
-        binary_content = self._read(binary_path) if returncode == 0 else b""
-        success = returncode == 0 and binary_content != b""
-        if not success:
-            self.logger.warning(
-                f"Build failed (target={target}, returncode={returncode}); "
-                f"stderr tail: {stderr[-500:]}"
-            )
+        art = self.build_program(
+            input_files={source_filename: source_content}, command=cmd,
+            work_dir=work_dir, outputs=outputs, cleanup_task_dir=cleanup_task_dir,
+        )
 
+        binary_content = art.files.get(binary_name, b"") if art.returncode == 0 else b""
+        success = art.returncode == 0 and binary_content != b""
         dump = ""
         if include_dump and success:
-            dump_path = os.path.join(task_dir, f"{program_name}.dump")
-            dump = self._read(dump_path).decode("utf-8", errors="replace")
-
-        if cleanup_task_dir:
-            shutil.rmtree(task_dir, ignore_errors=True)
+            dump = art.files.get(dump_name, b"").decode("utf-8", errors="replace")
 
         return RiscvBuildArtifact(
-            binary_name=binary_name,
-            binary_content=binary_content,
-            target=target,
-            success=success,
-            stdout=stdout,
-            stderr=stderr,
-            returncode=returncode,
-            dump=dump,
+            binary_name=binary_name, binary_content=binary_content, target=target,
+            success=success, stdout=art.stdout, stderr=art.stderr,
+            returncode=art.returncode, dump=dump,
         )
 
     @staticmethod
-    def _setup(source_content: bytes, source_filename: str, work_dir: str) -> str:
-        """Create a uuid-namespaced task dir under `work_dir`, drop the source
-        file (named `source_filename`, e.g. prog.c or prog.S) into it, and
-        return the task dir path. The uuid keeps concurrent builds on one
-        worker from clobbering each other."""
-        os.makedirs(work_dir, exist_ok=True)
+    def _setup(input_files: dict[str, bytes], work_dir: str) -> str:
+        """Create a uuid task dir under ``work_dir`` and write ``input_files`` into it."""
         task_dir = os.path.join(work_dir, uuid.uuid4().hex[:8])
         os.makedirs(task_dir, exist_ok=True)
-        with open(os.path.join(task_dir, source_filename), "wb") as f:
-            f.write(source_content)
+        for rel_path, content in input_files.items():
+            dest = os.path.join(task_dir, rel_path)
+            os.makedirs(os.path.dirname(dest) or task_dir, exist_ok=True)
+            with open(dest, "wb") as f:
+                f.write(content)
         return task_dir
 
-    def _run(self, cmd: list[str], cwd: str) -> tuple[str, str, int]:
-        """Run `cmd` with the node's configured timeout. On timeout, return
-        rc=-1 with a tagged stderr instead of raising — keeps the never-raise
-        contract that callers branch on `artifact.success`."""
+    def _run(self, command: "list[str] | str", cwd: str) -> tuple[str, str, int]:
+        """Run ``command`` (str -> shell) with the node's timeout; rc=-1 on timeout."""
         try:
             proc = subprocess.run(
-                cmd, cwd=cwd, capture_output=True, text=True,
-                timeout=self.timeout_seconds,
+                command, cwd=cwd, capture_output=True, text=True,
+                timeout=self.timeout_seconds, shell=isinstance(command, str),
             )
             return proc.stdout, proc.stderr, proc.returncode
         except subprocess.TimeoutExpired as e:
             stdout = self._to_text(e.stdout)
             stderr = self._to_text(e.stderr) + \
-                     f"\n[RiscvBuildNode] timeout after {self.timeout_seconds}s"
+                f"\n[RiscvBuildNode] timeout after {self.timeout_seconds}s"
             return stdout, stderr, -1
 
     @staticmethod
-    def _to_text(value: str | bytes | None) -> str:
+    def _collect(task_dir: str, outputs: list[str]) -> dict[str, bytes]:
+        """Read files matching ``outputs`` (globs relative to task_dir; dirs walked)."""
+        base = Path(task_dir)
+        collected: dict[str, bytes] = {}
+        for pattern in outputs:
+            for match in base.glob(pattern):
+                for p in (match.rglob("*") if match.is_dir() else [match]):
+                    if p.is_file():
+                        collected[str(p.relative_to(base))] = p.read_bytes()
+        return collected
+
+    @staticmethod
+    def _to_text(value: "str | bytes | None") -> str:
         if isinstance(value, bytes):
             return value.decode("utf-8", errors="replace")
         return value or ""
-
-    @staticmethod
-    def _read(path: str) -> bytes:
-        """Read the expected output ELF; return b'' if the build never
-        produced it (compile error, missing rule, etc.)."""
-        try:
-            with open(path, "rb") as f:
-                return f.read()
-        except FileNotFoundError:
-            return b""
