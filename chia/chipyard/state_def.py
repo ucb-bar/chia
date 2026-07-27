@@ -103,6 +103,26 @@ class RiscvBuildArtifact:
 
 
 @dataclass
+class ProgramBuildArtifact:
+    """Outputs of a :meth:`RiscvBuildNode.build_program`.
+
+    Attributes:
+        files: Collected outputs, keyed by task-dir-relative path; empty on
+            failure or if nothing matched ``outputs``. Shipped by value, so scope
+            ``outputs`` to what downstream nodes need.
+        success: True iff the build command exited 0.
+        stdout: Captured stdout of the build command.
+        stderr: Captured stderr (includes a timeout note on expiry).
+        returncode: Exit code of the build command; ``-1`` on timeout.
+    """
+    files: dict[str, bytes]
+    success: bool
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+@dataclass
 class RiscvObjdumpArtifact:
     """Result of a :meth:`RiscvObjdumpNode.dump`: a RISC-V ELF disassembly.
 

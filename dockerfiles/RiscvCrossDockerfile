@@ -20,10 +20,13 @@ FROM ghcr.io/ucb-bar/chia:latest
 USER root
 
 # Build tools required by libgloss-htif's autotools build, plus runtime
-# libs the conda riscv64-unknown-elf-ar depends on (libfl.so.2).
+# libs the conda riscv64-unknown-elf-ar depends on (libfl.so.2). cmake/make
+# are here so build_program can drive arbitrary build systems (make, cmake,
+# or a bash script) — not just the harness Makefile that build() uses.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         make \
+        cmake \
         git \
         curl \
         ca-certificates \
@@ -52,6 +55,8 @@ RUN curl -fsSL -o /tmp/miniforge.sh \
 # Channels match chipyard/conda-reqs/riscv-tools.yaml exactly.
 # (Note: libgloss-htif is installed separately below, mirroring
 # chipyard's build-setup.sh -s 4.)
+# Held at chipyard's current pin (1.0.6) for byte-for-byte cosim ELFs; bump
+# riscv-tools= and LIBGLOSS_HTIF_SHA together only when chipyard does.
 RUN /home/ray/conda/bin/conda create -n riscv-tools \
         -c ucb-bar -c conda-forge \
         riscv-tools=1.0.6 \
