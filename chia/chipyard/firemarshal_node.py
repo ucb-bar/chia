@@ -142,39 +142,43 @@ class FireMarshalNode:
         overlay_files: dict[str, bytes],
         name: str,
         work_dir: str = "/tmp/fm",
-        outputs: "tuple[str, ...]" = (),
+        config: "dict | None" = None,
         rootfs_size_mib: int = 0,
     ) -> FireMarshalArtifact:
         """Compose ``overlay_files`` onto the stored base ``base_name`` and return
-        the workload image (``<name>.img`` + ``<name>-bin`` + ``<name>.json``) as
-        sparse-tar bytes.
+        the workload image(s) + FireSim descriptor as sparse-tar bytes.
 
-        Reused from the store if ``<image_store>/<name>/`` already exists —
-        otherwise composed (copy base + loop-mount + ``cp`` the overlay).
+        Reused from the store if ``<store>/<name>/<name>.json`` already exists —
+        otherwise composed (copy base + loop-mount + ``cp`` the overlay). With
+        ``jobs`` it emits one image per job (each with its own baked run command).
 
         Args:
             base_name: Store key of the base to copy (from :meth:`build_base` or a
-                prebuilt image dropped in the store).
+                prebuilt image in the store).
             overlay_files: rootfs-relative path -> bytes (mirrors the rootfs layout).
-            name: Store key / tag for the produced workload image.
+            name: Store key / tag for the produced workload.
             work_dir: Scratch dir for the overlay/mount/packaging.
-            outputs: Guest paths to collect after a run (FireSim descriptor's
-                ``common_outputs``, e.g. ``("/output",)``).
-            rootfs_size_mib: Grow the rootfs to this size before composing (``0``
-                keeps the base size).
+            config: Workload options as a dict (the marshal-config run knobs):
+                ``command`` (str, baked as the boot run-script), ``jobs`` (list of
+                ``{"name","command","outputs"}`` — one image per job, emitted as the
+                FireSim descriptor's ``workloads``), ``outputs`` (default guest
+                paths), ``post_run_hook`` (str), ``simulation_outputs`` (default
+                ``["uartlog"]``).
+            rootfs_size_mib: Grow the rootfs before composing (``0`` keeps base size).
         """
-        img_name, bin_name, json_name = f"{name}.img", f"{name}-bin", f"{name}.json"
+        config = config or {}
+        json_path = os.path.join(self._dir(name), f"{name}.json")
         stdout, stderr, returncode = "", "", 0
-        if not self._have(name):
+        if not os.path.isfile(json_path):
             if not self._have(base_name):
                 return FireMarshalArtifact(
-                    b"", img_name, bin_name, json_name, success=False, stdout="",
+                    b"", "", "", f"{name}.json", success=False, stdout="",
                     stderr=f"base '{base_name}' not found in {self.image_store}", returncode=1)
-            returncode, stdout, stderr = self._compose_into_store(
-                base_name, name, overlay_files, outputs, rootfs_size_mib, work_dir)
+            returncode, stdout, stderr = self._compose_workload(
+                base_name, name, overlay_files, config, rootfs_size_mib, work_dir)
 
         archive = b""
-        if returncode == 0 and self._have(name):
+        if returncode == 0 and os.path.isfile(json_path):
             archive, out, err, returncode = self._package(name, work_dir)
             stdout, stderr = stdout + out, stderr + err
 
@@ -182,8 +186,10 @@ class FireMarshalNode:
         if not success:
             self.logger.warning(
                 f"compose({name}) failed (rc={returncode}); stderr tail: {stderr[-500:]}")
+        single = not config.get("jobs")
         return FireMarshalArtifact(
-            archive=archive, img_name=img_name, bin_name=bin_name, json_name=json_name,
+            archive=archive, img_name=f"{name}.img" if single else "",
+            bin_name=f"{name}-bin" if single else "", json_name=f"{name}.json",
             success=success, stdout=stdout, stderr=stderr, returncode=returncode)
 
     # ---- store layout -------------------------------------------------------
@@ -253,27 +259,53 @@ class FireMarshalNode:
 
     # ---- compose internals --------------------------------------------------
 
-    def _compose_into_store(self, base_name, name, overlay_files, outputs,
-                            rootfs_size_mib, work_dir) -> "tuple[int, str, str]":
+    def _compose_workload(self, base_name, name, overlay_files, config,
+                          rootfs_size_mib, work_dir) -> "tuple[int, str, str]":
         os.makedirs(work_dir, exist_ok=True)
         work = os.path.join(work_dir, f".fm-{uuid.uuid4().hex[:8]}")
         overlay_dir = os.path.join(work, "overlay")
         self._write_overlay(overlay_files, overlay_dir)
-
         dst = self._dir(name)
         os.makedirs(dst, exist_ok=True)
-        img, bin_out = os.path.join(dst, f"{name}.img"), os.path.join(dst, f"{name}-bin")
         base_img = os.path.join(self._dir(base_name), f"{base_name}.img")
         base_bin = os.path.join(self._dir(base_name), f"{base_name}-bin")
-        self.logger.info(f"Composing {name} from base {base_name}")
-        stdout, stderr, rc = self._run(
-            ["bash", "-c", _COMPOSE, "_", img, os.path.join(work, "mnt"),
-             overlay_dir, base_img, base_bin, bin_out, str(rootfs_size_mib)])
-        if rc == 0:
-            self._write_descriptor(os.path.join(dst, f"{name}.json"),
-                                   name, f"{name}.img", f"{name}-bin", outputs)
+
+        # One image per job (with its own baked command); else a single image.
+        jobs = config.get("jobs")
+        targets = ([(f"{name}-{j['name']}", j.get("command"), j.get("outputs", config.get("outputs", [])))
+                    for j in jobs] if jobs
+                   else [(name, config.get("command"), config.get("outputs", []))])
+
+        stdout, stderr = "", ""
+        for target, command, _outs in targets:
+            self._set_run_script(overlay_dir, command)
+            self.logger.info(f"Composing {target} from base {base_name}")
+            out, err, rc = self._run(
+                ["bash", "-c", _COMPOSE, "_", os.path.join(dst, f"{target}.img"),
+                 os.path.join(work, "mnt"), overlay_dir, base_img, base_bin,
+                 os.path.join(dst, f"{target}-bin"), str(rootfs_size_mib)])
+            stdout, stderr = stdout + out, stderr + err
+            if rc != 0:
+                shutil.rmtree(work, ignore_errors=True)
+                return rc, stdout, stderr
+
+        self._write_descriptor(os.path.join(dst, f"{name}.json"), name, config, targets)
         shutil.rmtree(work, ignore_errors=True)
-        return rc, stdout, stderr
+        return 0, stdout, stderr
+
+    @staticmethod
+    def _set_run_script(overlay_dir: str, command: "str | None") -> None:
+        """Bake `command` as the boot run-script (``/firemarshal.sh``), or remove it.
+
+        br-base's init runs ``/firemarshal.sh`` at boot; the script ends in poweroff
+        so the sim exits (mirrors FireMarshal's ``genRunScript``)."""
+        path = os.path.join(overlay_dir, "firemarshal.sh")
+        if command:
+            with open(path, "w") as f:
+                f.write(f"#!/bin/sh\n{command}\nsync; poweroff -f\n")
+            os.chmod(path, 0o755)
+        elif os.path.exists(path):
+            os.remove(path)
 
     @staticmethod
     def _write_overlay(overlay_files: dict[str, bytes], overlay_dir: str) -> None:
@@ -286,16 +318,30 @@ class FireMarshalNode:
                 f.write(content)
 
     @staticmethod
-    def _write_descriptor(path: str, name: str, img_name: str, bin_name: str,
-                          outputs: "tuple[str, ...]") -> None:
-        """Write a FireSim uniform-workload descriptor referencing the image members."""
-        descriptor = {
-            "benchmark_name": name,
-            "common_bootbinary": bin_name,
-            "common_rootfs": img_name,
-            "common_outputs": list(outputs),
-            "common_simulation_outputs": ["uartlog"],
-        }
+    def _write_descriptor(path: str, name: str, config: dict, targets: list) -> None:
+        """Write the FireSim workload descriptor: uniform form for a single command,
+        or a ``workloads`` list (one entry per job) when config has ``jobs``."""
+        sim_outputs = config.get("simulation_outputs", ["uartlog"])
+        if config.get("jobs"):
+            descriptor = {
+                "benchmark_name": name,
+                "common_simulation_outputs": sim_outputs,
+                "workloads": [
+                    {"name": t, "bootbinary": f"{t}-bin", "rootfs": f"{t}.img",
+                     "outputs": list(outs)}
+                    for (t, _cmd, outs) in targets
+                ],
+            }
+        else:
+            descriptor = {
+                "benchmark_name": name,
+                "common_bootbinary": f"{name}-bin",
+                "common_rootfs": f"{name}.img",
+                "common_outputs": list(config.get("outputs", [])),
+                "common_simulation_outputs": sim_outputs,
+            }
+        if config.get("post_run_hook"):
+            descriptor["post_run_hook"] = config["post_run_hook"]
         with open(path, "w") as f:
             json.dump(descriptor, f, indent=2)
 
