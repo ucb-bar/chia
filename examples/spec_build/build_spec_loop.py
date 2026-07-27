@@ -28,6 +28,9 @@ def main() -> int:
     ray.init(address="auto")
     node = RiscvBuildNode(timeout_seconds=BUILD_TIMEOUT_S)
 
+    # Inputs can come from files (below), in-script cloning (build-cint.sh clones
+    # speckle), or -v mounts in cluster.yaml (e.g. a prebuilt speckle / SPEC tree)
+    # instead of cloning — any combination works.
     input_files = {
         "build-cint.sh": (COLLATERAL / "build-cint.sh").read_bytes(),
         "Makefile": (COLLATERAL / "Makefile").read_bytes(),
