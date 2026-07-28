@@ -7,6 +7,18 @@ available_node_types:
         max_workers: 1
         worker_setup_commands: ["source ~/.bashrc && conda activate chia_env"]
         compatible_ips: ["${THIS_MACHINE}"]
+    docker_worker:
+        resources: {"verilator_run": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: False
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: ["${THIS_MACHINE}"]
     tunnel_worker:
         resources: {"nano_a": 1}
         min_workers: 1

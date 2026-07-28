@@ -356,6 +356,48 @@ def selective_ray_stop(
     return total_found, total_stopped
 
 
+def count_foreign_ray_processes(targets) -> int:
+    """Number of live Ray processes attributable to a *different* cluster than
+    ``targets`` (a GCS address in argv that matches none of the targets).
+
+    Used to decide whether a shared Docker container may be removed. Processes
+    whose cluster can't be determined (no GCS address in argv) are treated as
+    ours and are NOT counted, so a container that is really single-tenant still
+    reports zero.
+    """
+    if psutil is None:
+        raise RuntimeError("psutil is required for scoped ray stop")
+    if isinstance(targets, str):
+        targets = [targets]
+    targets = list(targets)
+
+    keywords = _load_ray_processes()
+    is_linux = sys.platform.startswith("linux")
+    counted: set = set()
+    foreign = 0
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            name = proc.info["name"]
+            cmdline = proc.info["cmdline"] or []
+        except psutil.Error:
+            continue
+        is_ray = False
+        for keyword, filter_by_cmd in keywords:
+            if filter_by_cmd and is_linux and len(keyword) > 15:
+                continue
+            corpus = name if filter_by_cmd else " ".join(cmdline)
+            if keyword in corpus:
+                is_ray = True
+                break
+        if not is_ray or proc.pid in counted:
+            continue
+        counted.add(proc.pid)
+        addr = extract_gcs_address_from_cmdline(cmdline)
+        if addr is not None and not any(is_same_gcs_address(addr, t) for t in targets):
+            foreign += 1
+    return foreign
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Scoped ray stop by GCS address")
     parser.add_argument(
@@ -393,12 +435,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         found, stopped = selective_ray_stop(
             targets, force=args.force, grace_period=args.grace_period
         )
+        foreign = count_foreign_ray_processes(targets)
     except Exception as e:
         # Best-effort: report so the caller can fall back to a blanket stop.
         print(f"CHIA_RAYSTOP_ERROR: {e}", file=sys.stderr)
         return 1
 
-    print(f"CHIA_RAYSTOP: found={found} stopped={stopped} address={args.address}")
+    print(f"CHIA_RAYSTOP: found={found} stopped={stopped} foreign={foreign} "
+          f"address={args.address}")
     return 0
 
 

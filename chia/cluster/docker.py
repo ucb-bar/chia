@@ -101,10 +101,14 @@ class DockerManager:
                 continue
             self.exec_command(cmd, timeout=timeout)
 
-    def exec_script(self, commands: list[str], timeout: int | None = None):
+    def exec_script(self, commands: list[str], timeout: int | None = None,
+                    check: bool = True):
         """Run multiple commands inside the container in a single shell
         session, so environment changes persist across commands.
         Pipes a script via stdin to '<engine> exec -i ... bash --login'.
+
+        With ``check=False`` a non-zero exit is returned rather than raised, so
+        callers can inspect the container command's output/return code.
         """
         cmds = [c for c in commands if c.strip()]
         if not cmds:
@@ -121,6 +125,7 @@ class DockerManager:
         return self.ssh.run_script(
             [f"{self.engine} exec -i {shlex.quote(self.config.container_name)} bash --login <<'CHIA_DOCKER_SCRIPT'\n{script}\nCHIA_DOCKER_SCRIPT"],
             timeout=timeout,
+            check=check,
         )
 
     def stop_container(self) -> None:

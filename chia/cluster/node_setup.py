@@ -926,14 +926,48 @@ def _run_scoped_ray_stop(
                                 match_node_ip=match_node_ip),
         timeout=120, check=False,
     )
+    ok, matched, _foreign = _parse_scoped_ray_stop(result)
+    return ok, matched
+
+
+def _parse_scoped_ray_stop(result) -> tuple[bool, int | None, int | None]:
+    """Parse a ``CHIA_RAYSTOP: found=.. stopped=.. foreign=..`` result line.
+
+    Returns ``(ok, matched, foreign)`` — ``ok`` is False when the remote killer
+    exited non-zero (e.g. missing psutil); ``matched`` is how many of THIS
+    cluster's processes were stopped; ``foreign`` is how many OTHER-cluster Ray
+    processes remain on the host/in the container (None if not reported).
+    """
     matched: int | None = None
-    for line in (result.stdout or "").splitlines():
+    foreign: int | None = None
+    for line in ((result.stdout if result else "") or "").splitlines():
         line = line.strip()
         if line.startswith("CHIA_RAYSTOP:"):
             m = re.search(r"found=(\d+)", line)
             if m:
                 matched = int(m.group(1))
-    return result.returncode == 0, matched
+            f = re.search(r"foreign=(\d+)", line)
+            if f:
+                foreign = int(f.group(1))
+    ok = bool(result) and result.returncode == 0
+    return ok, matched, foreign
+
+
+def _run_scoped_ray_stop_in_container(
+    docker_mgr: DockerManager, env_commands: list[str], target_address: str,
+) -> tuple[bool, int | None]:
+    """Run the scoped killer INSIDE a container. Returns ``(ok, foreign)``.
+
+    Stops only ``target_address``'s Ray in the container (by GCS address) and
+    reports how many OTHER-cluster Ray processes remain — so the caller knows
+    whether the container is still in use by another cluster.
+    """
+    result = docker_mgr.exec_script(
+        _scoped_ray_stop_script(env_commands, target_address),
+        timeout=120, check=False,
+    )
+    ok, _matched, foreign = _parse_scoped_ray_stop(result)
+    return ok, foreign
 
 
 def tear_down_head_node(config: ClusterConfig) -> None:
@@ -998,12 +1032,45 @@ def tear_down_worker_node(
         docker_config_copy = replace(docker_config, container_name=container_name)
         docker_mgr = DockerManager(ssh, docker_config_copy)
 
-        with log_phase(logger, f"Stopping Ray in container '{container_name}' on {ip}"):
-            docker_mgr.exec_script(nt.worker_env_commands + ["ray stop"])
+        if not config.scoped_teardown:
+            # Blanket: stop all Ray in the container and remove it. Fine when the
+            # container is dedicated to this cluster; unsafe if it is shared.
+            with log_phase(logger, f"Stopping Ray in container '{container_name}' on {ip}"):
+                docker_mgr.exec_script(nt.worker_env_commands + ["ray stop"])
+            with log_phase(logger, f"Stopping and removing container '{container_name}' on {ip}"):
+                docker_mgr.stop_container()
+                ssh.run(f"{docker_config_copy.engine} rm -f {container_name}", check=False)
+            return
 
-        with log_phase(logger, f"Stopping and removing container '{container_name}' on {ip}"):
-            docker_mgr.stop_container()
-            ssh.run(f"{docker_config_copy.engine} rm -f {container_name}", check=False)
+        # Scoped: stop only THIS cluster's Ray inside the container, then remove
+        # the container only if no other cluster's Ray remains in it. Two
+        # clusters can share a container (same container_name on one host), and
+        # a `docker rm -f` would take the co-tenant's worker down with it.
+        target = gcs_address_for_node(config, assignment, tunnel_config)
+        with log_phase(logger, f"Scoped stop of Ray in container '{container_name}' on {ip}"):
+            ok, foreign = _run_scoped_ray_stop_in_container(
+                docker_mgr, nt.worker_env_commands, target)
+        logger.info(
+            f"[{ip}] scoped ray stop in '{container_name}' (target {target}): "
+            f"ok={ok} foreign={foreign}"
+        )
+        if not ok:
+            # Couldn't scope inside the container — do NOT `rm -f`, which could
+            # kill a co-tenant cluster. Leave it; the user can pass --no-scoped.
+            logger.error(
+                f"[{ip}] scoped ray stop in '{container_name}' could not run "
+                f"(is psutil available in the container's Ray env?). Leaving the "
+                f"container untouched; re-run with --no-scoped to force removal."
+            )
+        elif foreign:
+            logger.info(
+                f"[{ip}] container '{container_name}' still hosts {foreign} Ray "
+                f"process(es) from another cluster — leaving it running."
+            )
+        else:
+            with log_phase(logger, f"Stopping and removing container '{container_name}' on {ip}"):
+                docker_mgr.stop_container()
+                ssh.run(f"{docker_config_copy.engine} rm -f {container_name}", check=False)
     elif not is_head_ip:
         with log_phase(logger, f"Stopping Ray on {ip} ({nt.name})"):
             if not config.scoped_teardown:

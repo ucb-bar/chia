@@ -1,25 +1,32 @@
 """Live end-to-end test for scoped ``chia down`` on a host running TWO Ray
-clusters at once.
+clusters at once, including a Docker container SHARED between them.
 
 Scenario (the shared-host trap that scoped teardown exists for):
 
-  * ``down_cluster_a`` — head GCS on :6379, one local bare worker (``generic_a``)
-    and one tunneled EC2 docker worker (``nano_a``).
-  * ``down_cluster_b`` — head GCS on :6378, one local bare worker (``generic_b``).
+  * ``down_cluster_a`` — head GCS on :6379, a local bare worker (``generic_a``),
+    a local docker worker in the SHARED container ``chia-verilator-run-${USER}``
+    (``verilator_run``), and a tunneled EC2 docker worker (``nano_a``).
+  * ``down_cluster_b`` — head GCS on :6378, a local bare worker (``generic_b``),
+    a local docker worker in the SAME shared container (``verilator_run``), and a
+    docker worker in its own container ``chia-verilator-run-b-${USER}``.
 
-Both cluster heads and cluster_a's tunnel share the one head machine. cluster_b
-is local-only and cluster_a is split across local and aws.
+Both heads, cluster_a's tunnel, and the shared container live on the one head
+machine. Scoped ``chia down cluster_a`` must:
 
-A host-global ``ray stop`` (what ``chia down`` did before scoped teardown) would
-kill BOTH clusters. Scoped ``chia down cluster_a`` must stop only cluster_a's
-Ray processes — matched by GCS address — tear down only cluster_a's tunnels, and
-terminate only cluster_a's EC2 instance, leaving cluster_b fully alive.
+  * stop only cluster_a's Ray processes (matched by GCS address),
+  * tear down only cluster_a's tunnels and terminate only its EC2 instance,
+  * scoped-stop cluster_a's Ray INSIDE the shared container but LEAVE THE
+    CONTAINER RUNNING, because cluster_b's Ray is still in it —
+
+leaving cluster_b fully alive. A host-global ``ray stop`` (pre-scoped-teardown)
+would kill both clusters, and a blanket ``docker rm -f`` would destroy the
+shared container and cluster_b's worker with it.
 
 Liveness is checked with ``chia status --chia-cluster <yaml>``, which pins
 ``RAY_ADDRESS`` to that cluster's ``head_ip:port`` (so it can't be fooled by
 whichever GCS ``ray``'s auto-discovery would otherwise pick). Which cluster is
-up is confirmed from the per-cluster worker resources (``generic_a``/``nano_a``
-vs ``generic_b``) in ``ray status`` output.
+up is confirmed from the per-cluster worker resources in ``ray status`` output,
+and the shared container's survival is checked directly with ``docker inspect``.
 
 This spins up real EC2 instances, so it is gated behind
 ``CHIA_RUN_DOWN_LIVE_TESTS=1``. It also needs, besides the chia_env and AWS
@@ -48,13 +55,22 @@ CLUSTER_A = str(HERE / "cluster_a.yaml")
 CLUSTER_B = str(HERE / "cluster_b.yaml")
 
 # Per-cluster marker resources, used to tell the clusters apart in `ray status`.
-# cluster_a: local worker (generic_a) + EC2 tunnel worker (nano_a).
-# cluster_b: local worker only (generic_b).
+# cluster_a: bare worker (generic_a) + EC2 tunnel worker (nano_a).
+# cluster_b: bare worker (generic_b) + its docker workers (verilator_run), one
+# of which is in the container shared with cluster_a — so `verilator_run` still
+# present on :6378 after downing cluster_a proves the shared-container worker
+# survived.
 A_MARKERS = ("generic_a", "nano_a")
-B_MARKERS = ("generic_b",)
+B_MARKERS = ("generic_b", "verilator_run")
 
 A_GCS_PORT = 6379
 B_GCS_PORT = 6378
+
+# Container shared by cluster_a's and cluster_b's docker workers, plus the
+# container unique to cluster_b (worker_index 0 in both cases).
+_USER = os.environ.get("USER", "user")
+SHARED_CONTAINER = f"chia-verilator-run-{_USER}-0"
+B_CONTAINER = f"chia-verilator-run-b-{_USER}-0"
 
 _RUN = os.environ.get("CHIA_RUN_DOWN_LIVE_TESTS") == "1"
 _live = pytest.mark.skipif(
@@ -119,6 +135,16 @@ def _is_alive(cluster_yaml: str, markers: tuple[str, ...]) -> bool:
     return all(m in blob for m in markers)
 
 
+def _container_running(name: str) -> bool:
+    r = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name],
+                       capture_output=True, text=True)
+    return r.returncode == 0 and r.stdout.strip() == "true"
+
+
+def _rm_container(name: str) -> None:
+    subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -126,6 +152,8 @@ def _is_alive(cluster_yaml: str, markers: tuple[str, ...]) -> bool:
 def two_clusters_up():
     _scoped_stop(A_GCS_PORT)   # clear leftovers from a prior run (scoped, safe)
     _scoped_stop(B_GCS_PORT)
+    _rm_container(SHARED_CONTAINER)
+    _rm_container(B_CONTAINER)
 
     try:
         a = _chia("up", CLUSTER_A, "-y", timeout=UP_TIMEOUT)
@@ -143,13 +171,18 @@ def two_clusters_up():
             _chia("down", cfg, "-y", timeout=DOWN_TIMEOUT)
         _scoped_stop(A_GCS_PORT)
         _scoped_stop(B_GCS_PORT)
+        _rm_container(SHARED_CONTAINER)
+        _rm_container(B_CONTAINER)
 
 
 @_live
 def test_scoped_down_kills_only_target_cluster(two_clusters_up):
-    # Both clusters must be up first, each identifiable by its own resources.
+    # Both clusters must be up first, each identifiable by its own resources...
     assert _is_alive(CLUSTER_A, A_MARKERS), "cluster_a should be up before down"
     assert _is_alive(CLUSTER_B, B_MARKERS), "cluster_b should be up before down"
+    # ...and both clusters' Ray must be running in the one shared container.
+    assert _container_running(SHARED_CONTAINER), (
+        f"shared container {SHARED_CONTAINER} should be running before down")
 
     # Scoped teardown of cluster_a (scoped is the default).
     down = _chia("down", CLUSTER_A, "-y", timeout=DOWN_TIMEOUT)
@@ -159,8 +192,15 @@ def test_scoped_down_kills_only_target_cluster(two_clusters_up):
     assert not _is_alive(CLUSTER_A, A_MARKERS), (
         "cluster_a should be DOWN after scoped teardown")
 
-    # cluster_b survived intact — head, local worker, AND its EC2 tunnel worker
-    # (both markers still present). A blanket `ray stop` would have killed it.
+    # The shared container is STILL running — cluster_a's Ray was scoped-stopped
+    # inside it, but cluster_b's Ray remained, so it must NOT be `docker rm -f`ed.
+    assert _container_running(SHARED_CONTAINER), (
+        f"shared container {SHARED_CONTAINER} must NOT be removed while "
+        "cluster_b's Ray is still in it")
+
+    # cluster_b survived intact — head, bare worker, its shared-container worker
+    # (verilator_run still on :6378), and its unique-container worker. A blanket
+    # `ray stop` / `docker rm -f` would have taken these down too.
     assert _is_alive(CLUSTER_B, B_MARKERS), (
-        "cluster_b should still be ALIVE after scoping down cluster_a — a "
-        "blanket 'ray stop' would have taken it down too")
+        "cluster_b should still be ALIVE after scoping down cluster_a — including "
+        "its worker in the shared container")
