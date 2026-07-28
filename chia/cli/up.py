@@ -65,7 +65,7 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
         for (ip, nt_name, idx), tc in worker_tunnels.items():
             auth = config.get_ssh_auth(ip)
             print(f"  {ip} ({auth.ssh_user}) {nt_name}-{idx} via {tc.tunnel_ip}")
-            print(f"    GCS: {tc.tunnel_ip}:{tc.gcs_tunnel_port} -> head :6379")
+            print(f"    GCS: {tc.tunnel_ip}:{tc.gcs_tunnel_port} -> head :{config.head_gcs_port}")
             print(f"    Ray: node-mgr={tc.ray_node_manager_port}, obj-mgr={tc.ray_object_manager_port}, "
                   f"workers={tc.ray_worker_port_min}-{tc.ray_worker_port_max}")
             print(f"    Tools: {tc.tool_port_min}-{tc.tool_port_max} (on {head_ip_resolved})")

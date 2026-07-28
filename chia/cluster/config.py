@@ -225,6 +225,7 @@ class ClusterConfig:
     auth_overrides: dict[str, SSHAuthConfig] = field(default_factory=dict)
     ssh_proxy_command: str | None = None
     tailnet_config: TailnetConfig | None = None
+    scoped_teardown: bool = True
 
     def get_ssh_auth(self, ip: str) -> SSHAuthConfig:
         """Return SSH auth for *ip*, falling back to the global config."""
@@ -920,6 +921,7 @@ def build_config(raw: dict) -> ClusterConfig:
         auth_overrides=auth_overrides,
         ssh_proxy_command=global_proxy_command,
         tailnet_config=tailnet_config,
+        scoped_teardown=raw.get("scoped_teardown", True),
     )
 
     if tailnet_config is not None:

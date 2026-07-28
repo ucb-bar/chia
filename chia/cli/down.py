@@ -88,6 +88,9 @@ def cmd_down(args):
         logger.error(f"Config error: {e}")
         sys.exit(1)
 
+    if getattr(args, "scoped", None) is False:
+        config.scoped_teardown = False
+
     try:
         assignments = assign_nodes(config)
     except ConfigError as e:

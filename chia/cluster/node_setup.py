@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import re
+import shlex
 import socket
 from collections import Counter, defaultdict
+from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from chia.cluster.config import ClusterConfig, NodeAssignment, TunnelConfig, assign_nodes
 from chia.cluster.docker import DockerManager
+from chia.cluster.ray_stop import build_address
 from chia.cluster.log import get_logger, log_phase
 from chia.cluster.ssh import SSHClient
 from chia.cluster.tailnet import (
@@ -236,6 +240,7 @@ def add_nodes_to_cluster(
             tunnel_mgr.start_tunnel(
                 tc.tunnel_ip, ip, ssh_auth, tc,
                 head_ip=head_ip_resolved,
+                head_gcs_port=config.head_gcs_port,
                 relay_ip=_RELAY_IP,
                 reverse_tool_ports=all_reverse_tool_ports if is_first else None,
                 reverse_head_worker_ports=head_worker_ports if is_first else None,
@@ -684,6 +689,7 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
             tunnel_mgr.start_tunnel(
                 tc.tunnel_ip, ip, ssh_auth, tc,
                 head_ip=head_ip_resolved,
+                head_gcs_port=config.head_gcs_port,
                 relay_ip=_RELAY_IP,
                 reverse_tool_ports=all_reverse_tool_ports if is_first else None,
                 reverse_head_worker_ports=head_worker_ports if is_first else None,
@@ -833,19 +839,153 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
 # ------------------------------------------------------------------
 
 
+def gcs_address_for_node(
+    config: ClusterConfig,
+    assignment: NodeAssignment,
+    tunnel_config: TunnelConfig | None,
+) -> str:
+    """GCS address that this worker's Ray processes carry in their cmdline.
+
+    This is what ``chia up`` wrote into the worker's ``ray start --address``
+    (see ``build_worker_script``), so scoped teardown can match exactly:
+
+    - tailnet worker -> ``<head_advertise_ip>:<head_gcs_port>``
+    - tunneled worker -> ``<tunnel_ip>:<gcs_tunnel_port>`` (per-worker; the
+      tunnel port carries the ``+ ray_offset`` from ``allocate_worker_tunnels``)
+    - direct worker  -> ``config.head_ray_address`` (``<head_ip>:<head_gcs_port>``)
+    """
+    if config.is_tailnet(assignment.ip) and config.tailnet_config is not None:
+        return build_address(config.tailnet_config.head_advertise_ip,
+                             config.head_gcs_port)
+    if tunnel_config is not None:
+        return build_address(tunnel_config.tunnel_ip, tunnel_config.gcs_tunnel_port)
+    return config.head_ray_address
+
+
+def _head_gcs_address(config: ClusterConfig) -> str:
+    """GCS address the head's own Ray processes advertise."""
+    if config.tailnet_config is not None:
+        return build_address(config.tailnet_config.head_advertise_ip,
+                             config.head_gcs_port)
+    return config.head_ray_address
+
+
+_RAY_STOP_SRC: str | None = None
+
+
+def _ray_stop_source() -> str:
+    """The ``ray_stop.py`` module source, read once and cached, to ship over SSH."""
+    global _RAY_STOP_SRC
+    if _RAY_STOP_SRC is None:
+        _RAY_STOP_SRC = (Path(__file__).parent / "ray_stop.py").read_text()
+    return _RAY_STOP_SRC
+
+
+def _scoped_ray_stop_script(
+    env_commands: list[str], target_address: str, grace_period: int = 30,
+    match_node_ip: bool = False,
+) -> list[str]:
+    """Commands that run the scoped killer on a node.
+
+    Activates the node's Ray environment (``env_commands``, so ``python3`` and
+    ``psutil`` resolve) then pipes ``ray_stop.py`` into it via a quoted heredoc
+    — the same delivery pattern used for the ``ray.nodes()`` query. Only Ray
+    processes attached to ``target_address`` are stopped.
+
+    With ``match_node_ip`` the killer also stops processes advertising the
+    node's own IP at the target's port (for a head whose configured IP differs
+    from the IP Ray advertised — safe because a GCS port is unique per cluster
+    on a machine).
+    """
+    addr = shlex.quote(target_address)
+    flags = f"--address {addr} --grace-period {grace_period}"
+    if match_node_ip:
+        flags += " --match-node-ip"
+    block = (
+        f"python3 - {flags} "
+        f"<<'CHIA_RAYSTOP_EOF'\n{_ray_stop_source()}\nCHIA_RAYSTOP_EOF"
+    )
+    return list(env_commands) + [block]
+
+
+def _run_scoped_ray_stop(
+    ssh: SSHClient, env_commands: list[str], target_address: str,
+    match_node_ip: bool = False,
+) -> tuple[bool, int | None]:
+    """Run scoped ray stop on *ssh*'s host. Returns ``(ok, matched_count)``.
+
+    ``ok`` is False if the remote invocation errored (e.g. missing psutil).
+    ``matched`` is the number of processes the killer attributed to the
+    cluster. Scoped teardown never touches processes it cannot attribute, so
+    the caller must NOT translate a failure into a blanket ``ray stop`` — doing
+    so could kill a co-located cluster. It is the user's call (``--no-scoped``)
+    what to do when scoping can't run.
+    """
+    result = ssh.run_script(
+        _scoped_ray_stop_script(env_commands, target_address,
+                                match_node_ip=match_node_ip),
+        timeout=120, check=False,
+    )
+    matched: int | None = None
+    for line in (result.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("CHIA_RAYSTOP:"):
+            m = re.search(r"found=(\d+)", line)
+            if m:
+                matched = int(m.group(1))
+    return result.returncode == 0, matched
+
+
 def tear_down_head_node(config: ClusterConfig) -> None:
     ssh = _make_ssh(config, config.head_ip)
 
     with log_phase(logger, f"Stopping Ray head on {config.head_ip}"):
-        ssh.run_script(
-            config.head_env_commands
-            + config.head_teardown_commands
-            + ["ray stop"],
-            check=False,
+        # User teardown hooks run once, up front.
+        if config.head_teardown_commands:
+            ssh.run_script(
+                config.head_env_commands + config.head_teardown_commands,
+                check=False,
+            )
+
+        if not config.scoped_teardown:
+            ssh.run_script(config.head_env_commands + ["ray stop"], check=False)
+            return
+
+        # match_node_ip: the head may advertise a Ray-resolved IP that differs
+        # from the configured head_ip (localhost heads, multi-homed hosts); the
+        # killer also matches this machine's own node IP at our GCS port, which
+        # can only ever be this cluster (the port is unique per host).
+        target = _head_gcs_address(config)
+        ok, matched = _run_scoped_ray_stop(
+            ssh, config.head_env_commands, target, match_node_ip=True)
+        logger.info(
+            f"[{config.head_ip}] scoped ray stop (target {target}): "
+            f"matched={matched} ok={ok}"
         )
+        # Never fall back to a blanket 'ray stop': the head may be shared by
+        # several Ray clusters and a blanket stop would silently kill them.
+        # When scoping can't run or matches nothing, report it and leave the
+        # decision (e.g. re-run with --no-scoped) to the user.
+        if not ok:
+            logger.error(
+                f"[{config.head_ip}] scoped ray stop could not run (is psutil "
+                f"installed in the head's Ray env?). No Ray processes were "
+                f"stopped on the head; re-run with --no-scoped to force a "
+                f"host-global 'ray stop'."
+            )
+        elif not matched:
+            logger.warning(
+                f"[{config.head_ip}] scoped ray stop matched no processes for "
+                f"{target}; the head's Ray may already be down, or it advertises "
+                f"a different address. Re-run with --no-scoped to force a full stop."
+            )
 
 
-def tear_down_worker_node(config: ClusterConfig, assignment: NodeAssignment) -> None:
+def tear_down_worker_node(
+    config: ClusterConfig,
+    assignment: NodeAssignment,
+    tunnel_config: TunnelConfig | None = None,
+) -> None:
     ip = assignment.ip
     nt = assignment.node_type
     ssh = _make_ssh(config, ip)
@@ -866,7 +1006,27 @@ def tear_down_worker_node(config: ClusterConfig, assignment: NodeAssignment) -> 
             ssh.run(f"{docker_config_copy.engine} rm -f {container_name}", check=False)
     elif not is_head_ip:
         with log_phase(logger, f"Stopping Ray on {ip} ({nt.name})"):
-            ssh.run_script(nt.worker_env_commands + ["ray stop"], check=False)
+            if not config.scoped_teardown:
+                ssh.run_script(nt.worker_env_commands + ["ray stop"], check=False)
+                return
+
+            target = gcs_address_for_node(config, assignment, tunnel_config)
+            ok, matched = _run_scoped_ray_stop(ssh, nt.worker_env_commands, target)
+            logger.info(
+                f"[{ip}] scoped ray stop (target {target}): "
+                f"matched={matched} ok={ok}"
+            )
+            if not ok:
+                logger.error(
+                    f"[{ip}] scoped ray stop could not run (is psutil installed "
+                    f"in the node's Ray env?). No Ray processes were stopped on "
+                    f"{ip}; re-run with --no-scoped to force a host-global 'ray stop'."
+                )
+            elif not matched:
+                logger.warning(
+                    f"[{ip}] scoped ray stop matched no processes for {target}; "
+                    f"this cluster's Ray may already be down on {ip}."
+                )
     else:
         logger.debug(f"Skipping ray stop on {ip} ({nt.name}) — will be stopped with head node")
 
@@ -876,6 +1036,8 @@ def tear_down_cluster(
     tunnel_mgr: TunnelManager | None = None,
 ) -> None:
     assignments = assign_nodes(config)
+
+    worker_tunnel_configs = allocate_worker_tunnels(config, assignments)
 
     if assignments:
         by_ip: dict[str, list[NodeAssignment]] = defaultdict(list)
@@ -887,7 +1049,10 @@ def tear_down_cluster(
             for a in ip_assignments:
                 try:
                     logger.info(f"Tearing down worker {a.ip} ({a.node_type.name}-{a.worker_index})")
-                    tear_down_worker_node(config, a)
+                    tc = worker_tunnel_configs.get(
+                        (a.ip, a.node_type.name, a.worker_index)
+                    )
+                    tear_down_worker_node(config, a, tunnel_config=tc)
                     logger.info(f"Worker {a.ip} ({a.node_type.name}-{a.worker_index}) torn down")
                 except Exception as e:
                     logger.error(f"Worker {a.ip} ({a.node_type.name}-{a.worker_index}) teardown FAILED: {e}")

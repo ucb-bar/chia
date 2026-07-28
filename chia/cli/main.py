@@ -117,6 +117,11 @@ def main():
                              help="Skip confirmation prompt")
     down_parser.add_argument("-v", "--verbose", action="store_true",
                              help="Enable verbose (DEBUG) logging")
+    down_parser.add_argument("--no-scoped", dest="scoped", action="store_false",
+                             default=None,
+                             help="Use a host-global 'ray stop' instead of "
+                                  "stopping only this cluster's Ray processes "
+                                  "(overrides scoped_teardown in the config)")
 
     # chia viz
     viz_parser = subparsers.add_parser("viz", help="Visualize a Chia loop graph")
