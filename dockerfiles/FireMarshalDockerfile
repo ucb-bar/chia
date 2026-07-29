@@ -1,0 +1,19 @@
+# FireMarshal image for FireMarshalNode.
+#
+# Builds ON chia-chisel-build (which already ships marshal + the RISC-V
+# toolchain + a full chipyard) and adds the host packages Buildroot needs to
+# build br-base in-container -- cpio, unzip, gawk -- which the base image lacks.
+# With these, FireMarshalNode can build the base itself (build_base) instead of
+# requiring a prebuilt one. Run the worker --privileged (loop-mount compose).
+#
+#   docker build -f dockerfiles/FireMarshalDockerfile -t chia-firemarshal:local .
+FROM ghcr.io/ucb-bar/chia-chisel-build:latest
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        cpio \
+        unzip \
+        gawk \
+    && rm -rf /var/lib/apt/lists/*
+USER ray
+WORKDIR /home/ray

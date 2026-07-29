@@ -1,0 +1,70 @@
+# Cluster for spec_sw_build_loop.py: a head + a riscv_build worker (compiles SPEC
+# via build_program) + a firemarshal worker (build_base/compose). Fill every #FILL
+# and the mount paths.
+cluster_name: spec-sw-build
+
+available_node_types:
+    head_local:
+        resources: {"head_local": 8}
+        num_workers: 1
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env && export PATH=$HOME/.local/bin:$PATH"]
+        compatible_ips: #FILL
+
+    # Compiles SPEC with RiscvBuildNode.build_program.
+    riscv_build:
+        resources: {"riscv_build": 4}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-riscv-cross:latest"
+            container_name: "chia-riscv-cross-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                # SPEC install at its original path (writable; runspec builds in-tree).
+                - -v /path/to/spec-cpu2006:/path/to/spec-cpu2006   # FILL
+                - -e SPEC_DIR=/path/to/spec-cpu2006                # FILL (match the mount)
+        compatible_ips: #FILL
+
+    # Builds the FireMarshal base and composes workload images.
+    firemarshal:
+        resources: {"chipyard": 1}
+        num_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-firemarshal:latest"   # Buildroot-capable (dockerfiles/FireMarshalDockerfile)
+            container_name: "chia-firemarshal-${USER}"
+            pull_before_run: True
+            run_options:
+                - --privileged                              # loop-mount compose
+                - -v /path/to/fm-images:/images             # FILL: name-keyed image store (reused + persisted)
+        compatible_ips: #FILL
+
+provider:
+    type: local
+    head_ip: #FILL
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key:            # leave unset to use your ssh-agent
+
+file_mounts: {}
+
+rsync_exclude:
+    - "**/.git"
+    - "**/.git/**"
+
+rsync_filter:
+    - ".gitignore"
+
+initialization_commands: []
+
+setup_commands: []
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env && export PATH=$HOME/.local/bin:$PATH"]
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=True --dashboard-agent-listen-port=0
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0

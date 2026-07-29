@@ -339,3 +339,62 @@ class TortureResult:
     stderr: str
     returncode: int
     build_artifact: BuildArtifact | None = None  # populated by torture_from_config
+
+
+@dataclass
+class FireMarshalArtifact:
+    """Result of a :meth:`FireMarshalNode.build_image`: a bootable workload
+    packaged as one portable archive.
+
+    The rootfs, boot binary, and FireSim workload descriptor are packed into a
+    single sparse-aware gzip tar (``archive``) and carried by value, so they move
+    between nodes over Ray with no shared filesystem and no S3. For very large
+    rootfs images, prefer chia's worker-pinned chunked streaming (as
+    ``verilator_run_node`` uses for VCDs) over inlining here.
+
+    Attributes:
+        archive: ``tar --sparse -czf`` of the ``.img`` + ``-bin`` + ``.json``;
+            ``b""`` on failure. Unpack with ``tar -xzf``.
+        img_name: rootfs member filename (``<name>.img``).
+        bin_name: boot-binary member filename (``<name>-bin``).
+        json_name: FireSim workload-descriptor member filename (``<name>.json``).
+        success: True iff the archive was produced.
+        stdout: Captured stdout of the compose/package.
+        stderr: Captured stderr (includes a timeout note on expiry).
+        returncode: Exit code; ``-1`` on timeout.
+    """
+    archive: bytes
+    img_name: str
+    bin_name: str
+    json_name: str
+    success: bool
+    stdout: str
+    stderr: str
+    returncode: int
+
+
+@dataclass
+class FireMarshalBaseArtifact:
+    """Result of a :meth:`FireMarshalNode.build_base`: FireMarshal's br-base
+    (rootfs + boot binary) as a sparse-tar archive, to feed
+    :meth:`FireMarshalNode.build_image`'s ``base=``.
+
+    Built once (slow); dispatch early and/or cache so it runs at most once.
+
+    Attributes:
+        archive: ``tar --sparse -czf`` of ``br-base.img`` + ``br-base-bin``;
+            ``b""`` on failure.
+        img_name: rootfs member filename (``br-base.img``).
+        bin_name: boot-binary member filename (``br-base-bin``).
+        success: True iff the base was built and packaged.
+        stdout: Captured stdout of the build/package.
+        stderr: Captured stderr (includes a timeout note on expiry).
+        returncode: Exit code; ``-1`` on timeout.
+    """
+    archive: bytes
+    img_name: str
+    bin_name: str
+    success: bool
+    stdout: str
+    stderr: str
+    returncode: int
