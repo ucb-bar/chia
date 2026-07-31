@@ -334,8 +334,12 @@ def allocate_tailnet_workers(
     """Compute per-worker advertise IPs and port blocks.
 
     Returns a dict keyed by ``(ip, node_type_name, worker_index)`` for
-    every assignment on a tailnet IP.  Advertise IPs count up from
-    127.0.0.2 (globally unique — they're the routing key).
+    every assignment on a tailnet IP — plus every assignment colocated
+    on the head machine, which participates exactly like a tailnet
+    worker (unique advertise IP, per-machine port block) except that
+    peers dial it at ``head_tailnet_ip`` and the head's relay treats it
+    as local.  Advertise IPs count up from 127.0.0.2 (globally unique —
+    they're the routing key).
 
     Port blocks are consecutive ``worker_block_size`` slices from
     ``worker_block_base``, indexed PER MACHINE: two workers on different
@@ -367,14 +371,19 @@ def allocate_tailnet_workers(
 
     idx_by_machine: dict[str, int] = {}
     for a in assignments:
-        if not config.is_tailnet(a.ip):
+        # Workers colocated on the head machine aren't tailnet-marked
+        # (no SSH proxy, no tailscaled of their own) but are full mesh
+        # participants: peers reach them at the head's tailnet address.
+        is_head_local = a.ip == config.head_ip
+        if not (config.is_tailnet(a.ip) or is_head_local):
             continue
         block_idx = idx_by_machine.get(a.ip, 0)
         idx_by_machine[a.ip] = block_idx + 1
         base = tn.worker_block_base + block_idx * tn.worker_block_size
         alloc = TailnetWorkerAlloc(
             advertise_ip=str(next_addr),
-            tailnet_ip=(tailnet_ip_map or {}).get(a.ip, a.ip),
+            tailnet_ip=(tn.head_tailnet_ip if is_head_local
+                        else (tailnet_ip_map or {}).get(a.ip, a.ip)),
             node_manager_port=base,
             object_manager_port=base + 1,
             tool_port_min=base + _TOOL_OFFSET,
@@ -420,6 +429,9 @@ def build_relay_spec(
     listener, with a ``routes`` table mapping every advertise IP to its
     owning machine's tailnet IP (null for this machine's own
     participants → dialed locally, skipping a tailscale hairpin).
+    Workers colocated on the head machine are the head relay's own
+    participants (keyed by ``config.head_ip``, matched here even though
+    the head relay is requested with ``host_ip=None``).
 
     ChiaTool traffic is plain HTTP (httpx) which can't use the CONNECT
     proxy, so peer TOOL ports keep small per-port SOCKS listeners; and
@@ -430,13 +442,17 @@ def build_relay_spec(
     tn = config.tailnet_config
     assert tn is not None
 
+    # Allocs are keyed by cluster address; the head relay's own machine
+    # is addressed by config.head_ip.
+    local_ip = config.head_ip if host_ip is None else host_ip
+
     # routes: advertise_ip -> owning machine's tailnet IP, or None when
     # the participant lives on THIS machine (dial 127.0.0.1 directly).
     routes: dict[str, str | None] = {
         tn.head_advertise_ip: None if host_ip is None else tn.head_tailnet_ip
     }
     for (cluster_ip, _, _), alloc in allocs.items():
-        routes[alloc.advertise_ip] = None if cluster_ip == host_ip else alloc.tailnet_ip
+        routes[alloc.advertise_ip] = None if cluster_ip == local_ip else alloc.tailnet_ip
 
     listeners: list[dict] = [
         {"bind_ip": "127.0.0.1", "port": tn.connect_proxy_port, "via": "connect"}
@@ -454,7 +470,7 @@ def build_relay_spec(
             listeners.append({"bind_ip": "127.0.0.1", "port": port,
                               "dest_ip": tn.head_advertise_ip, "via": "direct"})
     for (cluster_ip, _, _), alloc in allocs.items():
-        if cluster_ip == host_ip:
+        if cluster_ip == local_ip:
             # OWN tools: inbound bridge 127.0.0.1:<port> -> advertise IP.
             for port in range(alloc.tool_port_min, alloc.tool_port_max + 1):
                 listeners.append({"bind_ip": "127.0.0.1", "port": port,

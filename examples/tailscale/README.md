@@ -112,6 +112,12 @@ The example config takes the machine addresses from the environment
 add their tailscale IPs to `compatible_ips` and raise `num_workers`.
 Adjust the conda env names in `*_env_commands` if yours differ.
 
+Workers can also live on the head machine itself: list the head's IP
+(`${HEAD_IP}`) in a node type's `compatible_ips` — see
+`cluster_headworker.yaml`. They participate like any tailnet worker
+(unique advertise IP, own port block, served by the head's relay);
+peers reach them through the head's tailscaled.
+
 That's it — the presence of the `tailnet:` block opts the cluster in.
 Every worker IP that isn't the head machine is automatically treated as
 a tailnet machine, and SSH to it automatically goes through the SOCKS5

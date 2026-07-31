@@ -10,6 +10,7 @@ Run:
 
 import copy
 import unittest
+from unittest import mock
 
 from chia.cluster.config import (
     ConfigError, assign_nodes, build_config,
@@ -323,6 +324,130 @@ class TestScripts(unittest.TestCase):
         self.assertIn(f"--node-ip-address={alloc.advertise_ip}", start)
         self.assertIn(f"--min-worker-port={alloc.worker_port_min}", start)
         self.assertNotIn("CHIA_TOOL_RELAY_HOST", "\n".join(script))
+
+
+def _headworker_raw(num_local=1):
+    """_make_raw() plus a node type colocated on the head machine."""
+    raw = _make_raw()
+    raw["available_node_types"]["local"] = {
+        "resources": {"local": 1},
+        "num_workers": num_local,
+        "compatible_ips": ["10.0.0.1"],  # the head itself
+    }
+    return raw
+
+
+class TestHeadColocated(unittest.TestCase):
+    """Workers colocated on the head machine are full tailnet participants:
+    unique advertise IP, per-machine port block, local to the head relay,
+    dialed by peers at head_tailnet_ip."""
+
+    def _alloc(self, num_local=1):
+        config = build_config(_headworker_raw(num_local))
+        assignments = assign_nodes(config)
+        return config, assignments, allocate_tailnet_workers(config, assignments)
+
+    def _local_allocs(self, allocs):
+        return {k: a for k, a in allocs.items() if k[0] == "10.0.0.1"}
+
+    def test_alloc_created_with_head_tailnet_ip(self):
+        config, assignments, allocs = self._alloc()
+        self.assertEqual(len(allocs), 4)  # 3 tailnet + 1 head-colocated
+        (key, alloc), = self._local_allocs(allocs).items()
+        self.assertEqual(key, ("10.0.0.1", "local", 0))
+        self.assertEqual(alloc.tailnet_ip, config.tailnet_config.head_tailnet_ip)
+        # Advertise IP unique across the cluster, never the head's.
+        adv_ips = [a.advertise_ip for a in allocs.values()]
+        self.assertEqual(len(set(adv_ips)), 4)
+        self.assertNotIn(config.tailnet_config.head_advertise_ip, adv_ips)
+        # First block on the head machine; disjoint from head ports.
+        tn = config.tailnet_config
+        self.assertEqual(alloc.node_manager_port, tn.worker_block_base)
+        self.assertFalse(set(alloc.ports()) & set(head_ports(tn)))
+
+    def test_two_colocated_workers_distinct_blocks(self):
+        _, _, allocs = self._alloc(num_local=2)
+        local = self._local_allocs(allocs)
+        self.assertEqual(len(local), 2)
+        bases = {a.node_manager_port for a in local.values()}
+        self.assertEqual(len(bases), 2)
+
+    def test_head_relay_treats_colocated_as_local(self):
+        config, _, allocs = self._alloc()
+        (_, alloc), = self._local_allocs(allocs).items()
+        spec = build_relay_spec(config, allocs, None)
+        # Route is local (dial 127.0.0.1 directly), NOT a tailscale hairpin.
+        self.assertIsNone(spec["routes"][alloc.advertise_ip])
+        # OWN tool bridges: 127.0.0.1:<port> -> advertise IP, direct.
+        for port in range(alloc.tool_port_min, alloc.tool_port_max + 1):
+            self.assertIn({"bind_ip": "127.0.0.1", "port": port,
+                           "dest_ip": alloc.advertise_ip, "via": "direct"},
+                          spec["listeners"])
+        # No peer SOCKS listener binds its advertise IP on the head relay.
+        self.assertFalse([l for l in spec["listeners"]
+                          if l["bind_ip"] == alloc.advertise_ip])
+
+    def test_peer_relay_dials_colocated_via_head_tailnet_ip(self):
+        config, _, allocs = self._alloc()
+        tn = config.tailnet_config
+        (_, alloc), = self._local_allocs(allocs).items()
+        spec = build_relay_spec(config, allocs, "100.64.0.2")
+        self.assertEqual(spec["routes"][alloc.advertise_ip], tn.head_tailnet_ip)
+        tool_listeners = [l for l in spec["listeners"]
+                          if l["bind_ip"] == alloc.advertise_ip]
+        self.assertEqual(len(tool_listeners), tn.tool_port_count)
+        self.assertEqual({l["dest_ip"] for l in tool_listeners},
+                         {tn.head_tailnet_ip})
+
+    def test_colocated_worker_script(self):
+        config, assignments, allocs = self._alloc()
+        tn = config.tailnet_config
+        a = next(x for x in assignments if x.ip == "10.0.0.1")
+        alloc = allocs[(a.ip, a.node_type.name, a.worker_index)]
+        script = build_worker_script(config, a, tailnet_alloc=alloc)
+        joined = "\n".join(script)
+        # Never `ray stop` on the head machine (would kill the head's Ray).
+        self.assertNotIn("ray stop", joined)
+        # Full tailnet branch: advertise IP, pinned ports, head-adv GCS dial.
+        start = [l for l in script if "ray start" in l][0]
+        self.assertIn(f"--address={tn.head_advertise_ip}:{tn.gcs_port}", start)
+        self.assertIn(f"--node-ip-address={alloc.advertise_ip}", start)
+        self.assertIn(f"--node-manager-port={alloc.node_manager_port}", start)
+        # Both local advertise IPs are excluded from the CONNECT proxy.
+        self.assertIn(f"export no_grpc_proxy={alloc.advertise_ip},"
+                      f"{tn.head_advertise_ip}", script)
+        self.assertIn(f"export CHIA_TOOL_ADVERTISE_HOST={alloc.advertise_ip}",
+                      script)
+
+    def test_remote_worker_script_unchanged(self):
+        config, assignments, allocs = self._alloc()
+        a = next(x for x in assignments if x.ip == "100.64.0.2")
+        alloc = allocs[(a.ip, a.node_type.name, a.worker_index)]
+        script = build_worker_script(config, a, tailnet_alloc=alloc)
+        self.assertIn(f"export no_grpc_proxy={alloc.advertise_ip}", script)
+
+    def test_bring_up_starts_one_relay_per_machine(self):
+        """The head relay (host_ip=None) serves colocated workers; the
+        relay-host loop must not start a second relay on the head IP."""
+        from chia.cluster import node_setup
+        config = build_config(_headworker_raw())
+        started = []
+        with mock.patch.object(node_setup, "setup_head_node"), \
+             mock.patch.object(node_setup, "setup_worker_node"), \
+             mock.patch.object(node_setup, "start_relay",
+                               side_effect=lambda ssh, spec:
+                                   started.append((ssh.ip, spec))), \
+             mock.patch.object(node_setup, "_make_ssh",
+                               side_effect=lambda cfg, ip:
+                                   mock.MagicMock(ip=ip)):
+            node_setup.bring_up_cluster(config)
+        hosts = [h for h, _ in started]
+        self.assertEqual(hosts.count("10.0.0.1"), 1)
+        self.assertEqual(set(hosts), {"10.0.0.1", "100.64.0.2", "100.64.0.3"})
+        head_spec = next(s for h, s in started if h == "10.0.0.1")
+        # head + colocated worker both route locally on the head relay
+        self.assertEqual(
+            sum(1 for dest in head_spec["routes"].values() if dest is None), 2)
 
 
 class TestManageAll(unittest.TestCase):

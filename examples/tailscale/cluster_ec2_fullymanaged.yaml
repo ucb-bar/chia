@@ -1,6 +1,7 @@
 # Fully managed tailnet cluster: CHIA runs tailscale on EVERY machine —
-# the head, an on-prem worker, and an EC2 worker — no manual tailscaled
-# anywhere. Environment variables to set before `chia up` / `chia down`:
+# the head (which also hosts a colocated worker), an on-prem worker,
+# and an EC2 worker — no manual tailscaled anywhere. Environment
+# variables to set before `chia up` / `chia down`:
 #   HEAD_IP     how CHIA SSHes to the head (its real IP/hostname)
 #   WORKER_IP   the on-prem worker's real IP/hostname (NOT its tailscale
 #               address — tailscale can't be bootstrapped over tailscale,
@@ -35,7 +36,6 @@ aws_nodes:
         count: 1
         ImageId: ami-0d001f8052688dc45   # Ubuntu 22.04 (us-east-1)
         ssh_user: ubuntu
-        ssh_private_key: ${AWS_KEYPAIR_PEM}
         BlockDeviceMappings:
             - DeviceName: /dev/sda1
               Ebs:
@@ -43,6 +43,13 @@ aws_nodes:
                   VolumeType: gp3
 
 available_node_types:
+
+    head_worker:
+        resources: {"head_worker": 4}
+        num_workers: 1
+        compatible_ips: ["${HEAD_IP}"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
     tailscale_worker:
         resources: {"tailscale_worker": 4}
         num_workers: 1
@@ -59,7 +66,7 @@ head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
 
 head_start_ray_commands:
     - ray stop
-    - ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0 --resources='{"head":4}'
+    - ray start --head --port=6379 --dashboard-agent-listen-port=0 --resources='{"head":4}'
 
 worker_start_ray_commands:
     - ray stop

@@ -61,7 +61,6 @@ aws_nodes:
         count: 1
         ImageId: ami-0d001f8052688dc45   # Ubuntu 22.04 (us-east-1)
         ssh_user: ubuntu
-        ssh_private_key: ${AWS_KEYPAIR_PEM}
         BlockDeviceMappings:
             - DeviceName: /dev/sda1
               Ebs:
@@ -69,6 +68,13 @@ aws_nodes:
                   VolumeType: gp3
 
 available_node_types:
+
+    head_worker:
+        resources: {"head_worker": 4}
+        num_workers: 1
+        compatible_ips: ["${HEAD_IP}"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
     tailscale_worker:
         resources: {"tailscale_worker": 4}
         num_workers: 1
