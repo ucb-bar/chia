@@ -122,6 +122,12 @@ def _handle_connect(conn, proxy, routes):
         try:
             if tailnet_ip is None:
                 up = socket.create_connection(("127.0.0.1", port), timeout=15)
+                # The 15s deadline is for connect() only — left armed it
+                # makes _pump's recv() raise after any 15s idle gap,
+                # killing long-lived streams (e.g. in-flight gRPC calls
+                # to head-colocated workers). socks5_connect clears its
+                # timeout the same way.
+                up.settimeout(None)
             else:
                 up = socks5_connect(proxy, tailnet_ip, port)
         except Exception as e:
@@ -143,6 +149,7 @@ def _handle(conn, proxy, dest_ip, dest_port, via="socks"):
     try:
         if via == "direct":
             up = socket.create_connection((dest_ip, dest_port), timeout=15)
+            up.settimeout(None)  # connect deadline only — streams may idle
         else:
             up = socks5_connect(proxy, dest_ip, dest_port)
     except Exception as e:
