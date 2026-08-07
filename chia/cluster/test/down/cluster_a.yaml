@@ -1,0 +1,70 @@
+cluster_name: down_cluster_a
+
+available_node_types:
+    worker:
+        resources: {"generic_a": 1}
+        min_workers: 1
+        max_workers: 1
+        worker_setup_commands: ["source ~/.bashrc && conda activate chia_env"]
+        compatible_ips: ["${THIS_MACHINE}"]
+    docker_worker:
+        resources: {"verilator_run": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-${USER}"
+            pull_before_run: False
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+        compatible_ips: ["${THIS_MACHINE}"]
+    tunnel_worker:
+        resources: {"nano_a": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
+            container_name: "chia-verilator-run-a-${USER}"
+            pull_before_run: True
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=2gb
+        compatible_ips:
+            - "@aws_worker:0"
+
+aws_nodes:
+    region: us-east-1
+    # t3.medium (4 GB)
+    # requires ssh agent setup for github 
+    aws_worker:
+        ssh_timeout: 600
+        KeyName: ${KEY_NAME}
+        InstanceType: t3.medium
+        count: 1
+        ImageId: ami-0ec10929233384c7f
+        ssh_user: ubuntu
+        ssh_private_key: ${KEY_PATH}
+        setup_commands:
+            - "echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${GITHUB_USER} --password-stdin"
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 40
+                  VolumeType: gp3
+
+provider:
+    head_ip: ${THIS_MACHINE}
+
+auth:
+    ssh_user: ${USER}
+    ssh_private_key: ${HOME}/.ssh/${USER}
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+
+head_start_ray_commands:
+    - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0 --temp-dir=/tmp/${USER}/down_a
+
+worker_start_ray_commands:
+    - ray start --address=$RAY_HEAD_IP:6379 --temp-dir=/tmp/${USER}/down_a
