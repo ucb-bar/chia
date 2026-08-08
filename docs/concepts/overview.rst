@@ -94,7 +94,7 @@ A cluster is specified in a YAML file: available physical machines under a
 images) under ``available_node_types``, and any cloud instances under a provider
 section such as ``aws_nodes``. Bring it up with ``chia up <config>.yaml`` — which spawns
 any cloud nodes, assigns workers to machines, and launches the workers — and tear it
-down with ``chia down <config>.yaml``. See the :doc:`CLI Reference </cli/reference>`.
+down with ``chia down <config>.yaml``. See the :doc:`CLI Reference </user_guides/reference>`.
 
 Fault tolerance & reproducibility
 ---------------------------------
