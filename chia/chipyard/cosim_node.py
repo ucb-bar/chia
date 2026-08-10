@@ -66,10 +66,14 @@ class CosimNode:
         completed = any(s in text for s in _COMPLETED)
         # Cospike prints-but-continues on tolerated reads (tval); a divergence
         # is a mismatch that actually aborted the run.
-        match = matched > 0 and (mismatch is None or completed)
+        # A simulator that died has no verdict to give: without this a crash looks
+        # exactly like an early stop (mismatch None, completed False) and scores
+        # as a pass.
+        crashed = dut.returncode != 0 and not completed and mismatch is None
+        match = (not crashed) and matched > 0 and (mismatch is None or completed)
         if match:
             return CosimResult(elf_name, True, matched, completed, None,
-                               _cycles(dut.out), None)
+                               _cycles(dut.out), None, dut.returncode, False)
 
         # Re-run with +verbose for the debug window: DUT commit log + spike's,
         # interleaved up to the abort (deterministic thanks to zero-init).
@@ -81,7 +85,8 @@ class CosimNode:
                   + "\n".join(tail))
         return CosimResult(elf_name, False, matched, completed,
                            _divergence(mismatch.group(0)) if mismatch else None,
-                           _cycles(dut.out), gzip.compress(window.encode("utf-8", "replace")))
+                           _cycles(dut.out), gzip.compress(window.encode("utf-8", "replace")),
+                           dut.returncode, crashed)
 
     def _run(self, sim_artifact, elf_content, elf_name, work_dir,
              timeout_cycles, timeout_seconds, verbose):

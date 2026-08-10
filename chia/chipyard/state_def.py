@@ -219,6 +219,8 @@ class CosimResult:
     first_divergence: dict | None      # {line, spike, dut} or None
     sim_cycles: int | None
     failing_trace_gz: bytes | None     # gz tail window around the abort; None on match
+    returncode: int = 0                # simulator exit status; negative = killed
+    crashed: bool = False              # simulator died instead of reaching a verdict
 
 
 @dataclass
