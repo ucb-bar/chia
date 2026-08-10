@@ -208,7 +208,7 @@ class RiscvDvGenNode:
 
     @ChiaFunction(resources={"dv": 1})
     def compile_generator(self, build_dir: str, test: str) -> str:
-        """Compile the generator testbench once into build_dir (riscv-dv -co), so later generate(sim_only=True) runs
+        """Compile the generator testbench once into build_dir (riscv-dv --co), so later generate(sim_only=True) runs
         skip the testbench recompile and just simulate against it. `test`
         is any entry in the active testlist. Returns build_dir, to pass to
         generate() as build_dir.
@@ -216,10 +216,10 @@ class RiscvDvGenNode:
 
         Args:
             build_dir: Directory to compile the generator testbench into
-                (``--output`` with ``-co``); created if absent. This same path
+                (``--output`` with ``--co``); created if absent. This same path
                 is later passed to :meth:`generate` as ``build_dir``.
             test: Any entry in the active testlist. ``run.py`` needs one to load
-                the list, but the ``-co`` build itself is test-independent.
+                the list, but the ``--co`` build itself is test-independent.
 
         Returns:
             The ``build_dir`` path, ready to hand to ``generate(sim_only=True)``.
@@ -228,7 +228,7 @@ class RiscvDvGenNode:
         self._install_custom_instrs()
         cmd = ["python3", os.path.join(self.riscv_dv_dir, "run.py"),
                "--test", test, "--simulator", self.simulator,
-               "--steps", "gen", "-co", "--output", build_dir] + self._gen_flags()
+               "--steps", "gen", "--co", "--output", build_dir] + self._gen_flags()
         self.logger.info(f"Compiling generator: {' '.join(cmd)} (cwd={self.riscv_dv_dir})")
         self._run(cmd)
         return build_dir
@@ -246,7 +246,7 @@ class RiscvDvGenNode:
         every ELF produced. Never raises: on failure it returns the
         (possibly empty) list found.
 
-        sim_only=True skips the testbench compile (riscv-dv -so) and reuses the build
+        sim_only=True skips the testbench compile (riscv-dv --so) and reuses the build
         from a prior compile_generator(), passed as build_dir. Multiple sim_only gens can share one build_dir concurrently without colliding.
 
         Args:
@@ -257,7 +257,7 @@ class RiscvDvGenNode:
             cleanup_task_dir: If True (default), remove the task dir after
                 collecting ELFs (unlinks any symlinks; the shared build is left
                 intact).
-            sim_only: If True, skip the testbench compile (``-so``) and reuse a
+            sim_only: If True, skip the testbench compile (``--so``) and reuse a
                 prebuilt generator from ``build_dir``. Requires ``build_dir``.
             build_dir: Path returned by :meth:`compile_generator`; symlinked
                 read-only into the task dir when ``sim_only=True``. Must be
@@ -295,7 +295,7 @@ class RiscvDvGenNode:
             "--output", task_dir,
         ] + self._gen_flags()
         if sim_only:
-            cmd += ["-so"]
+            cmd += ["--so"]
         sim_opts = spec.sim_opts()
         if sim_opts:
             cmd += ["--sim_opts", sim_opts]
