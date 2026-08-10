@@ -28,7 +28,6 @@ dependencies = [
     "pydantic==2.12.4",
     "fastapi==0.121.0",
     "pyyaml==6.0.3",
-    "pytest==9.0.3",
     "graphviz==0.21",
     "boto3>=1.28.0",
     "google-cloud-compute>=1.19.0",
@@ -45,6 +44,7 @@ Repository = "https://github.com/ucb-bar/chia"
 Issues = "https://github.com/ucb-bar/chia/issues"
 
 [project.optional-dependencies]
+test = ["pytest==9.0.3"]
 tensorboard = ["tensorboardX>=2.6", "tensorboard>=2.14"]
 wandb = ["wandb>=0.15"]
 metrics = ["tensorboardX>=2.6", "wandb>=0.15"]
@@ -59,8 +59,7 @@ docs = [
 ]
 
 [tool.pytest.ini_options]
-# importlib mode uses full package paths (test.trace.test_profiler_integration)
-# so Ray workers can import test modules shipped via working_dir.
+# Import tests under their full package path, not by bare filename.
 addopts = "--import-mode=importlib"
 
 [tool.setuptools.package-data]
