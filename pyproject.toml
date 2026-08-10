@@ -1,13 +1,26 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "chia"
+# The PyPI distribution is "chialoops" — "chia" is taken by an unrelated
+# project. The import package, and the console script, stay "chia".
+name = "chialoops"
 version = "0.1.0"
 description = "The Chia agentic AI flow for hardware"
 readme = "README.md"
 requires-python = ">=3.10"
+license = "BSD-3-Clause"
+license-files = ["LICENSE"]
+authors = [{ name = "UC Berkeley Architecture Research" }]
+keywords = ["hardware", "co-design", "chipyard", "agents", "ray"]
+# No "License ::" classifier: it is rejected alongside the SPDX license field.
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering",
+]
 dependencies = [
     "google-genai>=1.64.0",
     "ray[default]==2.54.0",
@@ -24,6 +37,12 @@ dependencies = [
 
 [project.scripts]
 chia = "chia.cli.main:main"
+
+[project.urls]
+Homepage = "https://github.com/ucb-bar/chia"
+Documentation = "https://docs.chialoops.ai"
+Repository = "https://github.com/ucb-bar/chia"
+Issues = "https://github.com/ucb-bar/chia/issues"
 
 [project.optional-dependencies]
 tensorboard = ["tensorboardX>=2.6", "tensorboard>=2.14"]
@@ -48,4 +67,8 @@ addopts = "--import-mode=importlib"
 "chia.trace" = ["*.html"]
 
 [tool.setuptools.packages.find]
+# include is load-bearing: pyproject config defaults to namespace discovery,
+# which needs no __init__.py, so without it the wheel also ships top-level
+# docs/, examples/ and test/ into the installing environment.
+include = ["chia*"]
 exclude = ["gem5align*", "memcpy*", "dockerfiles*"]
