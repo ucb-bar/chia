@@ -1,0 +1,239 @@
+# Publishes the chialoops package.
+#
+#   Run workflow (button)  ->  build + rehearse on TestPyPI
+#   push tag v1.2.3        ->  build + publish to PyPI + GitHub Release
+#
+# Uploads use PyPI Trusted Publishing (OIDC), so there is no API token stored
+# in this repo. Each index must have a publisher registered for owner
+# ucb-bar, repository chia, workflow release.yml, and the environment named
+# on the corresponding job below.
+#
+# Every path builds exactly once; the publish jobs upload that same artifact
+# rather than rebuilding, so what is tested is what ships.
+
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v[0-9]*"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash   # adds -o pipefail; the default shell has -e only
+
+# Serialises repeat runs of the same ref. A rehearsal from main and a tag
+# push are different refs and do run concurrently — that is fine, they touch
+# different indexes and carry separate artifacts.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # workflow_dispatch accepts a tag as its ref, and the UI dropdown offers
+      # tags. Unchecked, a rehearsal started from a tag satisfies the publish
+      # jobs' conditions below and ships a throwaway .dev build to real PyPI.
+      - name: Rehearsals must run from a branch
+        if: github.event_name == 'workflow_dispatch' && startsWith(github.ref, 'refs/tags/')
+        run: |
+          echo "::error::Pick a branch, not a tag. Dispatching from a tag would publish a rehearsal build to real PyPI."
+          exit 1
+
+      - name: Install packaging tools
+        run: python -m pip install --upgrade build twine packaging
+
+      # Guards against release-prep not having merged: the wheel would be
+      # named "chia", which belongs to an unrelated project on PyPI, and the
+      # upload would fail with an opaque 403.
+      - name: Distribution must be named chialoops
+        run: |
+          name=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['name'])")
+          if [ "$name" != "chialoops" ]; then
+            echo "::error::distribution is named '$name', expected 'chialoops' — has release-prep merged?"
+            exit 1
+          fi
+
+      # Compared as versions, not strings, so v1.0.0-rc1 still matches the
+      # normalised 1.0.0rc1 that pyproject.toml would carry.
+      - name: Tag must match the declared version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          python - <<'PY'
+          import os, sys, tomllib
+          from packaging.version import Version, InvalidVersion
+          pkg = tomllib.load(open("pyproject.toml", "rb"))["project"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          try:
+              if Version(pkg) != Version(tag):
+                  sys.exit(f"::error::tag v{tag} does not match pyproject.toml version {pkg}")
+          except InvalidVersion as exc:
+              sys.exit(f"::error::cannot compare tag {tag!r} with version {pkg!r}: {exc}")
+          print(f"tag v{tag} matches version {pkg}")
+          PY
+
+      # A version can only be uploaded once, on TestPyPI too. Suffixing the
+      # rehearsal keeps the button pressable and leaves the real number free.
+      # A timestamp rather than run_number, so re-running a run is not a
+      # duplicate upload. Rewriting must hit exactly one line — a silent miss
+      # would upload the real version number to TestPyPI and burn it there.
+      - name: Use a throwaway version for the rehearsal
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          python - <<'PY'
+          import pathlib, re, sys, time
+          suffix = f"dev{time.strftime('%Y%m%d%H%M%S', time.gmtime())}"
+          path = pathlib.Path("pyproject.toml")
+          text, hits = re.subn(
+              r'(?m)^version\s*=\s*"([^"]+)"',
+              lambda m: f'version = "{m.group(1)}.{suffix}"',
+              path.read_text(),
+          )
+          if hits != 1:
+              sys.exit(f"::error::expected one version line in pyproject.toml, rewrote {hits}")
+          path.write_text(text)
+          PY
+
+      - name: Record the version being built
+        id: version
+        run: |
+          v=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "Building version $v"
+
+      - name: Build
+        run: python -m build
+
+      # The guard for the bug that made this workflow necessary: without an
+      # include in packages.find, setuptools also packaged top-level docs/,
+      # examples/ and test/ — the last of which shadows a stdlib module.
+      - name: Wheel must contain the chia package and nothing else
+        run: |
+          python - <<'PY'
+          import glob, sys, zipfile
+          wheels = glob.glob("dist/*.whl")
+          if len(wheels) != 1:
+              sys.exit(f"::error::expected exactly one wheel in dist/, found {wheels}")
+          tops = {n.split("/")[0] for n in zipfile.ZipFile(wheels[0]).namelist()}
+          tops = {t for t in tops if not t.endswith(".dist-info")}
+          print("wheel top-level entries:", sorted(tops))
+          if tops != {"chia"}:
+              sys.exit(f"::error::wheel ships unexpected top-level entries: {sorted(tops)}")
+          PY
+
+      - name: Check the package metadata
+        run: twine check --strict dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Rehearsal. Safe to repeat; nothing here can affect real PyPI.
+  testpypi:
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment: testpypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+      # A .dev version is a pre-release, so pip skips it unless the exact
+      # version is named. Spell the whole check out rather than make anyone
+      # guess — including cd /tmp, because run from a checkout of this repo
+      # the import checks pass whether or not the wheel is correct.
+      - name: How to verify this rehearsal
+        run: |
+          v="${{ needs.build.outputs.version }}"
+          {
+            echo "### Rehearsal published: \`$v\`"
+            echo
+            echo '```'
+            echo "cd /tmp"
+            echo "python3 -m venv /tmp/v && source /tmp/v/bin/activate"
+            echo "pip install --index-url https://test.pypi.org/simple/ \\"
+            echo "            --extra-index-url https://pypi.org/simple/ \\"
+            echo "            chialoops==$v"
+            echo "python3 -c 'import chia; print(chia.__file__)'"
+            echo "python3 -c \"import importlib.util as u; assert all(u.find_spec(m) is None for m in ('docs','examples'))\""
+            echo "python3 -c \"import test; assert 'site-packages' not in test.__file__, test.__file__\""
+            echo "chia --help"
+            echo "deactivate"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # The irreversible step. The pypi environment should require a reviewer,
+  # and should restrict deployments to v* tags.
+  pypi:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      # Belt and braces: whatever else went wrong upstream, a rehearsal build
+      # must never land on PyPI.
+      - name: Refuse to publish a rehearsal build
+        run: |
+          if ls dist/ | grep -qE '\.dev[0-9]+'; then
+            echo "::error::refusing to publish a rehearsal (.dev) build to PyPI"
+            ls dist/
+            exit 1
+          fi
+
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  # Only after PyPI accepted the upload, so the Release page never advertises
+  # a version that failed to publish. If this job alone fails, use "Re-run
+  # failed jobs" — re-running all jobs would retry the upload and 400.
+  github-release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "CHIA ${GITHUB_REF_NAME#v}" \
+            --generate-notes \
+            --verify-tag \
+            dist/*
