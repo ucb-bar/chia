@@ -24,6 +24,17 @@ Then install the package in editable mode from your clone:
 
 This installs the ``chia`` package and it's dependencies. We plan on releasing a PyPI CHIA release in the future.
 
+.. note::
+   Users in the ``ucb-bar`` organization should also clone the internal node library ``ucb-bar/chia-internal-nodes``. 
+   Install ``ucb-bar/chia-internal-nodes`` in ``chia_env`` using ``pip install -e /path/to/chia-internal-nodes``.
+   We encourage you to organize your project with the following structure:
+
+   .. code-block:: bash
+
+    your_repo
+      └chia-internal-nodes
+      └chia
+
 Optional extras
 ---------------
 
