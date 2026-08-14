@@ -88,35 +88,14 @@ RUN pip install --no-cache-dir \
     && rm -rf /home/ray/.cache/pip
 
 # Clone riscv-dv; pygen lives at pygen/ and is driven via run.py --simulator=pyflow.
-# Pinned (was `master`) so the RV64 stack-alignment patch below applies against a
-# known tree.
-ARG RISCV_DV_REPO=https://github.com/chipsalliance/riscv-dv.git
-ARG RISCV_DV_SHA=b7a0b4b0b51346a3c64f159f81ea262d867c14a9
+# Tracks the tip of our fork's master, which carries the fixes the generated
+# programs depend on (RV64 stack alignment among them) on top of upstream, so
+# each rebuild picks up the latest. Unpinned: the image is not reproducible
+# across rebuilds by design — pin RISCV_DV_BRANCH to a SHA if you need that.
+ARG RISCV_DV_REPO=https://github.com/ucb-bar/riscv-dv.git
+ARG RISCV_DV_BRANCH=master
 ENV RISCV_DV_DIR=/home/ray/riscv-dv
-RUN git clone $RISCV_DV_REPO $RISCV_DV_DIR \
-    && cd $RISCV_DV_DIR \
-    && git checkout $RISCV_DV_SHA
-
-# RV64 misaligned-stack fix. riscv-dv hardcodes 4-byte stack adjustments where
-# RV64 needs XLEN/8: the M-mode trap handler's user-SP push/pop and the directed
-# pop-stack size check. On a misalign-trapping core (BOOM; Spike misaligned=false)
-# the handler's own 8-byte sd/ld to a 4-decremented pointer faults (cause 6); the
-# handler (no case for it) re-enters, its save pointer walks into its own .text
-# -> self-modifying code without fence.i -> BOOM (stale I$) vs Spike (coherent)
-# fetch differently -> spurious cosim divergence. The legitimate `mepc += 4`
-# skips elsewhere are deliberately NOT touched.
-#
-# TODO: this is a LOCAL patch over upstream chipsalliance/riscv-dv. To remove it
-# once fixed upstream: (1) delete this COPY+RUN and the patch file, (2) bump
-# RISCV_DV_SHA to the commit that merges the complete fix, (3) rebuild this image.
-# Track upstream (all OPEN as of the pin): PR #925 (push only — incomplete),
-# PR #1027, issue #1033. A `git apply` failure on a future rebuild means upstream
-# moved these lines — re-cut the patch or drop it if already merged.
-COPY dockerfiles/patches/riscv-dv-rv64-stack-align.patch /tmp/
-# This RUN executes as the non-root `ray` user, so it can't delete the
-# root-owned COPY in sticky /tmp — leave the (inert, 1.7KB) patch in place.
-RUN cd $RISCV_DV_DIR \
-    && git apply --verbose /tmp/riscv-dv-rv64-stack-align.patch
+RUN git clone --branch $RISCV_DV_BRANCH $RISCV_DV_REPO $RISCV_DV_DIR
 
 USER ray
 ENV HOME=/home/ray
