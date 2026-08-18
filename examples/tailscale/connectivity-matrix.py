@@ -13,8 +13,8 @@ CHIA's communication styles:
 
 Machines are identified by the custom Ray resources the example configs
 advertise: ``head`` (the head's `ray start`), ``head_worker`` (a worker
-colocated on the head machine — see cluster_headworker.yaml /
-cluster_ec2_fullymanaged.yaml), ``tailscale_worker``, ``ec2_worker``,
+colocated on the head machine — see cluster_ec2_fullymanaged.yaml),
+``tailscale_worker``, ``ec2_worker``,
 and ``ec2_docker`` (a second, dockerized logical worker sharing the EC2
 host). Only the tags present in the running cluster are swept, so this
 works on any of the example clusters. Two tags on one physical machine

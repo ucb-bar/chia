@@ -282,7 +282,8 @@ class TestRelaySpecAndAlloc(unittest.TestCase):
         self.assertIn("export RAY_grpc_enable_http_proxy=1", script)
         self.assertIn(f"grpc_proxy=http://127.0.0.1:{config.tailnet_config.connect_proxy_port}",
                       script)
-        self.assertIn(f"no_grpc_proxy={alloc.advertise_ip}", script)
+        self.assertIn(f"no_grpc_proxy={alloc.advertise_ip},127.0.0.1,localhost",
+                      script)
 
     def test_head_tool_bridges_present(self):
         config = build_config(_make_raw())
@@ -324,6 +325,25 @@ class TestScripts(unittest.TestCase):
         self.assertIn(f"--node-ip-address={alloc.advertise_ip}", start)
         self.assertIn(f"--min-worker-port={alloc.worker_port_min}", start)
         self.assertNotIn("CHIA_TOOL_RELAY_HOST", "\n".join(script))
+
+    def test_local_agent_ips_excluded_from_proxy(self):
+        """127.0.0.1/localhost always ride outside the CONNECT proxy:
+        grpc_proxy applies to every channel in the process, and Ray's
+        node-local agent dials (e.g. the metrics exporter -> dashboard
+        agent at 127.0.0.1:<port>) are never in the relay routes — they
+        must go direct or die with 502 No Route."""
+        config = build_config(_make_raw())
+        assignments = assign_nodes(config)
+        allocs = allocate_tailnet_workers(config, assignments)
+        a = assignments[0]
+        alloc = allocs[(a.ip, a.node_type.name, a.worker_index)]
+        for script in (build_head_script(config),
+                       build_worker_script(config, a, tailnet_alloc=alloc)):
+            line = next(l for l in script
+                        if l.startswith("export no_grpc_proxy="))
+            entries = line.split("=", 1)[1].split(",")
+            self.assertIn("127.0.0.1", entries)
+            self.assertIn("localhost", entries)
 
 
 def _headworker_raw(num_local=1):
@@ -415,7 +435,7 @@ class TestHeadColocated(unittest.TestCase):
         self.assertIn(f"--node-manager-port={alloc.node_manager_port}", start)
         # Both local advertise IPs are excluded from the CONNECT proxy.
         self.assertIn(f"export no_grpc_proxy={alloc.advertise_ip},"
-                      f"{tn.head_advertise_ip}", script)
+                      f"{tn.head_advertise_ip},127.0.0.1,localhost", script)
         self.assertIn(f"export CHIA_TOOL_ADVERTISE_HOST={alloc.advertise_ip}",
                       script)
 
@@ -424,7 +444,8 @@ class TestHeadColocated(unittest.TestCase):
         a = next(x for x in assignments if x.ip == "100.64.0.2")
         alloc = allocs[(a.ip, a.node_type.name, a.worker_index)]
         script = build_worker_script(config, a, tailnet_alloc=alloc)
-        self.assertIn(f"export no_grpc_proxy={alloc.advertise_ip}", script)
+        self.assertIn(f"export no_grpc_proxy={alloc.advertise_ip},"
+                      f"127.0.0.1,localhost", script)
 
     def test_bring_up_starts_one_relay_per_machine(self):
         """The head relay (host_ip=None) serves colocated workers; the

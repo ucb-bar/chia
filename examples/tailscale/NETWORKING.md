@@ -76,7 +76,7 @@ CHIA injects into every `ray start`:
 ```
 RAY_grpc_enable_http_proxy=1
 grpc_proxy=http://127.0.0.1:13129
-no_grpc_proxy=<own advertise IP>
+no_grpc_proxy=<own advertise IP(s)>,127.0.0.1,localhost
 ```
 
 So when Ray on machine A dials a peer B at `127.0.0.3:24000`:
@@ -101,7 +101,17 @@ makes those bypass the proxy and connect straight to the local wildcard
 bind. This also solves a bring-up ordering problem — the head's Ray
 starts *before* the head's relay exists, which is safe precisely because
 the head only self-dials until workers join (and by then its relay is
-up).
+up). Head-colocated workers get the head's advertise IP in their list
+too — it's a local bind on their machine.
+
+`127.0.0.1`/`localhost` are always in the list as well: grpc_proxy
+applies to *every* channel in the process, including Ray's node-local
+agent dials (each worker's metrics exporter dials the dashboard agent
+at `127.0.0.1:<port>`). Those destinations aren't in the relay routes —
+proxied, they'd fail with `502 No Route` and every worker would log
+"Failed to establish connection to the metrics exporter agent"
+(rpc_code 14). A literal-127.0.0.1 dial is node-local by definition, so
+direct is always correct.
 
 ## Path 2 — ChiaTool / MCP calls, cross-machine
 

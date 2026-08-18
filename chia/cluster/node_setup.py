@@ -400,11 +400,20 @@ def _grpc_proxy_exports(tn, no_proxy_ips: str) -> list[str]:
     dials go direct to the wildcard bind — which also lets the head's
     Ray start before its proxy is up (it does no cross-machine dials
     until workers join).
+
+    ``127.0.0.1``/``localhost`` are always excluded too: grpc_proxy
+    applies to EVERY gRPC channel in the process, including Ray's
+    node-local agent dials (e.g. each worker's metrics exporter dials
+    the dashboard agent at 127.0.0.1:<port>). Those destinations are
+    never in the relay's routes — proxied, they die with "502 No Route"
+    (surfacing as "Failed to establish connection to the metrics
+    exporter agent", rpc_code 14) — and a dial to literal 127.0.0.1 is
+    by definition node-local, so direct is always correct.
     """
     return [
         "export RAY_grpc_enable_http_proxy=1",
         f"export grpc_proxy=http://127.0.0.1:{tn.connect_proxy_port}",
-        f"export no_grpc_proxy={no_proxy_ips}",
+        f"export no_grpc_proxy={no_proxy_ips},127.0.0.1,localhost",
     ]
 
 
