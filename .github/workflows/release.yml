@@ -163,8 +163,11 @@ jobs:
 
       # A .dev version is a pre-release, so pip skips it unless the exact
       # version is named. Spell the whole check out rather than make anyone
-      # guess — including cd /tmp, because run from a checkout of this repo
-      # the import checks pass whether or not the wheel is correct.
+      # guess. The leak check reads site-packages off disk instead of trying
+      # to import: the stdlib precedes site-packages on sys.path, so a leaked
+      # top-level `test` is shadowed by the real one and an import-based check
+      # passes no matter what shipped. A throwaway cwd keeps a stray directory
+      # in a shared /tmp from answering the import checks either way.
       - name: How to verify this rehearsal
         run: |
           v="${{ needs.build.outputs.version }}"
@@ -172,16 +175,23 @@ jobs:
             echo "### Rehearsal published: \`$v\`"
             echo
             echo '```'
-            echo "cd /tmp"
-            echo "python3 -m venv /tmp/v && source /tmp/v/bin/activate"
+            echo 'd=$(mktemp -d) && cd "$d"'
+            echo 'python3 -m venv "$d/venv" && source "$d/venv/bin/activate"'
             echo "pip install --index-url https://test.pypi.org/simple/ \\"
             echo "            --extra-index-url https://pypi.org/simple/ \\"
             echo "            chialoops==$v"
-            echo "python3 -c 'import chia; print(chia.__file__)'"
-            echo "python3 -c \"import importlib.util as u; assert all(u.find_spec(m) is None for m in ('docs','examples'))\""
-            echo "python3 -c \"import test; assert 'site-packages' not in test.__file__, test.__file__\""
-            echo "chia --help"
-            echo "deactivate"
+            echo
+            echo '# installed, and resolving from the venv'
+            echo "python3 -c \"import chia, sysconfig; p = list(chia.__path__); assert p[0].startswith(sysconfig.get_paths()['purelib']), p; print(p)\""
+            echo
+            echo '# nothing leaked into site-packages'
+            echo "python3 -c \"import os, sys, sysconfig; sp = sysconfig.get_paths()['purelib']; bad = [d for d in ('test', 'docs', 'examples') if os.path.exists(os.path.join(sp, d))]; sys.exit('LEAKED: ' + ', '.join(bad) if bad else 0)\""
+            echo
+            echo '# pytest is not a runtime dependency'
+            echo "python3 -c \"import importlib.util as u; assert u.find_spec('pytest') is None\""
+            echo
+            echo 'chia --help'
+            echo 'deactivate && rm -rf "$d"'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
