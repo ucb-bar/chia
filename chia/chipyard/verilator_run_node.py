@@ -89,6 +89,21 @@ class VerilatorRunNode:
                  | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         self._binary_path = binary_path
 
+        # Shared libraries the artifact carries (libriscv.so above all, which is
+        # the golden model for a cospike build). Staged beside the binary rather
+        # than installed anywhere shared: two runs on one worker can then use
+        # different golden models, and nothing outlives the task dir. Empty for
+        # artifacts built the historical way, where the image provides them.
+        for lib_name, lib_content in artifact.runtime_libs:
+            with open(os.path.join(self._task_dir, os.path.basename(lib_name)), "wb") as f:
+                f.write(lib_content)
+        if artifact.runtime_libs:
+            self.logger.info(
+                f"Staged {len(artifact.runtime_libs)} runtime lib(s) in "
+                f"{self._task_dir}: {[n for n, _ in artifact.runtime_libs]}"
+                + (f" (golden model {artifact.golden_model_digest[:12]})"
+                   if artifact.golden_model_digest else ""))
+
         test_binary_path = os.path.join(self._task_dir, test_binary_name)
         with open(test_binary_path, "wb") as f:
             f.write(test_binary_content)
@@ -106,6 +121,22 @@ class VerilatorRunNode:
 
         self.logger.info(f"Setup complete. Task dir: {self._task_dir}, Simulator: {self._binary_path}, test binary: {test_binary_path}")
         return test_binary_path
+
+    def _env(self) -> dict:
+        """The simulator's environment, with the task dir first on the library path.
+
+        Only meaningful for an artifact that carries its own libraries; harmless
+        otherwise. Note this alone is not enough on a worker whose image happens
+        to have a chipyard tree at the path chipyard baked into the binary:
+        that is a DT_RPATH, which the loader consults *before* LD_LIBRARY_PATH.
+        ChiselBuildNode builds bundling artifacts with --enable-new-dtags so the
+        tag is DT_RUNPATH instead, which this overrides.
+        """
+        env = dict(os.environ)
+        existing = env.get("LD_LIBRARY_PATH", "")
+        env["LD_LIBRARY_PATH"] = (f"{self._task_dir}:{existing}" if existing
+                                  else self._task_dir)
+        return env
 
     def _cleanup_task_dir(self):
         """Remove the per-task directory to avoid disk bloat.
@@ -225,6 +256,7 @@ class VerilatorRunNode:
             stdout=logfile,
             stderr=subprocess.PIPE,
             stdin=subprocess.DEVNULL,
+            env=self._env(),
         )
 
         dasm_proc = subprocess.Popen(
