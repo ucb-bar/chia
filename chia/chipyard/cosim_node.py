@@ -63,7 +63,14 @@ class CosimNode:
         text = (dut.log or "") + "\n" + (dut.out or "")
         mismatch = _MISMATCH.search(text)
         matched = len(_SPIKE_COMMIT.findall(text))
-        completed = any(s in text for s in _COMPLETED)
+        # A clean exit IS completion, and it is silent. emulator.cc returns 0 only
+        # after the loop broke on dtm/jtag done or io_success with a zero exit
+        # code; every non-zero path prints a *** FAILED *** line first (dtm, jtag,
+        # or trace_count timeout). But the *** PASSED *** line is gated on
+        # `verbose`, and the scoring run is not verbose - so a passing test prints
+        # no marker at all. Matching on the markers alone therefore scored every
+        # silent pass as an early stop with no verdict and no saved evidence.
+        completed = dut.returncode == 0 or any(s in text for s in _COMPLETED)
         # Cospike prints-but-continues on tolerated reads (tval); a divergence
         # is a mismatch that actually aborted the run.
         # A simulator that died has no verdict to give: without this a crash looks
