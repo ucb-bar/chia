@@ -247,6 +247,9 @@ class ChiselBuildNode:
             lib_dir = os.path.join(self._riscv_path(), "lib")
             args["LRISCV"] = " ".join(os.path.join(lib_dir, name)
                                       for name in STATIC_ARCHIVES)
+            existing_ld = args.get("EXTRA_SIM_LDFLAGS", "")
+            args["EXTRA_SIM_LDFLAGS"] = (
+                existing_ld + " -Wl,--allow-multiple-definition").strip()
             if not self.clean_sim and not self.clean:
                 self.logger.warning(
                     "static_golden_model without clean_sim/clean: make has no "
