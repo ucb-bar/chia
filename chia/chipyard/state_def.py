@@ -60,6 +60,19 @@ class BuildArtifact:
         generated_src_files: ``(filename, contents)`` pairs of generated
             ``.v``/``.sv`` and ``.top.mems.conf`` collateral: populated only
             when the build was run with ``collect_generated_src=True``.
+        runtime_libs: ``(filename, contents)`` pairs of the shared libraries the
+            simulator needs at run time but that its image may not carry -
+            libriscv.so above all, which *is* the golden model when the binary
+            was built with cospike. Populated only when the build bundled them
+            (``ChiselBuildNode(golden_model=...)`` without
+            ``static_golden_model``); empty otherwise, which is the historical
+            behaviour of relying on the run image to provide them.
+            :class:`~chia.chipyard.verilator_run_node.VerilatorRunNode` stages
+            these beside the binary, so an artifact carrying them runs on a
+            worker that has no spike installed at all.
+        golden_model_digest: sha256 of the libriscv the simulator was built
+            against, so a result can name the golden model that produced it.
+            ``""`` when unknown (no ``golden_model`` was passed to the build).
     """
     name: str # default "chipyard"
     simulator_binary_content: bytes  # raw ELF bytes of the compiled simulator binary
@@ -72,6 +85,8 @@ class BuildArtifact:
     stderr: str
     returncode: int
     generated_src_files: list[tuple[str, str]] = field(default_factory=list)  # [(filename, contents)]
+    runtime_libs: list[tuple[str, bytes]] = field(default_factory=list)      # [(filename, contents)]: shared libs staged beside the binary
+    golden_model_digest: str = ""                                            # sha256 of the libriscv linked in; "" when unknown
 
 
 @dataclass
@@ -247,20 +262,66 @@ class SpikeResult:
 
 @dataclass
 class SpikeBuildArtifact:
-    """Result of (re)building the Spike simulator binary from source.
+    """Result of a :meth:`SpikeBuildNode.build`: Spike as a shipped artifact.
+
+    Spike is the golden model a cospike simulator checks against, and chipyard
+    links it dynamically (``-lriscv``), so it is a *build input* to
+    :class:`ChiselBuildNode` and a *runtime input* to the worker executing the
+    simulator. Carrying it by value makes both explicit: the same bytes can be
+    staged into a build container and shipped inside the resulting
+    :class:`BuildArtifact`, instead of being installed out of band into a shared
+    path on every run worker.
 
     Attributes:
-        success: True iff ``make`` + install succeeded and the binary exists.
-        spike_bin: Path to the (re)built spike binary (in-container).
+        success: True iff ``make`` produced the library and it is newer than the
+            sources it was built from.
+        lib_name: Filename of the shared library, i.e. ``"libriscv.so"``.
+        lib_content: Raw bytes of the shared library, stripped unless the build
+            was run with ``strip=False``. Empty (``b""``) on failure.
+        static_archives: ``(filename, contents)`` pairs of the archives a static
+            link of the golden model needs - ``libriscv.a`` plus the libraries
+            it does not contain: softfloat above all (libriscv.a carries ~900
+            undefined softfloat references; the *shared* library only looks
+            self-contained because it absorbed them at its own link time), and
+            disasm/fdt. For
+            ``ChiselBuildNode(static_golden_model=True)`` from a container other
+            than the one that built spike. Empty unless the build was run with
+            ``collect_static=True``: these run to ~300MB, and a build that links
+            in the container it built in reads them off disk.
+        tools: ``(filename, contents)`` pairs of spike executables, notably
+            ``spike-dasm``: the run worker disassembles the DUT trace with it,
+            so a custom instruction stays un-disassembled unless the matching
+            one travels with the model. Empty unless ``collect_tools=True``.
+        headers_tar: gzipped tar of ``$RISCV/include/riscv``, needed only to
+            stage this model into a *different* container than the one that
+            built it (cospike compiles against these headers). Empty unless
+            ``collect_headers=True``.
+        source_sha: ``git rev-parse HEAD`` of the riscv-isa-sim checkout, or
+            ``""`` when it is not a git tree.
+        source_dirty: True iff that checkout has uncommitted changes - the
+            normal case while a loop is editing spike, and the reason
+            ``source_sha`` alone does not identify a model.
+        digest: sha256 of ``lib_content``. This, not the SHA, is the golden
+            model's identity: it is what a :class:`BuildArtifact` records and
+            what makes two runs comparable.
+        spike_bin: Path to the spike build directory's library, in-container.
         stdout: Captured stdout of the build command.
         stderr: Captured stderr of the build command.
-        returncode: Exit code of the build command.
+        returncode: Exit code of the build command; ``-1`` on timeout.
     """
-    success: bool          # make+install succeeded and the binary exists
-    spike_bin: str         # path to the (re)built spike binary (in-container)
+    success: bool          # make produced the library and it is newer than its sources
+    lib_name: str          # "libriscv.so"
+    lib_content: bytes     # raw bytes of the shared library (stripped by default)
+    digest: str            # sha256(lib_content): the golden model's identity
+    spike_bin: str         # path to the built library (in-container)
     stdout: str
     stderr: str
     returncode: int
+    static_archives: list[tuple[str, bytes]] = field(default_factory=list)  # [(name, contents)]; empty unless collect_static
+    tools: list[tuple[str, bytes]] = field(default_factory=list)  # [(name, contents)]: spike-dasm etc
+    headers_tar: bytes = b""                                # gz tar of $RISCV/include/riscv; "" unless collect_headers
+    source_sha: str = ""                                    # riscv-isa-sim HEAD; "" when not a git tree
+    source_dirty: bool = False                              # that checkout has uncommitted changes
 
 
 class TortureMode(str, Enum):
