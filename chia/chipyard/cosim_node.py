@@ -63,7 +63,9 @@ class CosimNode:
         text = (dut.log or "") + "\n" + (dut.out or "")
         mismatch = _MISMATCH.search(text)
         matched = len(_SPIKE_COMMIT.findall(text))
-        completed = any(s in text for s in _COMPLETED)
+        # A pass prints nothing (emulator.cc gates *** PASSED *** on verbose),
+        # so a clean exit is the only completion signal; failures always print.
+        completed = dut.returncode == 0 or any(s in text for s in _COMPLETED)
         # Cospike prints-but-continues on tolerated reads (tval); a divergence
         # is a mismatch that actually aborted the run.
         # A simulator that died has no verdict to give: without this a crash looks
