@@ -1,21 +1,21 @@
 gem5-BOOM Microarchitecture Alignment
 ============================================
 
-A CHIA case study that uses an LLM-in-the-loop to tune a `gem5
-<https://www.gem5.org/>`_ performance model until it matches a target `BOOM
+A CHIA case study that uses an LLM-in-the-loop to generate a `gem5
+<https://www.gem5.org/>`_ processor core model until it matches a target `BOOM
 <https://docs.boom-core.org/>`_ core. The full flow lives in
 ``chia/examples/gem5_align``.
 
 Overview
 --------
 
-Architects routinely keep a fast, high-level microarchitectural simulator (gem5) and a cycle-exact
-RTL implementation (a BOOM core in Chipyard) of the *same* microarchitecture.
+Architects routinely keep a fast, high-level microarchitectural simulator (e.g. gem5) and a cycle-exact
+RTL implementation (e.g. a BOOM core in Chipyard) of the *same* microarchitecture.
 The two drift apart: the gem5 model mispredicts cycle counts because its
 configuration — and sometimes its C++ source — no longer reflects the RTL.
 **Alignment** is the work of closing that gap, and it's a huge lift, even for large engineering teams. It is nearly impossible for small teams and academics, and usually the simulators do not stay aligned, or are never aligned in the first place.
 
-``gem5_align`` automates it as a search loop. Each iteration:
+Our ``gem5_align`` chia workflow automates it as a search loop. Each iteration:
 
 #. restores a *parent* gem5 source + config state sampled from the best results
    so far,
@@ -29,7 +29,7 @@ configuration — and sometimes its C++ source — no longer reflects the RTL.
 Results are written to a SQLite database (``alignment.db``); the next iteration
 samples its parent from the top entries, so the search keeps building on its
 strongest candidates. ``N`` iterations run concurrently — one per physical gem5
-node — via a Ray placement group.
+node.
 
 .. note:: **Result**
 
