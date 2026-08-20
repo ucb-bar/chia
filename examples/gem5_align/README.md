@@ -1,7 +1,7 @@
 # gem5_align — gem5↔BOOM microarchitecture alignment loop (CHIA example)
 
-A CHIA loop that iteratively tunes a gem5 model to match a target BOOM
-configuration. Each iteration restores a parent gem5 source+config state, asks
+A CHIA loop that uses an LLM-in-the-loop to generate a gem5 processor core model with performance aligned to a target RTL implementation of a BOOM core. 
+Each iteration restores a parent gem5 source+config state, asks
 an LLM to edit the gem5 config and `src/` to better match BOOM, rebuilds
 gem5, runs a microbenchmark suite (credit Professor Tony Nowatzki, https://github.com/darchr/microbench.git/), and compares gem5 cycle counts against cached
 **verilator golden** cycle counts to get a per-benchmark `%diff`. Results are
