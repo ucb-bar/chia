@@ -12,7 +12,7 @@ If you believe you have found a security vulnerability in Chia, please report it
 
 Please report security vulnerabilities using GitHub's private vulnerability reporting feature:
 
-1. Go to the [Security tab](project_repo/security) of the repository
+1. Go to the [Security tab](https://github.com/ucb-bar/chia/security/) of the repository
 2. Click "Report a vulnerability"
 3. Fill out the vulnerability report form
 

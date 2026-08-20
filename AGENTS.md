@@ -155,7 +155,6 @@ AI agents SHOULD review these files before contributing:
 - [README.md](README.md) - Project overview and setup
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contribution guidelines
 - [SECURITY.md](SECURITY.md) - Security policies
-- [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) - Community standards
 
 ## Feedback and Improvements
 
