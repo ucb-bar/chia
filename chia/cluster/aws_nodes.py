@@ -38,14 +38,13 @@ DEFAULT_AWS_SETUP_COMMANDS = [
     "source $HOME/miniconda3/etc/profile.d/conda.sh",
     "conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main",
     "conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r",
-    # Clone repo (before conda env so system git + SSH agent are used).
-    # mkdir -p ~/.ssh first: OS Login logins serve keys from the OS Login
-    # profile via AuthorizedKeysCommand and never create ~/.ssh (unlike the
-    # guest agent's metadata-key path, which writes ~/.ssh/authorized_keys),
-    # so the known_hosts append would otherwise fail on a fresh box.
-    "mkdir -p ~/.ssh && chmod 700 ~/.ssh",
-    "ssh-keyscan -t ed25519,rsa github.com >> ~/.ssh/known_hosts 2>/dev/null",
-    "git clone git@github.com:ucb-bar/chia.git",
+    # Clone over HTTPS: the repo is public, and SSH needs an agent forwarded to
+    # the instance. A cron-driven `chia up --add` has none, so the clone failed
+    # with "Permission denied (publickey)" - and since the docker install is a
+    # later command in this same script, docker never got installed either. The
+    # instance then stayed up serving SSH while every subsequent tick reported
+    # the misleading "'docker' not found in login-shell PATH", forever.
+    "git clone https://github.com/ucb-bar/chia.git",
     # Create conda env and install chia
     "conda create -y -n chia_env python=3.10.19",
     "conda activate chia_env",
