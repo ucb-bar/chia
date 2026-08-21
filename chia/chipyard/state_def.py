@@ -60,19 +60,11 @@ class BuildArtifact:
         generated_src_files: ``(filename, contents)`` pairs of generated
             ``.v``/``.sv`` and ``.top.mems.conf`` collateral: populated only
             when the build was run with ``collect_generated_src=True``.
-        runtime_libs: ``(filename, contents)`` pairs of the shared libraries the
-            simulator needs at run time but that its image may not carry -
-            libriscv.so above all, which *is* the golden model when the binary
-            was built with cospike. Populated only when the build bundled them
-            (``ChiselBuildNode(golden_model=...)`` without
-            ``static_golden_model``); empty otherwise, which is the historical
-            behaviour of relying on the run image to provide them.
-            :class:`~chia.chipyard.verilator_run_node.VerilatorRunNode` stages
-            these beside the binary, so an artifact carrying them runs on a
-            worker that has no spike installed at all.
+        runtime_libs: ``(filename, contents)`` shared libraries staged beside
+            the binary at run time - libriscv.so above all. Populated by a
+            dynamic ``golden_model`` build; empty otherwise.
         golden_model_digest: sha256 of the libriscv the simulator was built
-            against, so a result can name the golden model that produced it.
-            ``""`` when unknown (no ``golden_model`` was passed to the build).
+            against; ``""`` when unknown.
     """
     name: str # default "chipyard"
     simulator_binary_content: bytes  # raw ELF bytes of the compiled simulator binary
@@ -85,6 +77,13 @@ class BuildArtifact:
     stderr: str
     returncode: int
     generated_src_files: list[tuple[str, str]] = field(default_factory=list)  # [(filename, contents)]
+    # Kept inside the simulator's artifact on purpose: an artifact is one
+    # deployable unit, so a binary can never travel without the libraries it
+    # was linked against or be re-paired with a different golden model. A
+    # (sim, spike) bundle type would keep that pairing only by convention -
+    # any caller could assemble mismatched halves - and runtime_libs is not
+    # spike state anyway: it is the binary's own dependency closure per ldd
+    # (libdramsim and libatomic ride along with libriscv).
     runtime_libs: list[tuple[str, bytes]] = field(default_factory=list)      # [(filename, contents)]: shared libs staged beside the binary
     golden_model_digest: str = ""                                            # sha256 of the libriscv linked in; "" when unknown
 
@@ -262,15 +261,9 @@ class SpikeResult:
 
 @dataclass
 class SpikeBuildArtifact:
-    """Result of a :meth:`SpikeBuildNode.build`: Spike as a shipped artifact.
-
-    Spike is the golden model a cospike simulator checks against, and chipyard
-    links it dynamically (``-lriscv``), so it is a *build input* to
-    :class:`ChiselBuildNode` and a *runtime input* to the worker executing the
-    simulator. Carrying it by value makes both explicit: the same bytes can be
-    staged into a build container and shipped inside the resulting
-    :class:`BuildArtifact`, instead of being installed out of band into a shared
-    path on every run worker.
+    """Result of a :meth:`SpikeBuildNode.build`: Spike as a shipped artifact,
+    a build input to :class:`ChiselBuildNode` and a runtime input to the
+    worker that runs the simulator.
 
     Attributes:
         success: True iff ``make`` produced the library and it is newer than the

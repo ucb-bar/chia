@@ -13,10 +13,8 @@ from chia.base.ChiaFunction import ChiaFunction
 # (the .v file has WF_SCOPE_1 ... WF_SCOPE_8 ifdef branches).
 _MAX_WF_SCOPES = 8
 
-# Libraries every image is expected to provide, so bundling them would be waste.
-# Everything else ldd reports gets carried with the binary - libriscv.so above
-# all, plus libdramsim and friends. Mirrors the filter the FireSim driver bundle
-# uses (chia/firesim/build_node.py).
+# Libraries every image provides; everything else ldd reports is bundled.
+# Mirrors the FireSim driver bundle filter (chia/firesim/build_node.py).
 _SYSTEM_LIBS = re.compile(
     r"(libc\.so|libstdc\+\+|libm\.so|libpthread|libdl\.so|librt\.so|libgcc_s"
     r"|libz\.so|libzstd|libelf|ld-linux)")
@@ -102,28 +100,16 @@ class ChiselBuildNode:
                 also clears the Chisel-generator cache (``chipyard.jar``) and
                 ``gen_dir``, guaranteeing the build reflects the current Scala
                 sources. Slower but correct.
-            golden_model: A :class:`SpikeBuildArtifact` to build against, from
-                :class:`~chia.chipyard.spike_build_node.SpikeBuildNode`. Staged
-                into ``$RISCV`` before ``make`` when it carries content this
-                container does not already have, recorded in the artifact's
-                ``golden_model_digest``, and (unless linked statically) bundled
-                into ``runtime_libs`` so the simulator carries its own spike.
-                ``None`` keeps the historical behaviour: link whatever the image
-                installed and let the run worker provide the same.
-            static_golden_model: Link libriscv *into* the simulator
-                (``LRISCV=$(RISCV)/lib/libriscv.a``) instead of against the
-                shared library, giving one hermetic binary with nothing to stage
-                at run time. Costs the decoupling: a new golden model then needs
-                a relink, and make will not do one on its own because
-                ``-lriscv`` is an LDFLAG rather than a prerequisite - so pass
-                ``clean_sim=True`` with this.
-            bundle_runtime_libs: Carry the simulator's non-system shared
-                libraries in ``BuildArtifact.runtime_libs`` so
-                :class:`VerilatorRunNode` can stage them beside the binary and
-                the run image needs no spike of its own. Defaults to True when
-                ``golden_model`` is set and the link is dynamic, False
-                otherwise - so an existing build's artifact does not silently
-                grow by the size of libriscv.
+            golden_model: A :class:`SpikeBuildArtifact` to link against; staged
+                into ``$RISCV`` before make, recorded as ``golden_model_digest``
+                and, when the link is dynamic, bundled into ``runtime_libs``.
+                ``None`` links whatever the image installed.
+            static_golden_model: Compile libriscv into the simulator for one
+                hermetic binary. Pass ``clean_sim=True`` with it, or make will
+                not relink for a new library.
+            bundle_runtime_libs: Carry non-system shared libraries in
+                ``BuildArtifact.runtime_libs`` for the run node to stage.
+                Defaults to True only for a dynamic ``golden_model`` build.
             wf_scopes: chia_artifact-specific *spatial* waveform filter: a list
                 of module-hierarchy scope paths (e.g.
                 ``"TestHarness.chiptop0.system..."``) restricting which modules
@@ -199,18 +185,11 @@ class ChiselBuildNode:
             self.chipyard_path, ".conda-env", "riscv-tools")
 
     def _stage_golden_model(self) -> None:
-        """Make sure ``$RISCV/lib`` holds the model we were handed.
-
-        A no-op in the usual case, where SpikeBuildNode already installed these
-        exact bytes in this container. It matters when the model was built
-        somewhere else: without it the build silently links whatever libriscv
-        the image shipped, and the artifact's digest would then name a model the
-        binary was never built against.
-        """
+        """Ensure ``$RISCV/lib`` holds the given model, so the link cannot
+        silently use whatever libriscv the image shipped."""
         lib_dir = os.path.join(self._riscv_path(), "lib")
         installed = os.path.join(lib_dir, self.golden_model.lib_name)
-        # A static link needs the archives as well, so having a matching shared
-        # library is not on its own evidence that this container is ready.
+        # A static link also needs the archives, not just the shared library.
         missing = [name for name in STATIC_ARCHIVES
                    if not os.path.exists(os.path.join(lib_dir, name))]
         archive_ok = not self.static_golden_model or not missing
@@ -231,19 +210,13 @@ class ChiselBuildNode:
         stage_golden_model(self.golden_model, self._riscv_path(), self.logger)
 
     def _effective_make_args(self) -> dict:
-        """``extra_make_args`` plus whatever the golden-model options imply.
-
-        Both additions go through variables chipyard already exposes, so neither
-        needs a patched checkout: ``LRISCV`` is the link flag in
-        ``sims/common-sim-flags.mk`` and ``EXTRA_SIM_LDFLAGS`` is appended to
-        ``SIM_LDFLAGS`` there.
-        """
+        """``extra_make_args`` plus what the golden-model options imply, all
+        through make variables chipyard already exposes."""
         args = dict(self.extra_make_args)
         if self.static_golden_model:
-            # Name the archives outright: -lriscv resolves to the .so whenever
-            # both exist, so -Bstatic games are not enough. All of them, in
-            # dependency order - libriscv.a on its own leaves ~900 undefined
-            # softfloat symbols, because only the *shared* library absorbed them.
+            # Name the archives outright and in dependency order: -lriscv
+            # resolves to the .so, and libriscv.a alone leaves ~900 undefined
+            # softfloat symbols.
             lib_dir = os.path.join(self._riscv_path(), "lib")
             args["LRISCV"] = " ".join(os.path.join(lib_dir, name)
                                       for name in STATIC_ARCHIVES)
@@ -256,26 +229,17 @@ class ChiselBuildNode:
                     "prerequisite on libriscv, so it will not relink and the "
                     "simulator may keep an older golden model compiled in")
         if self.bundle_runtime_libs:
-            # chipyard bakes -Wl,-rpath,$(RISCV)/lib into the binary, and as a
-            # DT_RPATH that beats LD_LIBRARY_PATH - so on a run worker that
-            # happens to have a chipyard tree at that path, the staged library
-            # would be silently ignored in favour of the image's. new-dtags
-            # emits DT_RUNPATH instead, which LD_LIBRARY_PATH overrides, so the
-            # library sitting beside the binary is the one that gets loaded.
+            # new-dtags turns chipyard's baked-in rpath into DT_RUNPATH, which
+            # LD_LIBRARY_PATH overrides - so the staged library wins over the
+            # image's.
             existing = args.get("EXTRA_SIM_LDFLAGS", "")
             args["EXTRA_SIM_LDFLAGS"] = (
                 f"{existing} -Wl,--enable-new-dtags".strip())
         return args
 
     def _collect_runtime_libs(self, binary_path: str) -> list[tuple[str, bytes]]:
-        """The simulator's non-system shared libraries, by value.
-
-        ldd rather than a fixed list: which libraries a config pulls in varies,
-        and the one that must not be missed - libriscv, the golden model itself -
-        is exactly the one whose absence produces an unresolved-symbol exit
-        rather than a wrong answer. Libraries every image already has are
-        skipped.
-        """
+        """The simulator's non-system shared libraries, by value (ldd, minus
+        the libraries every image has)."""
         try:
             result = subprocess.run(["ldd", binary_path], capture_output=True,
                                     text=True, timeout=60)
@@ -289,11 +253,9 @@ class ChiselBuildNode:
         for name, path in needed:
             if _SYSTEM_LIBS.search(name):
                 continue
-            # The model we were handed wins over whatever ldd resolved. They are
-            # the same file when staging worked; when they are not, the artifact
-            # must carry the model its digest names, and when ldd could not
-            # resolve it at all (the rpath target does not exist in this
-            # container) we still have the bytes and must not drop them.
+            # Carry the given model's own bytes, even when ldd resolved a
+            # different file or none: the artifact must ship what its digest
+            # names.
             if (self.golden_model is not None
                     and name == self.golden_model.lib_name):
                 libs.append((name, self.golden_model.lib_content))
@@ -324,12 +286,8 @@ class ChiselBuildNode:
 
     @staticmethod
     def _parse_ldd(output: str) -> list[tuple[str, str | None]]:
-        """``(soname, resolved path or None)`` for each dependency ldd reports.
-
-        Keeps the unresolved ones: ``libriscv.so => not found`` is the normal
-        reading in any container that does not have the rpath target, and those
-        entries are precisely the ones a caller needs to know about.
-        """
+        """``(soname, resolved path or None)`` per ldd line; unresolved entries
+        are kept, they are the ones that matter."""
         needed: list[tuple[str, str | None]] = []
         for line in output.splitlines():
             if "=>" not in line:

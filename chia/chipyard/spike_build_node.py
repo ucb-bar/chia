@@ -1,29 +1,16 @@
 """Builds Spike's libriscv into a shippable artifact.
 
-Spike is the golden model a cospike simulator checks every committed
-instruction against, and chipyard links it *dynamically* (``-lriscv`` in
-``sims/common-sim-flags.mk``). So a change to spike is not a change to some
-worker's environment - it is a new model that has to reach two places: the
-container that links the simulator, and every worker that runs it.
+Spike is the golden model a cospike simulator checks each instruction against.
+This node builds the tree as it finds it and returns the library by value, the
+same contract :class:`~chia.chipyard.chisel_build_node.ChiselBuildNode` has
+for Chisel. The output feeds ``ChiselBuildNode(golden_model=...)``, which
+links against it and bundles it into the simulator's artifact, so run workers
+need no spike installed.
 
-This node makes that explicit by treating spike the way
-:class:`~chia.chipyard.chisel_build_node.ChiselBuildNode` treats Chisel: it
-builds the tree *as it finds it* and hands back the result by value. It does
-not edit sources. Whoever owns the spike change - a patch, a loop, an agent
-with a shell - owns the tree, exactly as they own the Chisel one.
-
-The output feeds :class:`ChiselBuildNode` (``golden_model=``), which stages it
-before ``make`` and, by default, bundles it into the simulator's
-:class:`~chia.chipyard.state_def.BuildArtifact` so run workers need no spike
-installed at all.
-
-Dynamic is the default because it decouples the two models: a new golden model
-needs no relink, so spike and the RTL can iterate on independent clocks, and one
-simulator binary can be checked against several spikes. Link it statically
-(``ChiselBuildNode(static_golden_model=True)``) when a single hermetic binary
-matters more than that - note make will not relink for a new library on its own,
-since ``-lriscv`` is an LDFLAG rather than a prerequisite of any rule, so a
-static build must also pass ``clean_sim=True``.
+Dynamic linking is the default; it lets spike and the RTL iterate
+independently. For a hermetic binary use
+``ChiselBuildNode(static_golden_model=True, clean_sim=True)`` - clean_sim
+because make does not relink for a new library on its own.
 """
 import hashlib
 import io
@@ -41,11 +28,8 @@ from chia.chipyard.state_def import SpikeBuildArtifact
 SPIKE_REL = "toolchains/riscv-tools/riscv-isa-sim"
 # Sources whose mtime the library must beat; spike is C++ plus generated headers.
 _SOURCE_EXT = (".cc", ".c", ".h", ".hh", ".hpp")
-# What a *static* golden model has to put on the link line, in dependency order.
-# libriscv.a alone does not link: it carries ~900 undefined softfloat references
-# plus a handful into disasm and fdt. The shared library hides this because it
-# absorbed those archives when it was linked, which is why swapping -lriscv for
-# libriscv.a and nothing else fails with hundreds of undefined symbols.
+# Everything a static link needs, in dependency order: libriscv.a alone leaves
+# ~900 undefined softfloat/disasm/fdt symbols.
 STATIC_ARCHIVES = ("libriscv.a", "libsoftfloat.a", "libdisasm.a", "libfdt.a")
 
 
@@ -73,51 +57,26 @@ class SpikeBuildNode:
         """Configure one libriscv build.
 
         Args:
-            chipyard_path: Absolute path to the Chipyard checkout holding the
-                spike sources (``/home/ray/chipyard`` in the CHIA chipyard
-                container).
-            riscv_path: The toolchain prefix chipyard links against, i.e.
-                ``$RISCV``. Defaults to the ``RISCV`` environment variable and
-                then to ``<chipyard_path>/.conda-env/riscv-tools``. This is
-                where ``install`` puts the library and where ``collect_headers``
-                reads from.
-            spike_rel: Location of the riscv-isa-sim checkout relative to
-                ``chipyard_path``.
+            chipyard_path: Chipyard checkout holding the spike sources.
+            riscv_path: Toolchain prefix ($RISCV). Defaults to the ``RISCV``
+                env var, then ``<chipyard_path>/.conda-env/riscv-tools``.
+            spike_rel: riscv-isa-sim path relative to ``chipyard_path``.
             make_jobs: ``make -j`` parallelism.
-            configure_args: Extra arguments for spike's ``./configure``, e.g.
-                ``["--with-isa=rv64gcv"]`` to change the default ISA or
-                ``["CXXFLAGS=-O0 -g"]`` for a debuggable model. When given,
-                ``./configure --prefix=$RISCV <args>`` is re-run before make,
-                so the whole library is rebuilt under the new configuration.
-                Default None keeps the build dir's existing configuration
-                (chipyard's build-setup ran configure once); configure is then
-                only run if the build dir is missing.
-            strip: Run ``strip --strip-unneeded`` on a copy before reading the
-                bytes. Worth leaving on: an unstripped libriscv.so is ~177MB of
-                which ~8MB is code, and the artifact is shipped by value.
-                The installed and linked-against library is never the stripped
-                copy, so this costs no debuggability at link time.
-            build_static: Also build (and install, when ``install``) the
-                archives a static link needs - :data:`STATIC_ARCHIVES`, not just
-                libriscv.a - for ``ChiselBuildNode(static_golden_model=True)``.
-            collect_static: Carry those archives' bytes in the artifact too.
-                Off by default and rarely wanted: they run to ~300MB, and they
-                are only needed to link a static simulator in a *different*
-                container from the one that built spike. Building and linking in
-                the same container - the usual case - needs ``build_static``
-                alone.
-            collect_tools: Also read ``spike`` and ``spike-dasm``. The run
-                worker disassembles DUT traces with spike-dasm, so a model that
-                adds instructions wants its own copy travelling with it.
-            collect_headers: Also read ``$RISCV/include/riscv`` as a gzipped
-                tar. Only needed when the model will be staged into a container
-                other than the one that built it - cospike compiles against
-                these headers.
-            install: Copy the library into ``$RISCV/lib`` so a
-                :class:`ChiselBuildNode` running in this same container links
-                against it. This is the step whose absence silently produces a
-                simulator built against the *old* model.
-            timeout_seconds: Timeout for the ``make`` invocation.
+            configure_args: Extra ``./configure`` arguments, e.g.
+                ``["--with-isa=rv64gcv"]`` or ``["CXXFLAGS=-O0 -g"]``. When
+                given, configure is re-run and the library fully rebuilt.
+                Default None keeps the existing build configuration.
+            strip: Strip a copy before shipping (~177MB -> ~8MB).
+            build_static: Also build :data:`STATIC_ARCHIVES` for
+                ``ChiselBuildNode(static_golden_model=True)``.
+            collect_static: Carry the archives (~300MB) in the artifact, for
+                linking in a different container.
+            collect_tools: Also carry ``spike`` and ``spike-dasm``.
+            collect_headers: Also carry ``$RISCV/include/riscv`` as a tar, for
+                compiling cospike in a different container.
+            install: Copy the library into ``$RISCV/lib``, where chipyard's
+                link step looks.
+            timeout_seconds: Timeout per subprocess.
         """
         self.chipyard_path = chipyard_path
         self.spike_dir = os.path.join(chipyard_path, spike_rel)
@@ -139,13 +98,7 @@ class SpikeBuildNode:
     # -- helpers ------------------------------------------------------------
 
     def _newest_source_mtime(self) -> float:
-        """mtime of the most recently touched spike source.
-
-        The library is compared against this rather than trusted: make being
-        happy is not evidence that the library on disk contains the edit, and a
-        cospike run against a stale golden model reports divergences that are
-        artefacts of the mismatch rather than of the design.
-        """
+        """mtime of the newest spike source; the built library must beat it."""
         newest = 0.0
         for root, dirs, files in os.walk(self.spike_dir):
             dirs[:] = [d for d in dirs if d not in (".git", "build")]
@@ -158,11 +111,8 @@ class SpikeBuildNode:
         return newest
 
     def _read_maybe_stripped(self, path: str) -> bytes:
-        """The file's bytes, stripped of debug symbols unless disabled.
-
-        Strips a *copy*: the original stays linkable and debuggable, and the
-        artifact carries only what a run worker needs.
-        """
+        """The file's bytes, stripped of debug symbols (a copy; the original
+        stays debuggable) unless ``strip=False``."""
         if not self.strip:
             with open(path, "rb") as handle:
                 return handle.read()
@@ -179,11 +129,7 @@ class SpikeBuildNode:
                 return handle.read()
 
     def _source_provenance(self) -> tuple[str, bool]:
-        """(HEAD, dirty) of the spike checkout; ("", False) when not a git tree.
-
-        Dirty is the normal state while a loop edits spike, which is why the
-        artifact's identity is the library's digest and not this SHA.
-        """
+        """(HEAD, dirty) of the spike checkout; ("", False) outside git."""
         def _git(*args: str) -> subprocess.CompletedProcess:
             return subprocess.run(["git", *args], cwd=self.spike_dir,
                                   capture_output=True, text=True)
@@ -217,21 +163,10 @@ class SpikeBuildNode:
     def build(self) -> SpikeBuildArtifact:
         """Rebuild libriscv from the current sources and return it by value.
 
-        Takes no arguments: like :meth:`ChiselBuildNode.build`, every input is
-        the state of the tree plus the attributes set in ``__init__``.
-
-        The rebuild is unconditional. make is incremental, so an already-current
-        tree costs seconds - and the alternative, skipping when this call did not
-        itself change anything, is how a container ends up with patched sources
-        and a library built before them: the sources then say the fix is in while
-        the model being co-simulated against does not have it.
-
-        Returns:
-            SpikeBuildArtifact: on success the library bytes and their digest,
-            plus whatever ``build_static``/``collect_tools``/``collect_headers``
-            asked for. On failure ``success=False`` with the captured output;
-            callers should treat that as fatal rather than build a simulator
-            against whatever library happens to be lying around.
+        The rebuild is unconditional (make is incremental, so a current tree
+        costs seconds); skipping it is how patched sources end up paired with a
+        stale library. Returns ``success=False`` with the captured output on
+        failure - treat that as fatal.
         """
         configure = os.path.join(self.spike_dir, "configure")
         if not os.path.exists(configure):
@@ -326,19 +261,9 @@ class SpikeBuildNode:
         )
 
     def _install(self, lib_content: bytes) -> None:
-        """Put the library we are shipping where chipyard's link step looks.
-
-        ``$(RISCV)/lib``, not spike's build dir: ``sims/common-sim-flags.mk``
-        links with ``-L$(RISCV)/lib``, so a rebuild that is not installed leaves
-        the simulator linked against the previous model with nothing reporting
-        it.
-
-        Writes the artifact's own bytes rather than copying the build output, so
-        the library the simulator is linked against and the library that travels
-        with it are the same file. Otherwise ``digest`` would describe the
-        shipped copy while the binary was linked against a different one, which
-        is exactly the ambiguity this node exists to remove.
-        """
+        """Write the artifact's own bytes into ``$(RISCV)/lib``, where chipyard
+        links (``-L$(RISCV)/lib``) - so the linked library and the shipped
+        library are the same file."""
         lib_dir = os.path.join(self.riscv_path, "lib")
         if not os.path.isdir(lib_dir):
             self.logger.warning(f"{lib_dir} does not exist; not installing")
@@ -355,13 +280,9 @@ class SpikeBuildNode:
 
 def stage_golden_model(artifact: SpikeBuildArtifact, riscv_path: str,
                        logger: logging.Logger | None = None) -> None:
-    """Write a :class:`SpikeBuildArtifact` into ``$RISCV`` so a build links it.
-
-    For the case where the model was built somewhere else: the bytes travelled,
-    so put them where ``-L$(RISCV)/lib -I$(RISCV)/include`` will find them.
-    A no-op for the common case of building spike and the simulator in the same
-    container, where ``SpikeBuildNode(install=True)`` already did this.
-    """
+    """Write a travelled :class:`SpikeBuildArtifact` into ``$RISCV`` so a build
+    in another container can link it. Redundant when spike was built in the
+    same container with ``install=True``."""
     log = logger or logging.getLogger(SpikeBuildNode.logging_name)
     lib_dir = os.path.join(riscv_path, "lib")
     os.makedirs(lib_dir, exist_ok=True)

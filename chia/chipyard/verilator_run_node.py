@@ -89,11 +89,8 @@ class VerilatorRunNode:
                  | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
         self._binary_path = binary_path
 
-        # Shared libraries the artifact carries (libriscv.so above all, which is
-        # the golden model for a cospike build). Staged beside the binary rather
-        # than installed anywhere shared: two runs on one worker can then use
-        # different golden models, and nothing outlives the task dir. Empty for
-        # artifacts built the historical way, where the image provides them.
+        # Stage the artifact's shared libraries (the golden model) beside the
+        # binary: nothing shared, nothing outliving the task dir.
         for lib_name, lib_content in artifact.runtime_libs:
             with open(os.path.join(self._task_dir, os.path.basename(lib_name)), "wb") as f:
                 f.write(lib_content)
@@ -123,15 +120,9 @@ class VerilatorRunNode:
         return test_binary_path
 
     def _env(self) -> dict:
-        """The simulator's environment, with the task dir first on the library path.
-
-        Only meaningful for an artifact that carries its own libraries; harmless
-        otherwise. Note this alone is not enough on a worker whose image happens
-        to have a chipyard tree at the path chipyard baked into the binary:
-        that is a DT_RPATH, which the loader consults *before* LD_LIBRARY_PATH.
-        ChiselBuildNode builds bundling artifacts with --enable-new-dtags so the
-        tag is DT_RUNPATH instead, which this overrides.
-        """
+        """The simulator's environment with the task dir first on
+        LD_LIBRARY_PATH, so staged libraries beat the image's (the binary's
+        rpath is DT_RUNPATH, which this overrides)."""
         env = dict(os.environ)
         existing = env.get("LD_LIBRARY_PATH", "")
         env["LD_LIBRARY_PATH"] = (f"{self._task_dir}:{existing}" if existing
