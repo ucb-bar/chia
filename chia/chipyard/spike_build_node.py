@@ -61,6 +61,7 @@ class SpikeBuildNode:
         spike_rel: str = SPIKE_REL,
         make_jobs: int = 16,
         strip: bool = True,
+        configure_args: list[str] | None = None,
         build_static: bool = False,
         collect_static: bool = False,
         collect_tools: bool = False,
@@ -83,6 +84,14 @@ class SpikeBuildNode:
             spike_rel: Location of the riscv-isa-sim checkout relative to
                 ``chipyard_path``.
             make_jobs: ``make -j`` parallelism.
+            configure_args: Extra arguments for spike's ``./configure``, e.g.
+                ``["--with-isa=rv64gcv"]`` to change the default ISA or
+                ``["CXXFLAGS=-O0 -g"]`` for a debuggable model. When given,
+                ``./configure --prefix=$RISCV <args>`` is re-run before make,
+                so the whole library is rebuilt under the new configuration.
+                Default None keeps the build dir's existing configuration
+                (chipyard's build-setup ran configure once); configure is then
+                only run if the build dir is missing.
             strip: Run ``strip --strip-unneeded`` on a copy before reading the
                 bytes. Worth leaving on: an unstripped libriscv.so is ~177MB of
                 which ~8MB is code, and the artifact is shipped by value.
@@ -116,6 +125,7 @@ class SpikeBuildNode:
         self.riscv_path = riscv_path or os.environ.get("RISCV") or os.path.join(
             chipyard_path, ".conda-env", "riscv-tools")
         self.make_jobs = make_jobs
+        self.configure_args = list(configure_args) if configure_args else []
         self.strip = strip
         self.build_static = build_static
         self.collect_static = collect_static
@@ -223,11 +233,22 @@ class SpikeBuildNode:
             callers should treat that as fatal rather than build a simulator
             against whatever library happens to be lying around.
         """
-        if not os.path.isdir(self.build_dir):
+        configure = os.path.join(self.spike_dir, "configure")
+        if not os.path.exists(configure):
             return self._failure(
-                f"no spike build directory at {self.build_dir}: this image's "
-                "chipyard does not carry spike sources, so the golden model "
-                "cannot be rebuilt here")
+                f"no spike sources at {self.spike_dir}: this image's chipyard "
+                "cannot rebuild the golden model")
+        if self.configure_args or not os.path.isdir(self.build_dir):
+            os.makedirs(self.build_dir, exist_ok=True)
+            cfg_cmd = [configure, f"--prefix={self.riscv_path}",
+                       *self.configure_args]
+            self.logger.info(f"Configuring spike: {' '.join(cfg_cmd)}")
+            cfg = subprocess.run(cfg_cmd, cwd=self.build_dir,
+                                 capture_output=True, text=True,
+                                 timeout=self.timeout_seconds)
+            if cfg.returncode != 0:
+                return self._failure(
+                    f"spike configure failed:\n{cfg.stdout[-2000:]}", cfg)
 
         targets = ["libriscv.so"] + (list(STATIC_ARCHIVES) if self.build_static else [])
         cmd = ["make", f"-j{self.make_jobs}", *targets]
