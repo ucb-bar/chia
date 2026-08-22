@@ -15,6 +15,11 @@ Chisel build
 
 .. automodule:: chia.chipyard.chisel_build_node
 
+Spike build
+-----------
+
+.. automodule:: chia.chipyard.spike_build_node
+
 CIRCT
 -----
 

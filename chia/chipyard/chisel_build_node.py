@@ -1,14 +1,23 @@
+import hashlib
 import os
+import re
 import shlex
 import subprocess
 import logging
-from chia.chipyard.state_def import BuildArtifact, BuildTarget
+from chia.chipyard.state_def import BuildArtifact, BuildTarget, SpikeBuildArtifact
+from chia.chipyard.spike_build_node import STATIC_ARCHIVES, stage_golden_model
 from chia.trace.profiler import get_profiler
 from chia.base.ChiaFunction import ChiaFunction
 
 # Maximum number of WF_SCOPES paths supported by the Makefile and TestDriver.v
 # (the .v file has WF_SCOPE_1 ... WF_SCOPE_8 ifdef branches).
 _MAX_WF_SCOPES = 8
+
+# Libraries every image provides; everything else ldd reports is bundled.
+# Mirrors the FireSim driver bundle filter (chia/firesim/build_node.py).
+_SYSTEM_LIBS = re.compile(
+    r"(libc\.so|libstdc\+\+|libm\.so|libpthread|libdl\.so|librt\.so|libgcc_s"
+    r"|libz\.so|libzstd|libelf|ld-linux)")
 
 
 class ChiselBuildNode:
@@ -36,6 +45,9 @@ class ChiselBuildNode:
         collect_generated_src: bool = False,
         clean_sim: bool = False,
         clean: bool = True,
+        golden_model: SpikeBuildArtifact | None = None,
+        static_golden_model: bool = False,
+        bundle_runtime_libs: bool | None = None,
         wf_scopes: list[str] | tuple[str, ...] = (),
         clean_wf_stamp: bool = True,
         logging_level: int = logging.DEBUG,
@@ -88,6 +100,16 @@ class ChiselBuildNode:
                 also clears the Chisel-generator cache (``chipyard.jar``) and
                 ``gen_dir``, guaranteeing the build reflects the current Scala
                 sources. Slower but correct.
+            golden_model: A :class:`SpikeBuildArtifact` to link against; staged
+                into ``$RISCV`` before make, recorded as ``golden_model_digest``
+                and, when the link is dynamic, bundled into ``runtime_libs``.
+                ``None`` links whatever the image installed.
+            static_golden_model: Compile libriscv into the simulator for one
+                hermetic binary. Pass ``clean_sim=True`` with it, or make will
+                not relink for a new library.
+            bundle_runtime_libs: Carry non-system shared libraries in
+                ``BuildArtifact.runtime_libs`` for the run node to stage.
+                Defaults to True only for a dynamic ``golden_model`` build.
             wf_scopes: chia_artifact-specific *spatial* waveform filter: a list
                 of module-hierarchy scope paths (e.g.
                 ``"TestHarness.chiptop0.system..."``) restricting which modules
@@ -112,6 +134,11 @@ class ChiselBuildNode:
         self.extra_make_args = dict(extra_make_args)
         self.collect_generated_src = collect_generated_src
         self.clean_sim = clean_sim
+        self.golden_model = golden_model
+        self.static_golden_model = static_golden_model
+        self.bundle_runtime_libs = (
+            bundle_runtime_libs if bundle_runtime_libs is not None
+            else (golden_model is not None and not static_golden_model))
         self.clean = clean
         self.wf_scopes = list(wf_scopes)
         self.clean_wf_stamp = clean_wf_stamp
@@ -152,6 +179,127 @@ class ChiselBuildNode:
         """
         return " ".join(f"{k}={shlex.quote(str(v))}" for k, v in args.items())
 
+    def _riscv_path(self) -> str:
+        """``$RISCV``: the toolchain prefix chipyard links libriscv from."""
+        return os.environ.get("RISCV") or os.path.join(
+            self.chipyard_path, ".conda-env", "riscv-tools")
+
+    def _stage_golden_model(self) -> None:
+        """Ensure ``$RISCV/lib`` holds the given model, so the link cannot
+        silently use whatever libriscv the image shipped."""
+        lib_dir = os.path.join(self._riscv_path(), "lib")
+        installed = os.path.join(lib_dir, self.golden_model.lib_name)
+        # A static link also needs the archives, not just the shared library.
+        missing = [name for name in STATIC_ARCHIVES
+                   if not os.path.exists(os.path.join(lib_dir, name))]
+        archive_ok = not self.static_golden_model or not missing
+        if os.path.exists(installed) and archive_ok:
+            with open(installed, "rb") as handle:
+                if hashlib.sha256(handle.read()).hexdigest() == self.golden_model.digest:
+                    self.logger.debug(
+                        f"golden model {self.golden_model.digest[:12]} already installed")
+                    return
+        if not archive_ok and not self.golden_model.static_archives:
+            raise RuntimeError(
+                f"static_golden_model needs {missing}, neither installed in "
+                f"{lib_dir} nor carried by the golden model; build it with "
+                "SpikeBuildNode(build_static=True), plus collect_static=True "
+                "when the build runs in a different container")
+        self.logger.info(f"Staging golden model {self.golden_model.digest[:12]} "
+                         f"into {self._riscv_path()}")
+        stage_golden_model(self.golden_model, self._riscv_path(), self.logger)
+
+    def _effective_make_args(self) -> dict:
+        """``extra_make_args`` plus what the golden-model options imply, all
+        through make variables chipyard already exposes."""
+        args = dict(self.extra_make_args)
+        if self.static_golden_model:
+            # Name the archives outright and in dependency order: -lriscv
+            # resolves to the .so, and libriscv.a alone leaves ~900 undefined
+            # softfloat symbols.
+            lib_dir = os.path.join(self._riscv_path(), "lib")
+            args["LRISCV"] = " ".join(os.path.join(lib_dir, name)
+                                      for name in STATIC_ARCHIVES)
+            existing_ld = args.get("EXTRA_SIM_LDFLAGS", "")
+            args["EXTRA_SIM_LDFLAGS"] = (
+                existing_ld + " -Wl,--allow-multiple-definition").strip()
+            if not self.clean_sim and not self.clean:
+                self.logger.warning(
+                    "static_golden_model without clean_sim/clean: make has no "
+                    "prerequisite on libriscv, so it will not relink and the "
+                    "simulator may keep an older golden model compiled in")
+        if self.bundle_runtime_libs:
+            # new-dtags turns chipyard's baked-in rpath into DT_RUNPATH, which
+            # LD_LIBRARY_PATH overrides - so the staged library wins over the
+            # image's.
+            existing = args.get("EXTRA_SIM_LDFLAGS", "")
+            args["EXTRA_SIM_LDFLAGS"] = (
+                f"{existing} -Wl,--enable-new-dtags".strip())
+        return args
+
+    def _collect_runtime_libs(self, binary_path: str) -> list[tuple[str, bytes]]:
+        """The simulator's non-system shared libraries, by value (ldd, minus
+        the libraries every image has)."""
+        try:
+            result = subprocess.run(["ldd", binary_path], capture_output=True,
+                                    text=True, timeout=60)
+            needed = self._parse_ldd(result.stdout)
+        except Exception as error:                                  # noqa: BLE001
+            self.logger.warning(f"ldd failed on {binary_path}: {error}")
+            needed = []
+
+        libs: list[tuple[str, bytes]] = []
+        unresolved: list[str] = []
+        for name, path in needed:
+            if _SYSTEM_LIBS.search(name):
+                continue
+            # Carry the given model's own bytes, even when ldd resolved a
+            # different file or none: the artifact must ship what its digest
+            # names.
+            if (self.golden_model is not None
+                    and name == self.golden_model.lib_name):
+                libs.append((name, self.golden_model.lib_content))
+                continue
+            if path and os.path.exists(path):
+                with open(path, "rb") as handle:
+                    libs.append((name, handle.read()))
+            else:
+                unresolved.append(name)
+
+        if unresolved:
+            # Not fatal here - the run image may well provide these - but it is
+            # the one thing worth saying out loud, because the symptom on the
+            # far side is the simulator dying on an unresolved symbol rather
+            # than anything that names the missing library.
+            self.logger.warning(
+                f"could not bundle {unresolved}: not resolvable in this "
+                "container, so the run worker's image must provide them")
+        if self.golden_model is not None and not any(
+                name == self.golden_model.lib_name for name, _ in libs):
+            self.logger.warning(
+                f"{self.golden_model.lib_name} is not among the simulator's "
+                "dynamic dependencies; the golden model is linked statically "
+                "or not linked at all")
+        self.logger.info(f"Bundled {len(libs)} runtime libs: "
+                         f"{[name for name, _ in libs]}")
+        return libs
+
+    @staticmethod
+    def _parse_ldd(output: str) -> list[tuple[str, str | None]]:
+        """``(soname, resolved path or None)`` per ldd line; unresolved entries
+        are kept, they are the ones that matter."""
+        needed: list[tuple[str, str | None]] = []
+        for line in output.splitlines():
+            if "=>" not in line:
+                continue
+            left, right = line.split("=>", 1)
+            name = left.strip()
+            if not name:
+                continue
+            path = right.strip().split(" (")[0].strip()
+            needed.append((name, path if path and path != "not found" else None))
+        return needed
+
     @ChiaFunction(resources={"chipyard": 1})
     def build(self) -> BuildArtifact:
         """Run the Chipyard Make flow and return the compiled simulator.
@@ -170,18 +318,24 @@ class ChiselBuildNode:
             failure or timeout, ``success=False`` with empty binary content and
             the captured stdout/stderr and returncode (``-1`` on timeout).
         """
+        # Golden model first: staging and the link flags both have to be settled
+        # before the make command line is assembled.
+        if self.golden_model is not None:
+            self._stage_golden_model()
+        make_args = self._effective_make_args()
+
         if self.target == BuildTarget.VERILATOR:
             sims_dir = os.path.join(self.chipyard_path, "sims/verilator")
             binary_name = f"simulator-{self.config_package}.harness-{self.config}"
             binary_path = os.path.join(sims_dir, binary_name)
-            extra_args = self._format_make_args(self.extra_make_args)
+            extra_args = self._format_make_args(make_args)
             cmd = f"make -j {self.make_jobs} CONFIG={self.config} CONFIG_PACKAGE={self.config_package} {extra_args}".strip()
 
         elif self.target == BuildTarget.VERILATOR_DEBUG:
             sims_dir = os.path.join(self.chipyard_path, "sims/verilator")
             binary_name = f"simulator-{self.config_package}.harness-{self.config}-debug"
             binary_path = os.path.join(sims_dir, binary_name)
-            extra_args = self._format_make_args(self.extra_make_args)
+            extra_args = self._format_make_args(make_args)
             cmd = f"make -j {self.make_jobs} CONFIG={self.config} CONFIG_PACKAGE={self.config_package} debug {extra_args}".strip()
 
         elif self.target == BuildTarget.FIRESIM_METASIM_VERILATOR:
@@ -206,7 +360,7 @@ class ChiselBuildNode:
                 "PLATFORM": platform,
                 "PLATFORM_CONFIG": platform_config
             }
-            all_args = {**firesim_args, **self.extra_make_args}
+            all_args = {**firesim_args, **make_args}
             extra_args = self._format_make_args(all_args)
             cmd = f"make -j {self.make_jobs} verilator {extra_args}".strip()
             print(cmd)
@@ -262,6 +416,9 @@ class ChiselBuildNode:
             "config": self.config,
             "clean_sim": self.clean_sim,
             "clean": self.clean,
+            "golden_model_digest": (self.golden_model.digest
+                                    if self.golden_model is not None else ""),
+            "static_golden_model": self.static_golden_model,
             "wf_scopes_count": len(self.wf_scopes),
             "wf_scopes": list(self.wf_scopes),
         })
@@ -316,6 +473,9 @@ class ChiselBuildNode:
         if self.collect_generated_src:
             generated_src_files = self._collect_generated_src(sims_dir)
 
+        runtime_libs = (self._collect_runtime_libs(binary_path)
+                        if self.bundle_runtime_libs else [])
+
         return BuildArtifact(
             name=self.name,
             simulator_binary_content=binary_content,
@@ -328,6 +488,9 @@ class ChiselBuildNode:
             stderr=result.stderr,
             returncode=result.returncode,
             generated_src_files=generated_src_files,
+            runtime_libs=runtime_libs,
+            golden_model_digest=(self.golden_model.digest
+                                 if self.golden_model is not None else ""),
         )
 
     def _collect_generated_src(self, sims_dir: str) -> list[tuple[str, str]]:
