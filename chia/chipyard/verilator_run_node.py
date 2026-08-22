@@ -1,5 +1,7 @@
 import fcntl
+import functools
 import os
+import time
 import shutil
 import stat
 import subprocess
@@ -76,6 +78,7 @@ class VerilatorRunNode:
 
     def _setup(self, artifact: BuildArtifact, test_binary_content: bytes, test_binary_name: str, work_dir: str, dramsim_ini_files: dict[str, bytes]) -> str:
         os.makedirs(work_dir, exist_ok=True)
+        self._reap_stale_task_dirs(work_dir)
 
         # Create a unique task-level subdirectory to isolate concurrent runs
         # sharing the same Docker container / work_dir.
@@ -106,6 +109,32 @@ class VerilatorRunNode:
 
         self.logger.info(f"Setup complete. Task dir: {self._task_dir}, Simulator: {self._binary_path}, test binary: {test_binary_path}")
         return test_binary_path
+
+    STALE_TASK_DIR_SECONDS = 24 * 3600   # longer than any task wall clock
+
+    def _reap_stale_task_dirs(self, work_dir: str) -> None:
+        """Remove task dirs left behind by killed tasks, which skip finally."""
+        cutoff = time.time() - self.STALE_TASK_DIR_SECONDS
+        for name in os.listdir(work_dir):
+            path = os.path.join(work_dir, name)
+            try:
+                if (len(name) == 8 and all(c in "0123456789abcdef" for c in name)
+                        and os.path.isdir(path) and os.path.getmtime(path) < cutoff):
+                    shutil.rmtree(path, ignore_errors=True)
+            except OSError:
+                pass                       # raced with another task's cleanup
+
+    @staticmethod
+    def _cleans_task_dir(fn):
+        """Run _cleanup_task_dir however *fn* ends, not only on clean return."""
+        @functools.wraps(fn)
+        def wrapper(self, *args, **kwargs):
+            try:
+                return fn(self, *args, **kwargs)
+            finally:
+                if kwargs.get("cleanup_task_dir", True):
+                    self._cleanup_task_dir()
+        return wrapper
 
     def _cleanup_task_dir(self):
         """Remove the per-task directory to avoid disk bloat.
@@ -178,6 +207,7 @@ class VerilatorRunNode:
             self.logger.warning(f"S3 upload of {filename} failed: {e}; s3_path will be empty")
             return "", size
 
+    @_cleans_task_dir
     def _execute(
         self,
         argv: list[str],
@@ -319,8 +349,6 @@ class VerilatorRunNode:
                 "vcd_s3_path": vcd_s3_path,
             })
 
-        if (cleanup_task_dir):
-            self._cleanup_task_dir()
         return result
 
     @ChiaFunction(resources={"verilator_run": 1})
