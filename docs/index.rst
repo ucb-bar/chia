@@ -76,6 +76,7 @@ Originally CHIA stood for:
    api/firesim
    api/vlsi
    api/database
+   api/git
    api/github
    api/aws
    api/simulators
