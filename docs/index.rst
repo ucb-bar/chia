@@ -69,6 +69,7 @@ Originally CHIA stood for:
    :caption: API Reference
 
    api/base
+   api/bazel
    api/chipyard
    api/esp
    api/models
