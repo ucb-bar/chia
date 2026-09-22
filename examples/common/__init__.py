@@ -17,4 +17,7 @@ framework, build/run nodes)
   * ``build``            — common_build.py (build + LLM build-debug retry)
   * ``verilator``        — common_verilator.py (test dispatch, waves, S3;
                            expects the adjacent ``dramsim_ini/`` dir)
+  * ``result_cache``     — result_cache.py (enable_result_cache: starts the
+                           cache and registers the bypass read path -- the
+                           provider and hit condition -- in one call)
 """

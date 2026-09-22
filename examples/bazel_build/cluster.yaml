@@ -1,0 +1,39 @@
+# Single-machine cluster for examples/bazel_build/bazel_loop.py:
+# one head + three local workers advertising the "bazel" resource.
+#
+# The host is read from the CHIA_HEAD environment variable, so no hard-coded IPs:
+#
+#     export CHIA_HEAD=$(hostname)
+#     chia up examples/bazel_build/cluster.yaml
+#     python examples/bazel_build/bazel_loop.py
+#     chia down examples/bazel_build/cluster.yaml
+
+cluster_name: bazel-build-example
+
+provider:
+    head_ip: ${CHIA_HEAD}
+
+auth:
+    ssh_user: ${USER}
+    # ssh_private_key: ~/.ssh/<key>   # omit if your key is in the ssh-agent
+
+available_node_types:
+    # Three workers so the three build targets can be dispatched concurrently.
+    # They share one workspace and therefore one Bazel output base, so Bazel's
+    # own lock serializes them; give each worker its own `output_base` (a
+    # BazelNode constructor argument) if you want real build parallelism.
+    bazel_worker:
+        resources: {"bazel": 1}
+        num_workers: 3
+        compatible_ips: ["${CHIA_HEAD}"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && mkdir -p /tmp/${USER}_ray && ray start --head --port=6379 --dashboard-port=8081 --include-dashboard=True --dashboard-agent-listen-port=0 --temp-dir=/tmp/${USER}_ray
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379

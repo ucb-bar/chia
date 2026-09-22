@@ -1,0 +1,4 @@
+module(name = "chia_bazel_example")
+
+# sh_test is no longer a builtin rule (Bazel 8+), so it comes from rules_shell.
+bazel_dep(name = "rules_shell", version = "0.6.1")

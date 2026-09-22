@@ -1,0 +1,20 @@
+# Config for examples/bazel_build/bazel_loop.py
+#
+# Both sections key off the per-call _chia_tag, which here is
+# BazelNode.source_digest(target) — a hash of the target's transitive sources
+# and BUILD files. A target whose inputs are untouched keeps the same tag
+# across runs and is served from the cache; an edited one gets a new tag and
+# misses, so it builds for real.
+
+# CACHE (write path): every real build writes its BazelResult to disk. No tag
+# filter — any digest is worth keeping.
+cache:
+  build:
+    cache: true
+
+# BYPASS (read path): replay any digest we have. The cache_hit_cond in the
+# driver gates this on the value actually being present, so a cold cache falls
+# through to a real build instead of erroring.
+bypass:
+  build:
+    bypass: true
