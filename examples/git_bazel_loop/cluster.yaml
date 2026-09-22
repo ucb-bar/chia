@@ -1,0 +1,44 @@
+# Cluster for examples/git_bazel_loop/evolve.py:
+# one head + three workers advertising the "bazel" resource.
+#
+# The host is read from the CHIA_HEAD environment variable, so no hard-coded IPs:
+#
+#     export CHIA_HEAD=$(hostname)
+#     chia up examples/git_bazel_loop/cluster.yaml
+#     python examples/git_bazel_loop/evolve.py
+#     chia down examples/git_bazel_loop/cluster.yaml
+
+cluster_name: git-bazel-loop-example
+
+provider:
+    head_ip: ${CHIA_HEAD}
+
+auth:
+    ssh_user: ${USER}
+    # ssh_private_key: ~/.ssh/<key>   # omit if your key is in the ssh-agent
+
+available_node_types:
+    # One worker per candidate per generation, so a generation's evaluations
+    # overlap. Each worktree is its own Bazel workspace and therefore its own
+    # output base -- a separate server per worktree -- which is why the loop
+    # passes a shared --disk_cache and shuts each one down on the way out.
+    bazel_worker:
+        resources: {"bazel": 1}
+        num_workers: 3
+        compatible_ips: ["${CHIA_HEAD}"]
+        worker_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+# There is deliberately no "git" worker type. GitNode's members are called
+# in-process by the driver, so the repository lives on the head and git never
+# crosses the cluster. Add a worker with resources: {"git": 1} only if you
+# switch those calls to chia_remote against a checkout held on a worker.
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+
+head_start_ray_commands:
+    - ray stop
+    - ulimit -c unlimited && mkdir -p /tmp/${USER}_ray && ray start --head --port=6379 --dashboard-port=8081 --include-dashboard=True --dashboard-agent-listen-port=0 --temp-dir=/tmp/${USER}_ray
+
+worker_start_ray_commands:
+    - ray stop
+    - ray start --address=$RAY_HEAD_IP:6379

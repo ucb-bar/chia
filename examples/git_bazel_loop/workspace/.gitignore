@@ -1,0 +1,5 @@
+# Bazel drops convenience symlinks and a lockfile into the workspace on the
+# first build. Without this they land in the next snapshot, so a variant's
+# content identity would depend on whether it had been built yet.
+/bazel-*
+/MODULE.bazel.lock
