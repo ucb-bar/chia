@@ -127,7 +127,7 @@ class SimSplitter:
                 joined = sum(pool.map(self._setup_host, ready))
             if not joined:
                 raise RuntimeError("Every F2 host failed setup")
-            self._wait_for_workers(baseline + joined)
+            self._wait_for_first_worker(baseline)
         except Exception:
             self.teardown(farm)
             raise
@@ -208,16 +208,18 @@ class SimSplitter:
             logger.error(f"[{instance.instance_id}] Setup failed: {e}")
             return False
 
-    def _wait_for_workers(self, expected: int, timeout: int = 600) -> None:
-        """Block until the cluster advertises `expected` FPGAs in total."""
+    def _wait_for_first_worker(self, baseline: float, timeout: int = 600) -> None:
+        """Block until one of the farm's FPGAs joins; the rest catch up.
+
+        Ray queues jobs against whatever is registered, so a slow host does not
+        need to hold up the run.
+        """
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if _fpga_count() >= expected:
-                logger.info(f"{expected} FPGA worker(s) ready")
+            if _fpga_count() > baseline:
                 return
             time.sleep(5)
-        raise RuntimeError(f"Only {_fpga_count():.0f} of {expected} FPGA workers "
-                           f"registered within {timeout}s")
+        raise RuntimeError(f"No FPGA worker registered within {timeout}s")
 
 
 def _head_address() -> str:
