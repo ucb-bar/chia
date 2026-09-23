@@ -79,3 +79,57 @@ class SuiteRunResult:
     total_duration_seconds: float = 0.0
     scores: dict[str, dict[str, float]] = field(default_factory=dict)
     # scores maps workload_name -> {RealTime, UserTime, KernelTime, score}
+
+
+@dataclass
+class SimJob:
+    """One FireMarshal job, staged for one FPGA.
+
+    Attributes:
+        benchmark_name: FireSim workload name; also the directory under
+            ``deploy/workloads/`` and the results directory name.
+        rootfs_uri: URI of this job's rootfs image (fsspec: ``s3://``,
+            ``file://``, a plain path, ...).
+        bootbinary_uri: URI of the boot binary shared by the suite.
+        outputs: Guest paths copied out of the rootfs after the run.
+        simulation_outputs: Host-side sim artifacts to collect.
+    """
+    benchmark_name: str
+    rootfs_uri: str
+    bootbinary_uri: str
+    outputs: list[str] = field(default_factory=list)
+    simulation_outputs: list[str] = field(default_factory=lambda: ["uartlog"])
+
+
+@dataclass
+class SimJobResult:
+    """Result of running one :class:`SimJob` on one FPGA.
+
+    Attributes:
+        benchmark_name: The job that was run.
+        success: True iff infrasetup and runworkload both exited 0.
+        uartlog: Console output of the simulation.
+        outputs: Collected result files, ``relative_path -> content``.
+        duration_seconds: Wall-clock duration of the run.
+        log: Tail of the manager's output, carrying the reason on failure.
+    """
+    benchmark_name: str
+    success: bool
+    uartlog: str = ""
+    outputs: dict[str, str] = field(default_factory=dict)
+    duration_seconds: float = 0.0
+    log: str = ""
+
+
+@dataclass
+class SimFarm:
+    """The F2 instances a :class:`~chia.firesim.sim_splitter.SimSplitter` owns.
+
+    Attributes:
+        instance_ids: EC2 instance ids, one per FPGA.
+        region: AWS region the instances live in.
+        resource: Ray resource each worker advertises, one unit per FPGA.
+    """
+    instance_ids: list[str]
+    region: str
+    resource: str
