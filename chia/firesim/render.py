@@ -48,18 +48,8 @@ _METASIM = {
 }
 
 
-def render_runtime_config(deploy_dir: str, job: SimJob,
-                          plusarg_passthrough: str = "") -> str:
-    """Write ``config_runtime.yaml`` for a single-FPGA, single-job run.
-
-    Args:
-        deploy_dir: The manager's ``firesim/deploy`` directory.
-        job: The job this manager runs.
-        plusarg_passthrough: Extra ``+plusargs`` handed to the simulator.
-
-    Returns:
-        Path of the written file.
-    """
+def render_runtime_config(deploy_dir: str, job: SimJob) -> str:
+    """Write ``config_runtime.yaml`` for a single-FPGA, single-job run."""
     config = {
         "run_farm": _RUN_FARM,
         "metasimulation": _METASIM,
@@ -71,7 +61,7 @@ def render_runtime_config(deploy_dir: str, job: SimJob,
             "net_bandwidth": 200,
             "profile_interval": -1,
             "default_hw_config": HW_CONFIG_NAME,
-            "plusarg_passthrough": plusarg_passthrough,
+            "plusarg_passthrough": "",
         },
         "tracing": {"enable": False, "output_format": 0, "selector": 1,
                     "start": 0, "end": -1},
@@ -90,15 +80,7 @@ def render_runtime_config(deploy_dir: str, job: SimJob,
 
 
 def render_hwdb(deploy_dir: str, bitstream: FSBitstream) -> str:
-    """Write ``config_hwdb.yaml`` for ``bitstream``.
-
-    Args:
-        deploy_dir: The manager's ``firesim/deploy`` directory.
-        bitstream: Image + driver to run.
-
-    Returns:
-        Path of the written file.
-    """
+    """Write ``config_hwdb.yaml`` for the bitstream."""
     return _dump(os.path.join(deploy_dir, "config_hwdb.yaml"),
                  bitstream.to_hwdb(HW_CONFIG_NAME, deploy_dir))
 
@@ -106,16 +88,9 @@ def render_hwdb(deploy_dir: str, bitstream: FSBitstream) -> str:
 def stage_workload(deploy_dir: str, job: SimJob) -> str:
     """Fetch the job's rootfs and boot binary and write its workload JSON.
 
-    FireSim reads workload images from ``deploy/workloads/<benchmark_name>/``
-    as plain local files — only ``driver_tar``/``bitstream_tar`` go through its
-    URI machinery — so they are fetched here.
-
-    Args:
-        deploy_dir: The manager's ``firesim/deploy`` directory.
-        job: The job to stage.
-
-    Returns:
-        Path of the written workload JSON.
+    FireSim reads workload images from ``deploy/workloads/<benchmark_name>/`` as
+    plain local files; only ``driver_tar``/``bitstream_tar`` go through its URI
+    machinery, so these are fetched here.
     """
     workloads = os.path.join(deploy_dir, "workloads")
     job_dir = os.path.join(workloads, job.benchmark_name)

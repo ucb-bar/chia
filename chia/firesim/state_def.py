@@ -85,14 +85,9 @@ class SuiteRunResult:
 class SimJob:
     """One FireMarshal job, staged for one FPGA.
 
-    Attributes:
-        benchmark_name: FireSim workload name; also the directory under
-            ``deploy/workloads/`` and the results directory name.
-        rootfs_uri: URI of this job's rootfs image (fsspec: ``s3://``,
-            ``file://``, a plain path, ...).
-        bootbinary_uri: URI of the boot binary shared by the suite.
-        outputs: Guest paths copied out of the rootfs after the run.
-        simulation_outputs: Host-side sim artifacts to collect.
+    ``benchmark_name`` names the FireSim workload, its directory under
+    ``deploy/workloads/``, and its results directory. The URIs are fsspec ones
+    (``s3://``, ``file://``, or a plain path).
     """
     benchmark_name: str
     rootfs_uri: str
@@ -105,13 +100,8 @@ class SimJob:
 class SimJobResult:
     """Result of running one :class:`SimJob` on one FPGA.
 
-    Attributes:
-        benchmark_name: The job that was run.
-        success: True iff infrasetup and runworkload both exited 0.
-        uartlog: Console output of the simulation.
-        outputs: Collected result files, ``relative_path -> content``.
-        duration_seconds: Wall-clock duration of the run.
-        log: Tail of the manager's output, carrying the reason on failure.
+    ``success`` is true only if infrasetup and runworkload both exited 0;
+    ``log`` holds the manager output tail, which carries the reason on failure.
     """
     benchmark_name: str
     success: bool
@@ -123,13 +113,6 @@ class SimJobResult:
 
 @dataclass
 class SimFarm:
-    """The F2 instances a :class:`~chia.firesim.sim_splitter.SimSplitter` owns.
-
-    Attributes:
-        instance_ids: EC2 instance ids, one per FPGA.
-        region: AWS region the instances live in.
-        resource: Ray resource each worker advertises, one unit per FPGA.
-    """
+    """The F2 instances a :class:`~chia.firesim.sim_splitter.SimSplitter` owns."""
     instance_ids: list[str]
     region: str
-    resource: str

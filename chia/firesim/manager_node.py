@@ -39,50 +39,29 @@ class FireSimManagerNode:
 
     logging_name = "FireSimManagerNode"
 
-    def __init__(
-        self,
-        firesim_dir: str = FIRESIM_DIR,
-        timeout_seconds: int = 14400,
-        logging_level: int = logging.DEBUG,
-    ):
+    def __init__(self, firesim_dir: str = FIRESIM_DIR,
+                 timeout_seconds: int = 14400):
         """
         Args:
             firesim_dir: FireSim checkout inside the container.
-            timeout_seconds: Wall-clock limit per manager step; on expiry the
-                step returns ``returncode=-1`` (never raises).
-            logging_level: Logging level for this node's logger.
+            timeout_seconds: Wall-clock limit per manager step.
         """
         self.firesim_dir = firesim_dir
         self.deploy_dir = os.path.join(firesim_dir, "deploy")
         self.timeout_seconds = timeout_seconds
         self.logger = logging.getLogger(self.logging_name)
-        self.logger.setLevel(logging_level)
 
     @ChiaFunction(resources={FPGA_RESOURCE: 1})
-    def run_job(
-        self,
-        job: SimJob,
-        bitstream: FSBitstream,
-        plusarg_passthrough: str = "",
-    ) -> SimJobResult:
-        """Stage ``job``, flash the FPGA, run it, and collect the results.
+    def run_job(self, job: SimJob, bitstream: FSBitstream) -> SimJobResult:
+        """Stage the job, flash the FPGA, run it, and collect the results.
 
         Infrasetup and runworkload are one task on purpose: as separate Ray
-        tasks the scheduler could flash one FPGA and run on another.
-
-        Args:
-            job: The workload to run.
-            bitstream: FPGA image + the driver built against it. With its
-                ``driver_tar`` set FireSim skips ``make driver``, so this
-                container needs no chipyard.
-            plusarg_passthrough: Extra ``+plusargs`` for the simulator.
-
-        Returns:
-            :class:`SimJobResult` with the uartlog, the collected outputs, and
-            the manager log tail on failure.
+        tasks the scheduler could flash one FPGA and run on another. The
+        bitstream's ``driver_tar`` makes FireSim skip ``make driver``, which is
+        why this container needs no chipyard.
         """
         t0 = time.monotonic()
-        render_runtime_config(self.deploy_dir, job, plusarg_passthrough)
+        render_runtime_config(self.deploy_dir, job)
         render_hwdb(self.deploy_dir, bitstream)
         stage_workload(self.deploy_dir, job)
 
