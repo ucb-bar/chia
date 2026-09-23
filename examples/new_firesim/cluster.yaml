@@ -1,0 +1,89 @@
+# Cluster for the ECAD bitstream smoke test (see README.md).
+#
+#   chia up   examples/new_firesim/cluster.yaml -y
+#   chia job submit --working-dir examples/new_firesim -- python bitstream_build_loop.py
+#   chia down examples/new_firesim/cluster.yaml
+#
+# Only the chipyard worker is declared here. The ECAD machine is not: the loop
+# launches it on EC2 through AWSManager and joins it at runtime, then
+# terminates it. Nothing in this file needs to know about it.
+#
+# SITE-SPECIFIC — edit every #FILL before first use.
+
+cluster_name: ecad-smoke
+
+available_node_types:
+
+    # Holds the chipyard checkout the LLM edits and diffs. One worker: the diff
+    # has to come from a single known tree.
+    chisel_build:
+        resources: {"chipyard": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "ecad-chisel-build-${USER}"
+            pull_before_run: True
+            pull_timeout: 7200   # the image is ~30GB
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                # Claude Code credentials for the editing step.
+                - "-v /scratch/${USER}/claude_config_dir/.claude:/home/ray/.claude"  #FILL
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+        compatible_ips: #FILL
+
+    # Runs Claude Code. It edits the chipyard tree through a bash tool on the
+    # chisel_build worker; claude_creds is what ClaudeCodeLLM.prompt requests.
+    llm:
+        resources: {"llm": 1, "claude_creds": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "ecad-llm-${USER}"
+            pull_before_run: true
+            run_options:
+                - --shm-size=10.24gb
+                - "--user $(id -u):$(id -g)"
+                - "-v ${HOME}/.claude:/home/ray/.claude"
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                - mkdir -p /home/ray/llm_env
+        compatible_ips: #FILL
+
+provider:
+    head_ip: #FILL
+
+auth:
+    ssh_user: ubuntu
+    # The EC2 key pair named in aws.key_name below must be THIS key, or the
+    # ECAD machine launches and then fails to join.
+    ssh_private_key: ~/firesim.pem   #FILL
+
+# Account values AWSManager fills into the ECAD node: region, key pair, ssh.
+#
+# Copy this to cluster.local.yaml, fill it there, and run with that. The local
+# copy is git-excluded so infrastructure ids never land in the repo.
+aws:
+    region: us-east-1
+    key_name: firesim                       #FILL: the EC2 key pair name
+    ssh_user: ubuntu
+    ssh_private_key: ~/firesim.pem          #FILL: private half of key_name
+    use_public_ip: false
+
+# The head's Ray and chia come from this env (README: conda env named chia_env).
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+head_setup_commands: []
+worker_setup_commands: []
+
+# A second Ray cluster on this head, on its own ports, so it coexists with any
+# cluster already on the defaults. No `ray stop`: that kills every Ray process
+# on the machine, the other cluster's included.
+head_start_ray_commands:
+    - ray start --head --port=6391 --include-dashboard=True --dashboard-port=8285 --ray-client-server-port=20031 --dashboard-agent-listen-port=0 --min-worker-port=21100 --max-worker-port=21999
+
+# What makes a worker (the ECAD machine included) join this cluster.
+worker_start_ray_commands:
+    - ray start --address=$RAY_HEAD_IP:6391 --dashboard-agent-listen-port=0 --min-worker-port=21100 --max-worker-port=21999
