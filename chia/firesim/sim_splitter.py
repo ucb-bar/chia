@@ -166,12 +166,15 @@ class SimSplitter:
                        region=self.aws_config.region,
                        resource=FPGA_RESOURCE)
         try:
+            # Count from what the cluster already has, so a second farm does not
+            # see the first one's FPGAs and return before its own workers join.
+            baseline = _fpga_resources()
             ready = wait_for_instances(instance_ids, region=self.aws_config.region)
             with ThreadPoolExecutor(max_workers=len(ready)) as pool:
                 results = list(pool.map(self._setup_host, ready))
             if not any(results):
                 raise RuntimeError("Every F2 host failed setup")
-            self._wait_for_workers(sum(results))
+            self._wait_for_workers(baseline + sum(results))
         except Exception:
             self.teardown(farm)
             raise
@@ -279,19 +282,24 @@ class SimSplitter:
             return False
 
     def _wait_for_workers(self, expected: int, timeout: int = 600) -> None:
-        """Block until the farm's FPGA resources show up in the cluster."""
-        import ray
-
+        """Block until the cluster advertises ``expected`` FPGAs in total."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            available = ray.cluster_resources().get(FPGA_RESOURCE, 0)
+            available = _fpga_resources()
             if available >= expected:
                 self.logger.info(f"{available:.0f} FPGA worker(s) ready")
                 return
             time.sleep(5)
         raise RuntimeError(
-            f"Only {ray.cluster_resources().get(FPGA_RESOURCE, 0):.0f} of "
-            f"{expected} FPGA workers registered within {timeout}s")
+            f"Only {_fpga_resources():.0f} of {expected} FPGA workers "
+            f"registered within {timeout}s")
+
+
+def _fpga_resources() -> float:
+    """FPGAs currently advertised by the whole Ray cluster."""
+    import ray
+
+    return ray.cluster_resources().get(FPGA_RESOURCE, 0)
 
 
 def _upload(s3: S3Node, bucket: str, work: str, prefix: str, filename: str) -> str:
