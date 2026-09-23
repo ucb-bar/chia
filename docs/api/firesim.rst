@@ -20,3 +20,18 @@ State Def
 
 .. automodule:: chia.firesim.state_def
    :exclude-members: SuiteRunResult
+
+Bitstream
+---------
+
+.. automodule:: chia.firesim.fs_bitstream
+
+Manager Node
+------------
+
+.. automodule:: chia.firesim.manager_node
+
+Sim Splitter
+------------
+
+.. automodule:: chia.firesim.sim_splitter
