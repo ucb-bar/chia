@@ -50,8 +50,8 @@ def _artifact(descriptor: dict, members: list[str]) -> FireMarshalArtifact:
 def _splitter() -> SimSplitter:
     from chia.aws.config import AWSConfig
 
-    return SimSplitter(aws_config=AWSConfig(), ray_address="127.0.0.1:6379",
-                       s3_bucket="bucket", chia_source_path="/chia")
+    return SimSplitter(aws_config=AWSConfig(), s3_bucket="bucket",
+                       chia_source_path="/chia")
 
 
 def test_split_multi_job_workload(fake_s3):

@@ -54,7 +54,6 @@ class SimSplitter:
     def __init__(
         self,
         aws_config: AWSConfig,
-        ray_address: str,
         s3_bucket: str,
         image: str = "ghcr.io/ucb-bar/chia-firesim:latest",
         instance_type: str = "f2.6xlarge",
@@ -64,7 +63,6 @@ class SimSplitter:
         """
         Args:
             aws_config: Credentials, region, and networking for the F2 hosts.
-            ray_address: Head GCS address (``host:port``) the workers join.
             s3_bucket: Bucket that workload images and bitstreams are staged to.
             image: FireSim manager container image.
             instance_type: F2 instance type; one FPGA is used per instance.
@@ -73,7 +71,6 @@ class SimSplitter:
             logging_level: Logging level for this node's logger.
         """
         self.aws_config = aws_config
-        self.ray_address = ray_address
         self.s3_bucket = s3_bucket
         self.image = image
         self.instance_type = instance_type
@@ -274,7 +271,7 @@ class SimSplitter:
                 f"sudo docker exec {CONTAINER_NAME} bash -lc "
                 + shlex.quote(
                     f"export PYTHONPATH={self.chia_source_path}:$PYTHONPATH && "
-                    f"ray start --address={self.ray_address} "
+                    f"ray start --address={_head_address()} "
                     f"--resources='{json.dumps({FPGA_RESOURCE: 1})}'"),
                 timeout=300)
             self.logger.info(f"[{instance.instance_id}] Worker joined")
@@ -295,6 +292,13 @@ class SimSplitter:
         raise RuntimeError(
             f"Only {_fpga_resources():.0f} of {expected} FPGA workers "
             f"registered within {timeout}s")
+
+
+def _head_address() -> str:
+    """The head this splitter is connected to, which the F2 workers join."""
+    import ray
+
+    return ray.get_runtime_context().gcs_address
 
 
 def _fpga_resources() -> float:

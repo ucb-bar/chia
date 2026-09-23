@@ -48,7 +48,6 @@ def main() -> int:
         return 1
 
     splitter = SimSplitter(aws_config=AWSConfig(ssh_private_key="~/firesim.pem"),
-                           ray_address=ray.get_runtime_context().gcs_address,
                            s3_bucket=S3_BUCKET)
     jobs = splitter.split_workload(workload)
     farm = splitter.launch(NUM_FPGAS)
