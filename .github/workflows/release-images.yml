@@ -76,6 +76,11 @@ jobs:
     uses: ./.github/workflows/firemarshal.yml
     secrets: inherit
 
+  firesim:
+    needs: chia
+    uses: ./.github/workflows/firesim.yml
+    secrets: inherit
+
   # These install chia themselves instead of deriving from the chia image, so
   # they can start immediately.
   champsim:

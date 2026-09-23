@@ -1,0 +1,78 @@
+# FireSim manager image.
+#
+# Runs the FireSim manager against a single, already-running local FPGA. The
+# container is started with `--net=host --privileged -v /dev:/dev`, so the
+# manager's "localhost" run farm host is the F2 instance itself and the AWS
+# FPGA management tools on the host AMI are reachable.
+#
+# No chipyard: hwdb entries carry a prebuilt `driver_tar`, so FireSim skips
+# `make driver` and never needs the RTL sources.
+#
+# Build (from the chia repo root):
+#
+#   docker buildx build \
+#       -f dockerfiles/FireSimDockerfile \
+#       -t ghcr.io/ucb-bar/chia-firesim:latest .
+ARG BASE_IMAGE=ghcr.io/ucb-bar/chia:latest
+FROM ${BASE_IMAGE}
+
+USER root
+
+# openssh-client: the manager reaches its run farm host over ssh, including
+# when that host is localhost. screen: the simulation runs inside one.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    openssh-client \
+    openssh-server \
+    screen \
+    rsync \
+    sudo \
+    kmod \
+    pciutils \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+USER ray
+ENV HOME=/home/ray
+WORKDIR /home/ray
+
+ARG FIRESIM_REPO=https://github.com/firesim/firesim.git
+ARG FIRESIM_REF=main
+
+RUN git clone --depth 1 -b ${FIRESIM_REF} ${FIRESIM_REPO} /home/ray/firesim \
+    && git -C /home/ray/firesim rev-parse HEAD
+
+# Manager dependencies. FireSim's own conda-reqs cover the build flow; the
+# manager itself needs fabric 1.x (deploy/firesim imports fabric.api), fsspec
+# + s3fs for driver_tar/bitstream_tar URIs, and boto3 for the AWS calls.
+RUN pip install --no-cache-dir \
+    'Fabric3==1.14.post1' \
+    'fsspec' \
+    's3fs' \
+    'boto3' \
+    'pyyaml' \
+    'argcomplete' \
+    'colorama' \
+    'mypy_boto3_ec2'
+
+# managerinit only copies the sample configs into place and then, on f2, runs
+# an interactive awsinit(). Do the copy here; chia.firesim.render writes the
+# runtime and hwdb configs per job.
+RUN cd /home/ray/firesim/deploy \
+    && for f in build build_recipes hwdb runtime; do \
+         cp sample-backup-configs/sample_config_$f.yaml config_$f.yaml; \
+       done \
+    && mkdir -p logs results-build results-workload
+
+# The manager hardcodes ~/firesim.pem as its ssh key (deploy/firesim). Generate
+# one here; SimSplitter authorizes the public half on the F2 host, which is what
+# `localhost` resolves to under --net=host.
+RUN ssh-keygen -t rsa -b 2048 -N "" -f /home/ray/firesim.pem \
+    && chmod 600 /home/ray/firesim.pem \
+    && mkdir -p /home/ray/.ssh \
+    && printf 'Host *\n    StrictHostKeyChecking no\n    UserKnownHostsFile /dev/null\n' \
+       > /home/ray/.ssh/config \
+    && chmod 600 /home/ray/.ssh/config
+
+ENV FIRESIM_DIR=/home/ray/firesim
+WORKDIR /home/ray
