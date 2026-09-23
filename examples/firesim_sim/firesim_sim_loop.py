@@ -18,12 +18,14 @@ import sys
 import ray
 
 from chia.aws.config import AWSConfig
+from chia.cluster.config import load_config
 from chia.base.ChiaFunction import get
 from chia.chipyard.firemarshal_node import FireMarshalNode
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.sim_splitter import SimSplitter
 
 S3_BUCKET = "firesim-chia-builds"
+CLUSTER_YAML = "cluster.yaml"   # the cluster the F2 workers join
 NUM_FPGAS = 2
 
 # The bitstream and the driver built against it. Either half may instead be
@@ -47,7 +49,8 @@ def main() -> int:
         print("compose failed\n" + workload.stderr[-2000:])
         return 1
 
-    splitter = SimSplitter(aws_config=AWSConfig(ssh_private_key="~/firesim.pem"),
+    splitter = SimSplitter(cluster_config=load_config(CLUSTER_YAML),
+                           aws_config=AWSConfig(ssh_private_key="~/firesim.pem"),
                            s3_bucket=S3_BUCKET)
     jobs = splitter.split_workload(workload)
     farm = splitter.launch(NUM_FPGAS)

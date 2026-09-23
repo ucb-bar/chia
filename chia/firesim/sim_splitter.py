@@ -1,7 +1,9 @@
 """Run a multi-job FireMarshal workload across a farm of F2 FPGAs.
 
-One F2 instance per FPGA, each joined to this cluster as a Chia worker holding
-one unit of ``firesim_fpga``. Jobs are submitted all at once and Ray admits one
+Only the F2 bring-up is ours. Once the instances are running, their IPs go
+through :func:`~chia.cluster.node_setup.setup_worker_node`, the same call
+``chia up`` uses, so the F2s join exactly like any other Chia worker — one unit
+of ``firesim_fpga`` each. Jobs are then submitted all at once and Ray admits one
 per free FPGA, so nothing here schedules.
 
 Runs on the head node, not as a Ray task, so it can wait on the jobs it submits.
@@ -20,17 +22,19 @@ from concurrent.futures import ThreadPoolExecutor
 
 from chia.aws.config import AWSConfig, EC2InstanceConfig
 from chia.aws.ec2 import launch_ec2_instances, terminate_ec2_instances, wait_for_instances
-from chia.aws.host import EphemeralEC2Host
+from chia.cluster.config import ClusterConfig, DockerConfig, NodeAssignment, NodeTypeConfig
+from chia.cluster.log import get_logger
+from chia.cluster.node_setup import setup_worker_node
+from chia.cluster.ssh import SSHClient
 from chia.aws.s3 import S3Node
 from chia.chipyard.state_def import FireMarshalArtifact
-from chia.cluster.log import get_logger
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.manager_node import FPGA_RESOURCE, FireSimManagerNode
 from chia.firesim.state_def import SimFarm, SimJob, SimJobResult
 
 logger = get_logger("firesim.sim_splitter")
 
-CONTAINER_NAME = "chia-firesim"
+NODE_TYPE = "firesim"
 S3_PREFIX = "workloads"
 
 # The FPGA Developer AMI has the FPGA tools but not docker.
@@ -47,6 +51,7 @@ class SimSplitter:
 
     def __init__(
         self,
+        cluster_config: ClusterConfig,
         aws_config: AWSConfig,
         s3_bucket: str,
         image: str = "ghcr.io/ucb-bar/chia-firesim:latest",
@@ -54,16 +59,24 @@ class SimSplitter:
     ):
         """
         Args:
+            cluster_config: The cluster the F2 workers join.
             aws_config: Credentials, region, and networking for the F2 hosts.
             s3_bucket: Bucket the workload images and bitstreams are staged to.
             image: FireSim manager container image.
             instance_type: F2 instance type; one FPGA is used per instance.
         """
+        self.cluster_config = cluster_config
         self.aws_config = aws_config
         self.s3_bucket = s3_bucket
-        self.image = image
         self.instance_type = instance_type
-        self.chia_source_path = _chia_source()
+        self.node_type = NodeTypeConfig(
+            name=NODE_TYPE,
+            resources={FPGA_RESOURCE: 1},
+            # --net=host is added by DockerManager; --privileged and /dev are
+            # what let the manager reach the FPGA on this host.
+            docker=DockerConfig(image=image, container_name="chia-firesim",
+                                run_options=["--privileged", "-v", "/dev:/dev"]),
+        )
 
     def split_workload(self, artifact: FireMarshalArtifact) -> list[SimJob]:
         """Unpack a FireMarshal workload into one SimJob per job, staged to S3.
@@ -106,7 +119,7 @@ class SimSplitter:
         return jobs
 
     def launch(self, num_fpgas: int) -> SimFarm:
-        """Bring up one F2 instance per FPGA and join them to this cluster."""
+        """Bring up one F2 instance per FPGA and join them to the cluster."""
         config = EC2InstanceConfig(
             instance_type=self.instance_type,
             volume_size_gb=300,
@@ -119,15 +132,14 @@ class SimSplitter:
         farm = SimFarm(instance_ids=[i.instance_id for i in instances],
                        region=self.aws_config.region)
         try:
-            # Measure from what the cluster already has, so a second farm does
-            # not see the first one's FPGAs and return before its own join.
-            baseline = _fpga_count()
             ready = wait_for_instances(farm.instance_ids, region=farm.region)
-            with ThreadPoolExecutor(max_workers=len(ready)) as pool:
-                joined = sum(pool.map(self._setup_host, ready))
+            ips = [i.public_ip if self.aws_config.use_public_ip else i.private_ip
+                   for i in ready]
+            with ThreadPoolExecutor(max_workers=len(ips)) as pool:
+                joined = [ip for ip, ok in zip(ips, pool.map(self._join, ips)) if ok]
             if not joined:
-                raise RuntimeError("Every F2 host failed setup")
-            self._wait_for_first_worker(baseline)
+                raise RuntimeError("No F2 host joined the cluster")
+            logger.info(f"{len(joined)} of {len(ips)} F2 worker(s) joined")
         except Exception:
             self.teardown(farm)
             raise
@@ -164,89 +176,27 @@ class SimSplitter:
             logger.info(f"Terminating {len(farm.instance_ids)} F2 instance(s)")
             terminate_ec2_instances(farm.instance_ids, region=farm.region)
 
-    def _setup_host(self, instance) -> bool:
-        """Start the FireSim container and join it to the cluster as a worker."""
-        host = EphemeralEC2Host(instance, self.aws_config)
-        src = self.chia_source_path
+    def _join(self, ip: str) -> bool:
+        """Join one F2 host to the cluster the way every other worker joins."""
         try:
-            host.wait_ready(timeout=600)
-            host.run("sudo cloud-init status --wait", timeout=900, check=False)
-
-            token = _github_token()
-            if token:
-                host.run(f"echo {shlex.quote(token)} | sudo docker login ghcr.io "
-                         f"-u chia --password-stdin", timeout=60, check=False)
-            host.run(f"sudo docker pull {shlex.quote(self.image)}", timeout=1800)
-
-            host.run(f"mkdir -p {src}", timeout=10)
-            host.rsync_up(f"{src}/", f"{src}/", exclude=[".git", "__pycache__", "*.pyc"])
-
-            # --net=host makes the manager's "localhost" run farm host this
-            # machine; --privileged + /dev let it reach the FPGA.
-            host.run(
-                f"sudo docker run -d --name {CONTAINER_NAME} "
-                f"--net=host --privileged -v /dev:/dev -v {src}:{src}:ro "
-                f"{shlex.quote(self.image)} sleep infinity", timeout=120)
-
-            # So the manager can ssh to "localhost" as the AMI's ubuntu user.
-            pubkey = host.run(
-                f"sudo docker exec {CONTAINER_NAME} cat /home/ray/firesim.pem.pub",
-                timeout=30).stdout.strip()
-            host.run(
-                f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-                f"grep -qxF {shlex.quote(pubkey)} ~/.ssh/authorized_keys 2>/dev/null || "
-                f"echo {shlex.quote(pubkey)} >> ~/.ssh/authorized_keys", timeout=30)
-
-            host.run(
-                f"sudo docker exec {CONTAINER_NAME} bash -lc " + shlex.quote(
-                    f"export PYTHONPATH={src}:$PYTHONPATH && "
-                    f"ray start --address={_head_address()} "
-                    f"--resources='{json.dumps({FPGA_RESOURCE: 1})}'"), timeout=300)
-            logger.info(f"[{instance.instance_id}] Worker joined")
+            setup_worker_node(self.cluster_config, NodeAssignment(
+                ip=ip, node_type=self.node_type,
+                resources=dict(self.node_type.resources)))
+            self._authorize_manager_key(ip)
+            logger.info(f"[{ip}] Worker joined")
             return True
         except Exception as e:
-            logger.error(f"[{instance.instance_id}] Setup failed: {e}")
+            logger.error(f"[{ip}] Join failed: {e}")
             return False
 
-    def _wait_for_first_worker(self, baseline: float, timeout: int = 600) -> None:
-        """Block until one of the farm's FPGAs joins; the rest catch up.
-
-        Ray queues jobs against whatever is registered, so a slow host does not
-        need to hold up the run.
-        """
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if _fpga_count() > baseline:
-                return
-            time.sleep(5)
-        raise RuntimeError(f"No FPGA worker registered within {timeout}s")
-
-
-def _head_address() -> str:
-    """The head this splitter is connected to, which the F2 workers join."""
-    import ray
-
-    return ray.get_runtime_context().gcs_address
-
-
-def _fpga_count() -> float:
-    import ray
-
-    return ray.cluster_resources().get(FPGA_RESOURCE, 0)
-
-
-def _github_token() -> str:
-    if os.environ.get("GITHUB_TOKEN"):
-        return os.environ["GITHUB_TOKEN"].strip()
-    path = os.path.expanduser("~/.config/chia/github-token")
-    return open(path).read().strip() if os.path.isfile(path) else ""
-
-
-def _chia_source() -> str:
-    """The chia checkout to rsync onto each host and mount in the container.
-
-    ``chia`` is a namespace package, so it has ``__path__`` but no ``__file__``.
-    """
-    import chia
-
-    return os.path.dirname(os.path.abspath(list(chia.__path__)[0]))
+    def _authorize_manager_key(self, ip: str) -> None:
+        """Let the manager ssh to "localhost", which under --net=host is here."""
+        auth = self.cluster_config.get_ssh_auth(ip)
+        ssh = SSHClient(ip, auth.ssh_user, auth.ssh_private_key)
+        container = self.node_type.docker.container_name
+        pubkey = ssh.run(
+            f"sudo docker exec {container}-0 cat /home/ray/firesim.pem.pub",
+            timeout=30).stdout.strip()
+        ssh.run(f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+                f"grep -qxF {shlex.quote(pubkey)} ~/.ssh/authorized_keys 2>/dev/null || "
+                f"echo {shlex.quote(pubkey)} >> ~/.ssh/authorized_keys", timeout=30)
