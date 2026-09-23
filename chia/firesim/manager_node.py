@@ -23,12 +23,12 @@ from chia.firesim.state_def import SimJob, SimJobResult
 FIRESIM_DIR = "/home/ray/firesim"
 FPGA_RESOURCE = "firesim_fpga"
 
-# `firesim` exits unless sourceme-manager.sh has run (it sets FIRESIM_SOURCED
-# and puts deploy/ on PATH). --skip-ssh-setup because the container's entrypoint
-# already loaded firesim.pem into an ssh-agent.
+# `firesim` exits unless sourceme-manager.sh has run: it sets FIRESIM_SOURCED,
+# which check_env() requires, and loads ~/firesim.pem into an ssh-agent so both
+# paramiko and the rsync it shells out to can reach the run farm host.
 _RUN = r"""set -e
 cd "$1"
-source sourceme-manager.sh --skip-ssh-setup
+source sourceme-manager.sh
 cd deploy
 ./firesim "$2"
 """
