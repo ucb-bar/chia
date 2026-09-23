@@ -199,6 +199,8 @@ class SimSplitter:
 
         published = bitstream.publish(self.s3_bucket, f"bitstreams/{bitstream.quintuplet}")
         node = FireSimManagerNode()
+        # Ray is the queue: every job is submitted at once and the scheduler
+        # admits one per free firesim_fpga unit, so there is no window to keep.
         refs = {
             job.benchmark_name: node.run_job.chia_remote(
                 node, job=job, bitstream=published,
