@@ -25,7 +25,6 @@ from chia.firesim.sim_splitter import SimSplitter
 
 S3_BUCKET = "firesim-chia-builds"
 NUM_FPGAS = 2
-RAY_ADDRESS = "127.0.0.1:6379"   # head GCS address the F2 workers join
 
 # The bitstream and the driver built against it. Either half may instead be
 # passed by value (`*_bytes`) straight out of a build node.
@@ -49,7 +48,7 @@ def main() -> int:
         return 1
 
     splitter = SimSplitter(aws_config=AWSConfig(ssh_private_key="~/firesim.pem"),
-                           ray_address=RAY_ADDRESS,
+                           ray_address=ray.get_runtime_context().gcs_address,
                            s3_bucket=S3_BUCKET)
     jobs = splitter.split_workload(workload)
     farm = splitter.launch(NUM_FPGAS)
