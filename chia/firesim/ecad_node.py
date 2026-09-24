@@ -1,6 +1,6 @@
 """Build an f2 bitstream by running FireSim's own ``firesim buildbitstream``.
 
-Runs inside the FireSim build container on an ECAD instance (see
+Runs inside the chisel-build container on an ECAD instance (see
 ``chia.firesim.specs.ECAD``). FireSim does all the work — Chisel on
 ``localhost`` (this container), Vivado on the build-farm host (the instance,
 at 127.0.0.2), then ``create-fpga-image``. This node only applies the diff,
@@ -42,13 +42,22 @@ class EcadBuildNode:
         log = []
         steps = [
             ("git apply", f"cd {CHIPYARD} && git apply -" if diff else "true", diff),
-            # FireSim's `localhost`: this container's sshd, trusting the key
+            # FireSim's `localhost`: an sshd in this container on 127.0.0.1
+            # (the host's gave that address up at boot), trusting the key
             # AWSManager generated and authorized on the host.
-            ("sshd", "pgrep -x sshd >/dev/null || sudo /usr/sbin/sshd; "
+            ("sshd", "test -x /usr/sbin/sshd || "
+                     "(sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server); "
+                     "echo 'ListenAddress 127.0.0.1' | sudo tee /etc/ssh/sshd_config.d/chia.conf >/dev/null; "
+                     "sudo mkdir -p /run/sshd; "
+                     "pgrep -x sshd >/dev/null || sudo /usr/sbin/sshd; "
                      "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
                      "grep -qxFf ~/firesim.pem.pub ~/.ssh/authorized_keys 2>/dev/null || "
                      "cat ~/firesim.pem.pub >> ~/.ssh/authorized_keys; "
                      "chmod 600 ~/.ssh/authorized_keys", ""),
+            # deploy/firesim imports fabric 1.x, which FireSim's conda lock omits.
+            ("fabric", f"source {CHIPYARD}/env.sh && "
+                       "(python -c 'import fabric.api' 2>/dev/null || "
+                       "pip install -q 'Fabric3==1.14.post1')", ""),
             ("buildbitstream", f"source {CHIPYARD}/env.sh && cd {FIRESIM} && "
                                f"source sourceme-manager.sh && cd deploy && "
                                f"./firesim buildbitstream", ""),

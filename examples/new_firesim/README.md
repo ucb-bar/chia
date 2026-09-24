@@ -53,7 +53,7 @@ this test is directly runnable on an F2.
 FireSim ssh's to `localhost` for Chisel and needs chipyard there; Vivado needs
 the AMI. Chia containers run `--net=host`, so both share one loopback. The ECAD
 instance's boot script moves the host sshd to its private IP and `127.0.0.2`,
-and the container runs its own sshd on `127.0.0.1`. FireSim's `localhost` is
+and the node starts an sshd inside the chisel-build container on `127.0.0.1`. FireSim's `localhost` is
 then the container, and the build farm host `ubuntu@127.0.0.2` is the instance.
 
 ## Prerequisites

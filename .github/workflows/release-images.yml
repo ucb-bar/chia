@@ -81,11 +81,6 @@ jobs:
     uses: ./.github/workflows/firesim.yml
     secrets: inherit
 
-  firesim-build:
-    needs: chipyard
-    uses: ./.github/workflows/firesim-build.yml
-    secrets: inherit
-
   # These install chia themselves instead of deriving from the chia image, so
   # they can start immediately.
   champsim:
