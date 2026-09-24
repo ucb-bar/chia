@@ -1,7 +1,7 @@
 # Cluster for the ECAD bitstream smoke test (see README.md).
 #
 #   chia up   examples/new_firesim/cluster.yaml -y
-#   chia job submit --working-dir examples/new_firesim -- python ecad_build_loop.py
+#   chia job submit --working-dir examples/new_firesim -- python bitstream_build_loop.py
 #   chia down examples/new_firesim/cluster.yaml
 #
 # Only the chipyard worker is declared here. The ECAD machine is not: the loop

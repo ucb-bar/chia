@@ -25,9 +25,8 @@ CHIPYARD = "/home/ray/chipyard"
 FIRESIM = f"{CHIPYARD}/sims/firesim"
 DEPLOY = f"{FIRESIM}/deploy"
 
-# The `buildbitstream` task of deploy/firesim, minus its ssh to localhost.
-# Runs from DEPLOY in chipyard's env, so FireSim's modules import as they do
-# for the CLI.
+# This is FireSim's buildbitsterma code rewritten to not use localhost
+# swaps run for local so the commands are executed locally
 _BUILD = r"""
 import argparse, os, sys
 sys.path.insert(0, os.getcwd())

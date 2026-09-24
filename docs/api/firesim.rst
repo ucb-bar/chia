@@ -44,4 +44,4 @@ Worker Specs
 ECAD Build Node
 ---------------
 
-.. automodule:: chia.firesim.ecad_node
+.. automodule:: chia.firesim.bitstream_build_node

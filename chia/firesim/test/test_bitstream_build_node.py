@@ -2,16 +2,16 @@
 
 import yaml
 
-from chia.firesim import ecad_node
+from chia.firesim import bitstream_build_node
 from chia.firesim.state_def import BuildRecipe
 
 
 def test_configs_carry_every_key_buildbitstream_reads(tmp_path, monkeypatch):
-    monkeypatch.setattr(ecad_node, "DEPLOY", str(tmp_path))
+    monkeypatch.setattr(bitstream_build_node, "DEPLOY", str(tmp_path))
     (tmp_path / "built-hwdb-entries").mkdir()
     (tmp_path / "built-hwdb-entries" / "r").write_text("stale")
 
-    ecad_node.BitstreamBuildNode._write_configs(BuildRecipe(name="r"))
+    bitstream_build_node.BitstreamBuildNode._write_configs(BuildRecipe(name="r"))
 
     build = yaml.safe_load((tmp_path / "config_build.yaml").read_text())
     assert build["builds_to_run"] == ["r"]

@@ -27,10 +27,10 @@ for that whole time. Everything before the launch takes minutes.
 chia up examples/new_firesim/cluster.yaml -y
 
 # Minutes. Checks the LLM edit and the diff, launches nothing.
-chia job submit --working-dir examples/new_firesim -- python ecad_build_loop.py --diff-only
+chia job submit --working-dir examples/new_firesim -- python bitstream_build_loop.py --diff-only
 
 # Hours. Launches the ECAD machine, builds, tears it down.
-chia job submit --working-dir examples/new_firesim -- python ecad_build_loop.py
+chia job submit --working-dir examples/new_firesim -- python bitstream_build_loop.py
 ```
 
 Run `--diff-only` first. It exercises everything cheap, and a failure there

@@ -12,8 +12,8 @@ Small on purpose: Rocket at 75 MHz, the cheapest real f2 build there is. Budget
 before the ECAD launch is minutes, so run that part alone first with --diff-only.
 
 Run (after `chia up cluster.local.yaml -y`; the cluster's dashboard is on 8285):
-    RAY_ADDRESS=http://127.0.0.1:8285 chia job submit --working-dir . -- python ecad_build_loop.py --diff-only
-    RAY_ADDRESS=http://127.0.0.1:8285 chia job submit --working-dir . -- python ecad_build_loop.py
+    RAY_ADDRESS=http://127.0.0.1:8285 chia job submit --working-dir . -- python bitstream_build_loop.py --diff-only
+    RAY_ADDRESS=http://127.0.0.1:8285 chia job submit --working-dir . -- python bitstream_build_loop.py
 """
 
 import argparse
@@ -29,7 +29,7 @@ from chia.aws.manager import AWSManager
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.base.tools.BashTool import BashTool
 from chia.cluster.config import load_config
-from chia.firesim.ecad_node import BitstreamBuildNode
+from chia.firesim.bitstream_build_node import BitstreamBuildNode
 from chia.firesim.specs import ECAD
 from chia.firesim.state_def import BuildRecipe
 from chia.models.claude import ClaudeCodeLLM
@@ -67,7 +67,7 @@ def main() -> int:
                         help="Stop after the diff; do not launch the ECAD machine")
     args = parser.parse_args()
 
-    # TODO: drop once the chisel-build image ships a chia that has chia.firesim.ecad_node.
+    # TODO: drop once the chisel-build image ships a chia that has chia.firesim.bitstream_build_node.
     ray.init(address="auto",
              runtime_env={"py_modules": [os.path.dirname(chia.firesim.__path__[0])]})
 
