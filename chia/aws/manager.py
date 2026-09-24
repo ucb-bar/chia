@@ -110,8 +110,7 @@ class AWSManager:
         import ray
 
         gcs_port = int(ray.get_runtime_context().gcs_address.rsplit(":", 1)[1])
-        head = next(n for n in ray.nodes()
-                    if n["Alive"] and "node:__internal_head__" in n["Resources"])
+        head = next(n for n in ray.nodes() if "node:__internal_head__" in n["Resources"])
         low, high = sorted((head["NodeManagerPort"], head["ObjectManagerPort"]))
         args = next(a for a in (_cmdline(p) for p in os.listdir("/proc") if p.isdigit())
                     if f"--node_id={head['NodeID']}" in a)
@@ -127,6 +126,6 @@ class AWSManager:
 def _cmdline(pid: str) -> list[str]:
     try:
         with open(f"/proc/{pid}/cmdline", "rb") as f:
-            return f.read().decode(errors="replace").split("\0")
+            return f.read().decode().split("\0")
     except OSError:
         return []
