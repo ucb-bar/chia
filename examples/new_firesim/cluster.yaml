@@ -57,6 +57,8 @@ aws:
     security_group_name:                    #FILL: sg-... or a group name
     use_public_ip: false
 
+# The head's Ray and chia come from this env (README: conda env named chia_env).
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
 head_setup_commands: []
 worker_setup_commands: []
 
