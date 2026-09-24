@@ -24,7 +24,7 @@ def _root_volume(gb: int) -> dict:
 
 # Builds a bitstream with FireSim's own build code, AGFI included, entirely
 # inside the container.
-ECAD = (
+F2_ECAD = (
     NodeTypeConfig(
         name="ecad",
         resources={ECAD_RESOURCE: 1},

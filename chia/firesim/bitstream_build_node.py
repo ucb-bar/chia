@@ -1,7 +1,7 @@
 """Build an f2 bitstream with FireSim's own build code.
 
 Runs inside the chisel-build container on an ECAD instance (see
-``chia.firesim.specs.ECAD``). The node applies the diff, writes the build
+``chia.firesim.specs.F2_ECAD``). The node applies the diff, writes the build
 configs, and runs the steps of ``firesim buildbitstream`` through FireSim's own
 functions (``_BUILD``). The CLI would ssh to ``localhost`` for Chisel, which
 under ``--net=host`` is the instance rather than this container, so those two

@@ -30,7 +30,7 @@ from chia.base.ChiaFunction import ChiaFunction, get
 from chia.base.tools.BashTool import BashTool
 from chia.cluster.config import load_config
 from chia.firesim.bitstream_build_node import BitstreamBuildNode
-from chia.firesim.specs import ECAD
+from chia.firesim.specs import F2_ECAD
 from chia.firesim.state_def import BuildRecipe
 from chia.models.claude import ClaudeCodeLLM
 
@@ -96,7 +96,7 @@ def main() -> int:
                              key_name=cluster.aws_config.key_name,
                              ssh_user=cluster.aws_config.ssh_user,
                              ssh_private_key=cluster.aws_config.ssh_private_key))
-    farm = manager.launch(ECAD, count=1)
+    farm = manager.launch(F2_ECAD, count=1)
     try:
         node = BitstreamBuildNode()
         result = get(node.build_bitstream.chia_remote(
