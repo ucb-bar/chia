@@ -303,7 +303,7 @@ def _expand_env_vars(data):
         import re
         return re.sub(r'\$\{([^}]+)\}', lambda m: os.environ.get(m.group(1), m.group(0)), data)
     if isinstance(data, dict):
-        return {k: _expand_env_vars(v) for k, v in data.items()}
+        return {_expand_env_vars(k): _expand_env_vars(v) for k, v in data.items()}
     if isinstance(data, list):
         return [_expand_env_vars(item) for item in data]
     return data

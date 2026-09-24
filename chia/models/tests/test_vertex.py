@@ -365,7 +365,8 @@ def _prompt_block_resp(reason="SAFETY"):
     )
 
 
-@pytest.mark.parametrize("reason", ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT"])
+@pytest.mark.parametrize("reason", ["SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT",
+                                    "MALFORMED_FUNCTION_CALL"])
 def test_content_block_finish_reason_raises(monkeypatch, reason):
     capture = {"calls": []}
     # Candidate with a blocking finish_reason and no usable parts.

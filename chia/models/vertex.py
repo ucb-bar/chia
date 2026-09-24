@@ -151,7 +151,8 @@ class UnknownVertexError(VertexError):
 
 class ContentBlockedError(VertexError):
     """The model returned no usable content because the prompt or the response
-    was blocked (safety, recitation, blocklist, ...).
+    was blocked (safety, recitation, blocklist, ...) or the response was
+    unusable (a malformed function call).
 
     This is NOT an HTTP/API error — Gemini reports it as a 200-OK response whose
     candidate carries a blocking ``finish_reason`` (or whose ``prompt_feedback``
@@ -173,7 +174,7 @@ class ContentBlockedError(VertexError):
 # separately as MaxOutputTokensError).
 _BLOCK_FINISH_REASONS = frozenset({
     "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII",
-    "IMAGE_SAFETY",
+    "IMAGE_SAFETY", "MALFORMED_FUNCTION_CALL",
 })
 
 
