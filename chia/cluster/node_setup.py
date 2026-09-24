@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import json
 import re
 import shlex
@@ -338,12 +339,21 @@ def allocate_worker_tunnels(
     next_addr = ipaddress.IPv4Address("127.0.0.2")
     ip_worker_count: dict[str, int] = defaultdict(int)
     global_tool_index = 0
+    # Another cluster on this head allocates from the same ranges: skip what its tunnels hold.
+    foreign = _foreign_tunnel_binds(tunneled_ips)
+    head_addr = socket.gethostbyname(config.head_ip)
 
     for a in assignments:
         if a.ip not in tunneled_ips:
             continue
 
         base_tc = config.get_tunnel_config(a.ip) or TunnelConfig()
+        while any(addr == str(next_addr) for addr, _ in foreign):
+            next_addr += 1
+        while any((head_addr, port) in foreign for port in range(
+                base_tc.tool_port_min + global_tool_index * _PORT_STEP_DEFAULT,
+                base_tc.tool_port_max + global_tool_index * _PORT_STEP_DEFAULT + 1)):
+            global_tool_index += 1
         # Per-IP offset for Ray/GCS ports (bind on unique tun_ip per worker).
         ray_offset = ip_worker_count[a.ip] * _PORT_STEP_DEFAULT
         worker_offset = ip_worker_count[a.ip] * _PORT_STEP_WORKER
@@ -369,6 +379,24 @@ def allocate_worker_tunnels(
             next_addr += 1
 
     return result
+
+
+def _foreign_tunnel_binds(own_ips: set[str]) -> set[tuple[str, int]]:
+    """Head-side (address, port) binds of live ``ssh -N`` tunnels to machines outside *own_ips*."""
+    binds: set[tuple[str, int]] = set()
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                args = [a for a in f.read().decode().split("\0") if a]
+        except OSError:
+            continue
+        if args[:2] != ["ssh", "-N"] or args[-1].rsplit("@", 1)[-1] in own_ips:
+            continue
+        for flag, spec in zip(args, args[1:]):
+            if flag == "-L":
+                addr, port = spec.split(":")[:2]
+                binds.add((addr, int(port)))
+    return binds
 
 
 def _make_ssh(config: ClusterConfig, ip: str) -> SSHClient:
