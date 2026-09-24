@@ -22,8 +22,9 @@ class BashTool(ChiaTool):
         work_dir: str = "/",
         timeout_seconds: int = 120,
         task_options: Optional[Dict] = None,
+        server_actor=None,
     ):
-        super().__init__(name, task_options=task_options)
+        super().__init__(name, task_options=task_options, server_actor=server_actor)
         self.work_dir = work_dir
         self.timeout_seconds = timeout_seconds
 

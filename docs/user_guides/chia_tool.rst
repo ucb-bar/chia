@@ -86,6 +86,19 @@ can be used instead of ``setup()``.
 The tool lifecycle
 -------------------
 
+Sharing a server process
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+A driver can create a server with
+``ChiaTool.create_server_actor(resources={"agent_tools": 1})`` and pass its
+handle as ``server_actor`` to multiple ``BashTool`` instances. Each tool keeps
+its own name, endpoint, working directory, and timeout. Its ``task_options``
+may specify a distinct ``CHIA_TOOL_BASE_PORT`` / ``CHIA_TOOL_MAX_PORT`` range;
+placement comes from the shared server. Stopping one tool closes only its
+endpoint. The creating driver must keep the server alive until all consumers
+finish and then call ``ChiaTool.stop_server_actor(server)``. This reduces the
+number of resident Python processes for flows with many concurrent agents.
+
 Constructing a tool deploys it
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

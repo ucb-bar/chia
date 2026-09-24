@@ -58,7 +58,7 @@ class ChiaTool:
     # Stores {"name": str, "port": int, "node_id": str}
     _tool_registry: List[ToolInfo] = []
 
-    def __init__(self, name: str, task_options: Optional[Dict] = None, logging_level = logging.DEBUG):
+    def __init__(self, name: str, task_options: Optional[Dict] = None, logging_level = logging.DEBUG, *, server_actor=None):
         """Initializes ChiaTool with a name and optional resource requirements.
         """
         self.name = name
@@ -77,7 +77,24 @@ class ChiaTool:
         self.logger.setLevel(logging_level)
         self.node_id = None  # Will be set to the actual node_id by __post_init__.
         self.tool_info = None
-        self._server_actor = None  # Ray actor handle, set by __post_init__
+        self._server_actor = server_actor
+        self._owns_server_actor = server_actor is None
+
+    @staticmethod
+    def create_server_actor(**task_options):
+        """Create a shared server owned by the calling driver.
+
+        Pass its handle to tools via ``server_actor`` and call
+        ``stop_server_actor`` when every tool using it has finished.
+        """
+        return _ToolServerActor.options(**task_options).remote()
+
+    @staticmethod
+    def stop_server_actor(actor):
+        try:
+            ray.get(actor.stop.remote())
+        finally:
+            ray.kill(actor, no_restart=True)
 
     def __post_init__(self):
         # Idempotency guard: deploying twice would spin up a second actor and
@@ -85,12 +102,10 @@ class ChiaTool:
         # setup()-hook construction style (see __init_subclass__) safe even when
         # a subclass also calls super().__post_init__() from a hand-written
         # __init__.
-        if self._server_actor is not None:
+        if self.tool_info is not None:
             return
-        if self.task_options is not None:
-            self._server_actor = _ToolServerActor.options(**self.task_options).remote()
-        else:
-            self._server_actor = _ToolServerActor.remote()
+        if self._server_actor is None:
+            self._server_actor = self.create_server_actor(**(self.task_options or {}))
 
         self.hostname, self.port, self.node_id = ray.get(
             self._server_actor.start.remote(self)
@@ -157,11 +172,13 @@ class ChiaTool:
             ChiaTool._tool_registry.remove(self.tool_info)
         if self._server_actor is not None:
             try:
-                ray.get(self._server_actor.stop.remote())
+                ray.get(self._server_actor.stop.remote(self.name))
             except Exception as e:
                 self.logger.warning(f"Error stopping tool {self.name}: {e}")
-            ray.kill(self._server_actor, no_restart=True)
+            if self._owns_server_actor:
+                ray.kill(self._server_actor, no_restart=True)
             self._server_actor = None
+        self.tool_info = None
 
     def dict_entry(self):
         return self.mcp
@@ -266,14 +283,14 @@ _active_servers: Dict[str, Tuple["uvicorn.Server", _threading.Thread, str, int]]
 
 @ray.remote(num_cpus=0)
 class _ToolServerActor:
-    """Persistent Ray actor that manages a uvicorn server for one MCP tool.
+    """Persistent Ray actor that manages independent MCP tool servers.
 
     Because it is an actor, start() and stop() always execute in the same
     process, so the uvicorn.Server reference (in _active_servers) is never lost.
     """
 
     def __init__(self):
-        self._name = None
+        self._names = set()
 
     def start(self, tool: "ChiaTool") -> Tuple[str, int, str]:
         """Start the MCP server. Returns (advertised_ip, port, node_id).
@@ -288,22 +305,31 @@ class _ToolServerActor:
         forward tunnel can reach it.
         """
         import os
-        base_port = int(os.environ.get("CHIA_TOOL_BASE_PORT", "8000"))
-        max_port = int(os.environ.get("CHIA_TOOL_MAX_PORT", "0"))
+        if tool.name in self._names:
+            raise ValueError(f"Tool {tool.name!r} is already running on this server")
+        env = os.environ
+        if not tool._owns_server_actor:
+            env = {**os.environ, **(tool.task_options or {}).get("runtime_env", {}).get("env_vars", {})}
+        base_port = int(env.get("CHIA_TOOL_BASE_PORT", "8000"))
+        max_port = int(env.get("CHIA_TOOL_MAX_PORT", "0"))
         max_tries = (max_port - base_port + 1) if max_port else 100
 
         bind_ip = ray.util.get_node_ip_address()
         port = start_router(tool, bind_ip, base_port=base_port, max_tries=max_tries)
         node_id = ray.get_runtime_context().get_node_id()
-        self._name = tool.name
+        self._names.add(tool.name)
         advertise_ip = os.environ.get("CHIA_TOOL_ADVERTISE_HOST", bind_ip)
         return advertise_ip, port, node_id
 
-    def stop(self) -> bool:
-        """Stop the uvicorn server. Returns True if it was running."""
-        if self._name:
-            return stop_router(self._name)
-        return False
+    def stop(self, name: str | None = None) -> bool:
+        """Stop one endpoint, or all endpoints when the owner closes the server."""
+        names = list(self._names) if name is None else [name]
+        stopped = False
+        for item in names:
+            if item in self._names:
+                stopped = stop_router(item) or stopped
+                self._names.remove(item)
+        return stopped
 
 
 def start_router(tool: ChiaTool, ip_address: str, base_port: int = 8000, max_tries: int = 100) -> int:
