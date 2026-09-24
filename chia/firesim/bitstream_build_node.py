@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+import threading
 
 import yaml
 
@@ -51,8 +52,11 @@ config = BuildConfigFile(argparse.Namespace(
 config.request_build_hosts()
 config.wait_on_build_host_initializations()
 for build in config.builds_list:
+    print("[build] replace_rtl", flush=True)
     build.bitbuilder.replace_rtl()
+    print("[build] build_driver", flush=True)
     build.bitbuilder.build_driver()
+    print("[build] build_bitstream", flush=True)
     if not build.bitbuilder.build_bitstream():
         sys.exit(1)
 """
@@ -89,6 +93,7 @@ class BitstreamBuildNode:
         ]
         self._write_configs(recipe)
         for name, cmd, stdin in steps:
+            print(f"[build] {name}", flush=True)
             rc, out = self._sh(cmd, stdin)
             log.append(f"=== {name} (rc={rc}) ===\n{out[-4000:]}")
             if rc != 0:
@@ -145,11 +150,20 @@ class BitstreamBuildNode:
                 yaml.safe_dump(config, f, sort_keys=False)
 
     def _sh(self, cmd: str, stdin: str = "") -> tuple[int, str]:
-        """Run in this container; never raises."""
+        """Run in this container and return its output; print only the
+        ``[build]`` step lines as they come. Never raises."""
         self.logger.info(f"$ {cmd[:200]}")
-        try:
-            p = subprocess.run(["bash", "-lc", cmd], input=stdin, text=True,
-                               capture_output=True, timeout=self.timeout_seconds)
-            return p.returncode, p.stdout + p.stderr
-        except subprocess.TimeoutExpired:
-            return -1, f"timeout after {self.timeout_seconds}s"
+        p = subprocess.Popen(["bash", "-lc", cmd], stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        timer = threading.Timer(self.timeout_seconds, p.kill)
+        timer.start()
+        p.stdin.write(stdin)
+        p.stdin.close()
+        out = []
+        for line in p.stdout:
+            out.append(line)
+            if line.startswith("[build] "):
+                print(line, end="", flush=True)
+        rc = p.wait()
+        timer.cancel()
+        return rc, "".join(out)
