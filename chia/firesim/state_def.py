@@ -163,7 +163,7 @@ class BuildRecipe:
 
 @dataclass
 class EcadBuildResult:
-    """Result of an :meth:`~chia.firesim.ecad_node.EcadBuildNode.build_bitstream`.
+    """Result of an :meth:`~chia.firesim.ecad_node.BitstreamBuildNode.build_bitstream`.
 
     ``bitstream`` is the artifact to hand to a run, and is ``None`` unless the
     build succeeded; ``log`` carries the reason when it did not.

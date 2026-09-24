@@ -1,4 +1,4 @@
-"""The build configs EcadBuildNode hands to `firesim buildbitstream`."""
+"""The build configs BitstreamBuildNode hands to `firesim buildbitstream`."""
 
 import yaml
 
@@ -11,7 +11,7 @@ def test_configs_carry_every_key_buildbitstream_reads(tmp_path, monkeypatch):
     (tmp_path / "built-hwdb-entries").mkdir()
     (tmp_path / "built-hwdb-entries" / "r").write_text("stale")
 
-    ecad_node.EcadBuildNode._write_configs(BuildRecipe(name="r"))
+    ecad_node.BitstreamBuildNode._write_configs(BuildRecipe(name="r"))
 
     build = yaml.safe_load((tmp_path / "config_build.yaml").read_text())
     assert build["builds_to_run"] == ["r"]

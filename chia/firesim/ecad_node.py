@@ -61,7 +61,7 @@ sys.exit(0 if all(done.values()) else 1)
 """
 
 
-class EcadBuildNode:
+class BitstreamBuildNode:
     """Applies a chipyard diff and runs ``firesim buildbitstream``."""
 
     def __init__(self, timeout_seconds: int = 86400):
@@ -70,7 +70,7 @@ class EcadBuildNode:
             timeout_seconds: Wall-clock limit for the whole build, AGFI included.
         """
         self.timeout_seconds = timeout_seconds
-        self.logger = logging.getLogger("EcadBuildNode")
+        self.logger = logging.getLogger("BitstreamBuildNode")
 
     @ChiaFunction(resources={ECAD_RESOURCE: 1})
     def build_bitstream(self, recipe: BuildRecipe, diff: str = "") -> EcadBuildResult:

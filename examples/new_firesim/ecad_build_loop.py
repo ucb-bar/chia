@@ -29,7 +29,7 @@ from chia.aws.manager import AWSManager
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.base.tools.BashTool import BashTool
 from chia.cluster.config import load_config
-from chia.firesim.ecad_node import EcadBuildNode
+from chia.firesim.ecad_node import BitstreamBuildNode
 from chia.firesim.specs import ECAD
 from chia.firesim.state_def import BuildRecipe
 from chia.models.claude import ClaudeCodeLLM
@@ -102,7 +102,7 @@ def main() -> int:
                              use_public_ip=cluster.aws_config.use_public_ip))
     farm = manager.launch(ECAD, count=1)
     try:
-        node = EcadBuildNode()
+        node = BitstreamBuildNode()
         result = get(node.build_bitstream.chia_remote(
             node, recipe=RECIPE, diff=diff))
     finally:
