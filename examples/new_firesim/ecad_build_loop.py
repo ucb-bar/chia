@@ -11,9 +11,9 @@ Small on purpose: Rocket at 75 MHz, the cheapest real f2 build there is. Budget
 1-3 hours for Vivado plus up to an hour for AWS to register the AGFI. Everything
 before the ECAD launch is minutes, so run that part alone first with --diff-only.
 
-Run (after `chia up <cluster>.yaml -y`):
-    chia job submit --working-dir . -- python ecad_build_loop.py --diff-only
-    chia job submit --working-dir . -- python ecad_build_loop.py
+Run (after `chia up cluster.local.yaml -y`; the cluster's dashboard is on 8285):
+    RAY_ADDRESS=http://127.0.0.1:8285 chia job submit --working-dir . -- python ecad_build_loop.py --diff-only
+    RAY_ADDRESS=http://127.0.0.1:8285 chia job submit --working-dir . -- python ecad_build_loop.py
 """
 
 import argparse
@@ -21,6 +21,8 @@ import os
 import sys
 
 import ray
+
+import chia.firesim
 
 from chia.aws.config import AWSConfig
 from chia.aws.manager import AWSManager
@@ -67,7 +69,9 @@ def main() -> int:
                         help="Stop after the diff; do not launch the ECAD machine")
     args = parser.parse_args()
 
-    ray.init(address="auto")
+    # TODO: drop once the chisel-build image ships a chia that has chia.firesim.ecad_node.
+    ray.init(address="auto",
+             runtime_env={"py_modules": [os.path.dirname(chia.firesim.__path__[0])]})
 
     diff = get(edit_and_diff.chia_remote(prompt=PROMPT))
     if not diff.strip():

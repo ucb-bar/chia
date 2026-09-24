@@ -59,3 +59,13 @@ aws:
 
 head_setup_commands: []
 worker_setup_commands: []
+
+# A second Ray cluster on this head, on its own ports, so it coexists with any
+# cluster already on the defaults. No `ray stop`: that kills every Ray process
+# on the machine, the other cluster's included.
+head_start_ray_commands:
+    - ray start --head --port=6391 --include-dashboard=True --dashboard-port=8285 --ray-client-server-port=20031 --dashboard-agent-listen-port=0 --min-worker-port=21100 --max-worker-port=21999
+
+# What makes a worker (the ECAD machine included) join this cluster.
+worker_start_ray_commands:
+    - ray start --address=$RAY_HEAD_IP:6391 --dashboard-agent-listen-port=0 --min-worker-port=21100 --max-worker-port=21999
