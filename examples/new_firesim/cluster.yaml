@@ -43,13 +43,18 @@ auth:
     # ECAD machine launches and then fails to join.
     ssh_private_key: ~/firesim.pem   #FILL
 
-# Used by AWSManager to launch the ECAD instance.
+# Used by AWSManager to launch the ECAD instance. Give subnet_id and an "sg-"
+# id when the VPC has no Name tag — the by-name lookup needs one.
+#
+# Copy this to cluster.local.yaml, fill it there, and run with that. The local
+# copy is git-excluded so infrastructure ids never land in the repo.
 aws:
     region: us-east-1
     key_name: firesim                       #FILL: the EC2 key pair name
-    vpc_name: firesim                       #FILL
-    security_group_name: for-farms-only-firesim   #FILL
     ssh_user: ubuntu
+    ssh_private_key: ~/firesim.pem          #FILL: private half of key_name
+    subnet_id:                              #FILL: subnet-...
+    security_group_name:                    #FILL: sg-... or a group name
     use_public_ip: false
 
 head_setup_commands: []

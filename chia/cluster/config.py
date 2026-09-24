@@ -190,6 +190,9 @@ class AWSClusterConfig:
     ssh_user: str = "ubuntu"
     ssh_private_key: str | None = None
     use_public_ip: bool = False
+    # Explicit subnet to launch into. Required when the VPC has no Name tag,
+    # since the by-name lookup cannot find it.
+    subnet_id: str | None = None
     s3_bucket: str = "firesim-chia-builds"
 
 
@@ -825,6 +828,7 @@ def build_config(raw: dict) -> ClusterConfig:
             ssh_user=aws_raw.get("ssh_user", "ubuntu"),
             ssh_private_key=aws_raw.get("ssh_private_key"),
             use_public_ip=aws_raw.get("use_public_ip", False),
+            subnet_id=aws_raw.get("subnet_id"),
             s3_bucket=aws_raw.get("s3_bucket", "firesim-chia-builds"),
         )
         logger.debug(f"  AWS config: region={aws_config.region}, key={aws_config.key_name}")

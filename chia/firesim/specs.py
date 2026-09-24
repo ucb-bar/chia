@@ -30,5 +30,6 @@ ECAD = AWSWorkerSpec(
     image="ghcr.io/ucb-bar/chia-chisel-build:latest",
     volume_size_gb=500,
     run_options=["--privileged", "-v", "/dev:/dev"],
+    push_aws_creds=True,   # create-fpga-image runs from this container
     host_ssh_key="/home/ray/.ssh/id_rsa",
 )

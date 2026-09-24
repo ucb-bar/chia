@@ -19,6 +19,7 @@ Run (after `chia up <cluster>.yaml -y`):
 """
 
 import argparse
+import os
 import sys
 
 import ray
@@ -31,7 +32,7 @@ from chia.firesim.ecad_node import EcadBuildNode
 from chia.firesim.specs import ECAD
 from chia.firesim.state_def import BuildRecipe
 
-CLUSTER_YAML = "cluster.yaml"
+CLUSTER_YAML = os.environ.get("ECAD_CLUSTER", "cluster.local.yaml")
 CHIPYARD = "/home/ray/chipyard"
 
 # One line, in a file every FireSim target elaborates, so the diff provably
@@ -88,7 +89,8 @@ def main() -> int:
                              vpc_name=cluster.aws_config.vpc_name,
                              security_group_name=cluster.aws_config.security_group_name,
                              ssh_user=cluster.aws_config.ssh_user,
-                             ssh_private_key=cluster.ssh_private_key,
+                             ssh_private_key=cluster.aws_config.ssh_private_key,
+                             subnet_id=cluster.aws_config.subnet_id,
                              use_public_ip=cluster.aws_config.use_public_ip))
     farm = manager.launch(ECAD, count=1)
     try:
