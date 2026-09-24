@@ -218,6 +218,9 @@ class ChampSimRunResult:
         wall_s: Wall-clock seconds for the simulation.
         stdout_tail: Last ~3 KB of simulation output (for diagnostics).
         timed_out: True if the simulation was killed due to timeout.
+        raw_stats: The parsed ``--json`` output as ChampSim wrote it (every
+            phase, every cache, every DRAM channel, MSHR merges), for callers
+            that need what the typed fields above leave out.
     """
     ipc: float
     instructions: int
@@ -231,6 +234,7 @@ class ChampSimRunResult:
     wall_s: float = 0.0
     stdout_tail: str = ""
     timed_out: bool = False
+    raw_stats: list = field(default_factory=list)
 
 
 @dataclass
@@ -1006,6 +1010,7 @@ if _HAS_RAY:
                         wall_s=wall,
                         stdout_tail=stdout[-3000:],
                         timed_out=False,
+                        raw_stats=json_data,
                     )
                 else:
                     return ChampSimRunResult(
