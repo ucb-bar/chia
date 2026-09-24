@@ -10,7 +10,7 @@ LLM makes a one-line RTL change
 git diff  ──────────── diff ─────────>  git apply
                                         FireSim's build code
                                           Chisel + driver  (in the container)
-                                          Vivado           (host, ssh localhost)
+                                          Vivado           (in the container, AMI's install mounted)
                                           AGFI             (create-fpga-image)
           <────────── FSBitstream ────  agfi + driver
 ```
@@ -53,8 +53,9 @@ this test is directly runnable on an F2.
 `firesim buildbitstream` runs Chisel over ssh to `localhost`, hardcoded. Chia
 containers run `--net=host`, so `localhost` is the instance, which has no
 chipyard. The node runs the same steps through FireSim's own Python functions
-instead: Chisel and the driver in the container, then Vivado and the AGFI on
-the instance over ssh, exactly as the CLI does.
+instead, with fabric's `run` and `rsync_project` pointed at local commands, so
+every step — Chisel, driver, Vivado, AGFI — runs in the container. The AMI's
+Vivado and the build directory are mounted in; nothing needs ssh.
 
 ## Prerequisites
 

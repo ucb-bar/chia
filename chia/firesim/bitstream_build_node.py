@@ -18,7 +18,7 @@ import yaml
 
 from chia.base.ChiaFunction import ChiaFunction
 from chia.firesim.fs_bitstream import FSBitstream
-from chia.firesim.specs import ECAD_RESOURCE
+from chia.firesim.specs import BUILD_DIR, ECAD_RESOURCE
 from chia.firesim.state_def import BuildRecipe, EcadBuildResult
 
 CHIPYARD = "/home/ray/chipyard"
@@ -30,33 +30,30 @@ DEPLOY = f"{FIRESIM}/deploy"
 _BUILD = r"""
 import argparse, os, sys
 sys.path.insert(0, os.getcwd())
-from fabric.api import env, execute, local
+from fabric.api import local
 import buildtools.bitbuilder as bitbuilder
 from buildtools.buildconfigfile import BuildConfigFile
 
-env.key_filename = os.path.expanduser("~/firesim.pem")   # as deploy/firesim sets
-env.disable_known_hosts = True
-env.timeout, env.connection_attempts = 100, 10
+
+def rsync_local(remote_dir, local_dir=None, upload=True, extra_opts="", capture=False, **kw):
+    src, dst = (local_dir, remote_dir) if upload else (remote_dir, local_dir)
+    return local(f"rsync -a {extra_opts} {src} {dst}", capture=capture, shell="/bin/bash")
+
+
+bitbuilder.run = lambda cmd, **kw: local(cmd, shell="/bin/bash")
+bitbuilder.rsync_project = rsync_local
 
 config = BuildConfigFile(argparse.Namespace(
     launchtime=None, forceterminate=True, buildconfigfile="config_build.yaml",
     buildrecipesconfigfile="config_build_recipes.yaml",
     hwdbconfigfile="config_hwdb.yaml"))
-
-# Chisel and the driver: the CLI runs these over ssh to localhost; run them here.
-remote_run = bitbuilder.run
-bitbuilder.run = lambda cmd, **kw: local(cmd, shell="/bin/bash")
+config.request_build_hosts()
+config.wait_on_build_host_initializations()
 for build in config.builds_list:
     build.bitbuilder.replace_rtl()
     build.bitbuilder.build_driver()
-bitbuilder.run = remote_run
-
-# Vivado and the AGFI: on the build host, over ssh, exactly as the CLI does.
-config.request_build_hosts()
-config.wait_on_build_host_initializations()
-done = execute(lambda: config.get_build_by_ip(env.host_string).bitbuilder.build_bitstream(),
-               hosts=config.build_ip_set)
-sys.exit(0 if all(done.values()) else 1)
+    if not build.bitbuilder.build_bitstream():
+        sys.exit(1)
 """
 
 
@@ -81,7 +78,12 @@ class BitstreamBuildNode:
             ("fabric", f"source {CHIPYARD}/env.sh && "
                        "(python -c 'import fabric.api' 2>/dev/null || "
                        "pip install -q 'Fabric3==1.14.post1')", ""),
-            ("build", f"source {CHIPYARD}/env.sh && cd {DEPLOY} && python -", _BUILD),
+            ("build dir", f"sudo chown $(id -u):$(id -g) {BUILD_DIR}", ""),
+            # The real Vivado first on PATH: the image ships a stub `vivado`.
+            ("build", f"source {CHIPYARD}/env.sh && "
+                      "source $(ls /tools/Xilinx/Vivado/*/settings64.sh "
+                      "/opt/Xilinx/Vivado/*/settings64.sh 2>/dev/null | sort -V | tail -1) && "
+                      f"cd {DEPLOY} && python -", _BUILD),
         ]
         self._write_configs(recipe)
         for name, cmd, stdin in steps:
@@ -109,9 +111,9 @@ class BitstreamBuildNode:
             "build_farm": {
                 "base_recipe": "build-farm-recipes/externally_provisioned.yaml",
                 "recipe_arg_overrides": {
-                    "default_build_dir": "/home/ubuntu/firesim-build",
-                    # --net=host: localhost is the instance, where Vivado is.
-                    "build_farm_hosts": ["ubuntu@localhost"],
+                    "default_build_dir": BUILD_DIR,
+                    # Only names the build; _BUILD runs every step locally.
+                    "build_farm_hosts": ["localhost"],
                 },
             },
             "builds_to_run": [recipe.name],

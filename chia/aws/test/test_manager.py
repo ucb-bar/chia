@@ -15,9 +15,10 @@ def test_specs_produce_distinct_node_types():
     assert F2_SIM.resources != ECAD.resources
 
 
-def test_both_shipped_specs_reach_their_host():
-    # Each needs tooling that lives on the instance, not in the container.
-    assert F2_SIM.host_ssh_key and ECAD.host_ssh_key
+def test_only_the_sim_worker_reaches_its_host():
+    # The run manager ssh's to the instance for the FPGA; the build runs
+    # entirely in its container, Vivado mounted in.
+    assert F2_SIM.host_ssh_key and not ECAD.host_ssh_key
 
 
 def test_spec_defaults_to_the_fpga_developer_ami():
