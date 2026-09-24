@@ -73,7 +73,8 @@ class BitstreamBuildNode:
         """Build ``recipe`` with ``diff`` applied; return its AGFI and driver."""
         log = []
         steps = [
-            ("git apply", f"cd {CHIPYARD} && git apply -" if diff else "true", diff),
+            ("git apply", f"cd {CHIPYARD} && git reset --hard HEAD && git clean -fd && "
+                          "git apply -" if diff else "true", diff),
             # deploy/firesim imports fabric 1.x, which FireSim's conda lock omits.
             ("fabric", f"source {CHIPYARD}/env.sh && "
                        "(python -c 'import fabric.api' 2>/dev/null || "
