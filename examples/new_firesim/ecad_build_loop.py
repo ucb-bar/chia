@@ -27,21 +27,24 @@ import chia.firesim
 from chia.aws.config import AWSConfig
 from chia.aws.manager import AWSManager
 from chia.base.ChiaFunction import ChiaFunction, get
+from chia.base.tools.BashTool import BashTool
 from chia.cluster.config import load_config
 from chia.firesim.ecad_node import EcadBuildNode
 from chia.firesim.specs import ECAD
 from chia.firesim.state_def import BuildRecipe
+from chia.models.claude import ClaudeCodeLLM
 
 CLUSTER_YAML = os.environ.get("ECAD_CLUSTER", "cluster.local.yaml")
 CHIPYARD = "/home/ray/chipyard"
 
-# One line, in a file every FireSim target elaborates, so the diff provably
-# reaches the RTL without changing what the design does.
-PROMPT = f"""In {CHIPYARD}, open
-generators/chipyard/src/main/scala/config/AbstractConfig.scala
-and add a single Scala comment line at the top of the file that reads:
-// chia ecad smoke test
-Change nothing else. Do not reformat. Do not touch any other file."""
+# One small parameter change in chipyard.RocketConfig, which FireSimRocketConfig
+# extends, so the diff reaches the built RTL.
+PROMPT = f"""The chipyard checkout is at {CHIPYARD}. In
+generators/chipyard/src/main/scala/config/RocketConfigs.scala, change
+`class RocketConfig` so its L1 data cache has 2 ways instead of the default:
+prepend rocket-chip's existing L1 D-cache ways config fragment (grep rocket-chip
+under generators/rocket-chip to confirm its exact name). Change nothing else,
+do not build anything, and do not touch any other file."""
 
 RECIPE = BuildRecipe(name="rocket-smoke",
                      target_config="FireSimRocketConfig",
@@ -50,15 +53,10 @@ RECIPE = BuildRecipe(name="rocket-smoke",
 
 
 @ChiaFunction(resources={"chipyard": 1})
-def edit_and_diff(prompt: str, chipyard: str = CHIPYARD) -> str:
-    """Let the LLM edit the chipyard checkout, then return the diff it made."""
+def chipyard_diff(chipyard: str = CHIPYARD) -> str:
+    """The change the LLM made to the chipyard checkout."""
     import subprocess
 
-    from chia.models.claude import ClaudeCodeLLM
-
-    llm = ClaudeCodeLLM(system_message="You edit RTL. Make the smallest change asked for.",
-                        timeout_seconds=600)
-    llm.prompt(prompt)
     return subprocess.run(["git", "-C", chipyard, "diff"],
                           capture_output=True, text=True).stdout
 
@@ -73,7 +71,15 @@ def main() -> int:
     ray.init(address="auto",
              runtime_env={"py_modules": [os.path.dirname(chia.firesim.__path__[0])]})
 
-    diff = get(edit_and_diff.chia_remote(prompt=PROMPT))
+    # The LLM runs on the llm worker and edits chipyard through a bash tool
+    # pinned to the chipyard worker, like the other loops.
+    llm = ClaudeCodeLLM(system_message="You edit Chisel configs. Make only the change asked for.",
+                        timeout_seconds=600)
+    bash = BashTool("chipyard_bash", CHIPYARD,
+                    task_options={"resources": {"chipyard": 1}})
+    get(llm.prompt.chia_remote(llm, PROMPT, tools=[bash]))
+    bash.stop()
+    diff = get(chipyard_diff.chia_remote())
     if not diff.strip():
         print("FAIL: the LLM produced no diff")
         return 1

@@ -34,6 +34,25 @@ available_node_types:
                 - "-e SSH_AUTH_SOCK=/ssh-agent"
         compatible_ips: #FILL
 
+    # Runs Claude Code. It edits the chipyard tree through a bash tool on the
+    # chisel_build worker; claude_creds is what ClaudeCodeLLM.prompt requests.
+    llm:
+        resources: {"llm": 1, "claude_creds": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-claude-code:latest"
+            container_name: "ecad-llm-${USER}"
+            pull_before_run: true
+            run_options:
+                - --shm-size=10.24gb
+                - "--user $(id -u):$(id -g)"
+                - "-v ${HOME}/.claude:/home/ray/.claude"
+            run_setup_commands:
+                - echo "user:x:$(id -u):$(id -g)::/home/ray:/bin/bash" >> /etc/passwd
+                - mkdir -p /home/ray/llm_env
+        compatible_ips: #FILL
+
 provider:
     head_ip: #FILL
 
