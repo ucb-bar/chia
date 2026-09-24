@@ -59,8 +59,6 @@ class AWSWorkerSpec:
             the instance rather than in its container — FireSim's manager
             ssh'ing to "localhost" for the FPGA, or a build node invoking the
             AMI's Vivado. The key is generated if absent. ``None`` skips this.
-        setup_commands: Commands run over ssh on the instance, after docker is
-            installed and before the worker starts.
     """
     name: str
     instance_type: str
@@ -71,7 +69,6 @@ class AWSWorkerSpec:
     run_options: list[str] = field(default_factory=list)
     iam_instance_profile: str | None = None
     host_ssh_key: str | None = None
-    setup_commands: list[str] = field(default_factory=list)
 
     def node_type(self) -> NodeTypeConfig:
         """The cluster's view of this worker, for ``setup_worker_node``."""
@@ -184,7 +181,7 @@ class AWSManager:
         auth = self.cluster_config.get_ssh_auth(ip)
         ssh = SSHClient(ip, auth.ssh_user, auth.ssh_private_key)
         ssh.wait_for_ssh(timeout=300)
-        ssh.run_script(_SETUP_COMMANDS + spec.setup_commands, timeout=1800)
+        ssh.run_script(_SETUP_COMMANDS, timeout=1800)
 
     def _authorize_container_key(self, spec: AWSWorkerSpec, ip: str) -> None:
         """Let the worker's container ssh into the instance hosting it."""

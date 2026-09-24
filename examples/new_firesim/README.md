@@ -8,9 +8,9 @@ chisel_build worker (your cluster)      ECAD worker (EC2, launched by the loop)
 ──────────────────────────────────      ───────────────────────────────────────
 LLM makes a one-line RTL change
 git diff  ──────────── diff ─────────>  git apply
-                                        firesim buildbitstream
-                                          Chisel + driver  (container, via localhost)
-                                          Vivado           (host, via 127.0.0.2)
+                                        FireSim's build code
+                                          Chisel + driver  (in the container)
+                                          Vivado           (host, ssh localhost)
                                           AGFI             (create-fpga-image)
           <────────── FSBitstream ────  agfi + driver
 ```
@@ -48,13 +48,13 @@ EcadBuildResult(recipe_name="rocket-smoke", success=True,
 That is exactly what `FireSimManagerNode.run_workload` takes, so the output of
 this test is directly runnable on an F2.
 
-## How buildbitstream runs unmodified
+## Why the node doesn't call the `firesim` CLI
 
-FireSim ssh's to `localhost` for Chisel and needs chipyard there; Vivado needs
-the AMI. Chia containers run `--net=host`, so both share one loopback. The ECAD
-instance's boot script moves the host sshd to its private IP and `127.0.0.2`,
-and the node starts an sshd inside the chisel-build container on `127.0.0.1`. FireSim's `localhost` is
-then the container, and the build farm host `ubuntu@127.0.0.2` is the instance.
+`firesim buildbitstream` runs Chisel over ssh to `localhost`, hardcoded. Chia
+containers run `--net=host`, so `localhost` is the instance, which has no
+chipyard. The node runs the same steps through FireSim's own Python functions
+instead: Chisel and the driver in the container, then Vivado and the AGFI on
+the instance over ssh, exactly as the CLI does.
 
 ## Prerequisites
 

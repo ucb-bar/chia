@@ -1,10 +1,11 @@
-"""Build an f2 bitstream by running FireSim's own ``firesim buildbitstream``.
+"""Build an f2 bitstream with FireSim's own build code.
 
 Runs inside the chisel-build container on an ECAD instance (see
-``chia.firesim.specs.ECAD``). FireSim does all the work — Chisel on
-``localhost`` (this container), Vivado on the build-farm host (the instance,
-at 127.0.0.2), then ``create-fpga-image``. This node only applies the diff,
-writes the two build configs, and reads the results back.
+``chia.firesim.specs.ECAD``). The node applies the diff, writes the build
+configs, and runs the steps of ``firesim buildbitstream`` through FireSim's own
+functions (``_BUILD``). The CLI would ssh to ``localhost`` for Chisel, which
+under ``--net=host`` is the instance rather than this container, so those two
+steps run here directly; Vivado and the AGFI still go to the instance over ssh.
 """
 
 from __future__ import annotations
@@ -17,12 +18,47 @@ import yaml
 
 from chia.base.ChiaFunction import ChiaFunction
 from chia.firesim.fs_bitstream import FSBitstream
-from chia.firesim.specs import ECAD_RESOURCE, HOST_LOOPBACK
+from chia.firesim.specs import ECAD_RESOURCE
 from chia.firesim.state_def import BuildRecipe, EcadBuildResult
 
 CHIPYARD = "/home/ray/chipyard"
 FIRESIM = f"{CHIPYARD}/sims/firesim"
 DEPLOY = f"{FIRESIM}/deploy"
+
+# The `buildbitstream` task of deploy/firesim, minus its ssh to localhost.
+# Runs from DEPLOY in chipyard's env, so FireSim's modules import as they do
+# for the CLI.
+_BUILD = r"""
+import argparse, os, sys
+sys.path.insert(0, os.getcwd())
+from fabric.api import env, execute, local
+import buildtools.bitbuilder as bitbuilder
+from buildtools.buildconfigfile import BuildConfigFile
+
+env.key_filename = os.path.expanduser("~/firesim.pem")   # as deploy/firesim sets
+env.disable_known_hosts = True
+env.timeout, env.connection_attempts = 100, 10
+
+config = BuildConfigFile(argparse.Namespace(
+    launchtime=None, forceterminate=True, buildconfigfile="config_build.yaml",
+    buildrecipesconfigfile="config_build_recipes.yaml",
+    hwdbconfigfile="config_hwdb.yaml"))
+
+# Chisel and the driver: the CLI runs these over ssh to localhost; run them here.
+remote_run = bitbuilder.run
+bitbuilder.run = lambda cmd, **kw: local(cmd, shell="/bin/bash")
+for build in config.builds_list:
+    build.bitbuilder.replace_rtl()
+    build.bitbuilder.build_driver()
+bitbuilder.run = remote_run
+
+# Vivado and the AGFI: on the build host, over ssh, exactly as the CLI does.
+config.request_build_hosts()
+config.wait_on_build_host_initializations()
+done = execute(lambda: config.get_build_by_ip(env.host_string).bitbuilder.build_bitstream(),
+               hosts=config.build_ip_set)
+sys.exit(0 if all(done.values()) else 1)
+"""
 
 
 class EcadBuildNode:
@@ -42,25 +78,11 @@ class EcadBuildNode:
         log = []
         steps = [
             ("git apply", f"cd {CHIPYARD} && git apply -" if diff else "true", diff),
-            # FireSim's `localhost`: an sshd in this container on 127.0.0.1
-            # (the host's gave that address up at boot), trusting the key
-            # AWSManager generated and authorized on the host.
-            ("sshd", "test -x /usr/sbin/sshd || "
-                     "(sudo apt-get update -qq && sudo apt-get install -y -qq openssh-server); "
-                     "echo 'ListenAddress 127.0.0.1' | sudo tee /etc/ssh/sshd_config.d/chia.conf >/dev/null; "
-                     "sudo mkdir -p /run/sshd; "
-                     "pgrep -x sshd >/dev/null || sudo /usr/sbin/sshd; "
-                     "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-                     "grep -qxFf ~/firesim.pem.pub ~/.ssh/authorized_keys 2>/dev/null || "
-                     "cat ~/firesim.pem.pub >> ~/.ssh/authorized_keys; "
-                     "chmod 600 ~/.ssh/authorized_keys", ""),
             # deploy/firesim imports fabric 1.x, which FireSim's conda lock omits.
             ("fabric", f"source {CHIPYARD}/env.sh && "
                        "(python -c 'import fabric.api' 2>/dev/null || "
                        "pip install -q 'Fabric3==1.14.post1')", ""),
-            ("buildbitstream", f"source {CHIPYARD}/env.sh && cd {FIRESIM} && "
-                               f"source sourceme-manager.sh && cd deploy && "
-                               f"./firesim buildbitstream", ""),
+            ("build", f"source {CHIPYARD}/env.sh && cd {DEPLOY} && python -", _BUILD),
         ]
         self._write_configs(recipe)
         for name, cmd, stdin in steps:
@@ -80,7 +102,7 @@ class EcadBuildNode:
 
     @staticmethod
     def _write_configs(recipe: BuildRecipe) -> None:
-        """The two files ``buildbitstream`` reads; everything else is FireSim's."""
+        """The files FireSim's build code reads; everything else is FireSim's."""
         stale = f"{DEPLOY}/built-hwdb-entries/{recipe.name}"
         if os.path.exists(stale):
             os.remove(stale)
@@ -89,7 +111,8 @@ class EcadBuildNode:
                 "base_recipe": "build-farm-recipes/externally_provisioned.yaml",
                 "recipe_arg_overrides": {
                     "default_build_dir": "/home/ubuntu/firesim-build",
-                    "build_farm_hosts": [f"ubuntu@{HOST_LOOPBACK}"],
+                    # --net=host: localhost is the instance, where Vivado is.
+                    "build_farm_hosts": ["ubuntu@localhost"],
                 },
             },
             "builds_to_run": [recipe.name],
@@ -111,8 +134,10 @@ class EcadBuildNode:
             "metasim_customruntimeconfig": None,
             "bit_builder_recipe": f"bit-builder-recipes/{recipe.platform}.yaml",
         }}
+        # BuildConfigFile also opens the hwdb, and fails on an empty file.
         for name, config in (("config_build.yaml", build),
-                             ("config_build_recipes.yaml", recipes)):
+                             ("config_build_recipes.yaml", recipes),
+                             ("config_hwdb.yaml", {})):
             with open(f"{DEPLOY}/{name}", "w") as f:
                 yaml.safe_dump(config, f, sort_keys=False)
 

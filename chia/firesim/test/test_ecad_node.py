@@ -16,9 +16,11 @@ def test_configs_carry_every_key_buildbitstream_reads(tmp_path, monkeypatch):
     build = yaml.safe_load((tmp_path / "config_build.yaml").read_text())
     assert build["builds_to_run"] == ["r"]
     assert build["agfis_to_share"] == [] and build["share_with_accounts"] == {}
-    # Vivado runs on the host, reached where the host sshd moved to.
+    # Vivado runs on the host, which is localhost under --net=host.
     assert build["build_farm"]["recipe_arg_overrides"]["build_farm_hosts"] == [
-        "ubuntu@127.0.0.2"]
+        "ubuntu@localhost"]
+    # BuildConfigFile opens the hwdb too, and fails on an empty file.
+    assert yaml.safe_load((tmp_path / "config_hwdb.yaml").read_text()) == {}
 
     recipe = yaml.safe_load((tmp_path / "config_build_recipes.yaml").read_text())["r"]
     for key in ("DESIGN", "TARGET_CONFIG", "PLATFORM_CONFIG", "post_build_hook",
