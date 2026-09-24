@@ -61,6 +61,8 @@ chipyard lives. It runs the same sequence, ending in the same
 - An EC2 key pair whose private key is the cluster's `ssh_private_key`. If those
   disagree the ECAD machine launches and silently fails to join.
 - Quota for one `z1d.2xlarge`.
-- An S3 bucket, and credentials on the ECAD machine that can write to it and
-  call `ec2:CreateFpgaImage` — AWS registers an f2 image from an S3 location.
+- Credentials on the ECAD machine allowing `ec2:CreateFpgaImage` and S3 write.
+  The bucket itself needs no setup: it defaults to `firesim-<account>-<region>`
+  and is created if missing. `create-fpga-image` takes its input only from an
+  S3 location, which is why one exists at all.
 - Claude Code credentials mounted into the chipyard worker (see `cluster.yaml`).

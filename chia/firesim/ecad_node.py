@@ -50,18 +50,18 @@ class EcadBuildNode:
         self.logger = logging.getLogger(self.logging_name)
 
     @ChiaFunction(resources={ECAD_RESOURCE: 1})
-    def build_bitstream(self, recipe: BuildRecipe, s3_bucket: str,
-                        diff: str = "") -> EcadBuildResult:
+    def build_bitstream(self, recipe: BuildRecipe, diff: str = "",
+                        s3_bucket: str = "") -> EcadBuildResult:
         """Apply ``diff`` to chipyard, build the bitstream, and mint the AGFI.
 
         Args:
             recipe: What to build — the FireSim quintuplet plus frequency and
                 Vivado strategy.
-            s3_bucket: Where the design checkpoint is staged for
-                ``create-fpga-image``. AWS reads the checkpoint from S3; there
-                is no other way to register an f2 image.
             diff: Unified diff applied to the chipyard checkout before
                 elaboration. Empty builds the image's chipyard unchanged.
+            s3_bucket: Staging bucket for ``create-fpga-image``, which is the
+                only way AWS accepts a design checkpoint. Empty derives
+                FireSim's per-account default and creates it if needed.
 
         Returns:
             :class:`EcadBuildResult`. On success its ``bitstream`` holds the
@@ -112,6 +112,9 @@ class EcadBuildNode:
         """
         import boto3
 
+        if not s3_bucket:
+            from chia.aws.config import _get_default_s3_bucket
+            s3_bucket = _get_default_s3_bucket()
         stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
         key = f"dcp/{recipe.name}-{stamp}.tar"
         s3, ec2 = boto3.client("s3"), boto3.client("ec2")

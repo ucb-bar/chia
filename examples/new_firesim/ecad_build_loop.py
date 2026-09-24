@@ -33,8 +33,6 @@ from chia.firesim.state_def import BuildRecipe
 
 CLUSTER_YAML = "cluster.yaml"
 CHIPYARD = "/home/ray/chipyard"
-# AWS reads the design checkpoint from S3 to register the AGFI.
-S3_BUCKET = "firesim-chia-builds"   #FILL
 
 # One line, in a file every FireSim target elaborates, so the diff provably
 # reaches the RTL without changing what the design does.
@@ -96,7 +94,7 @@ def main() -> int:
     try:
         node = EcadBuildNode()
         result = get(node.build_bitstream.chia_remote(
-            node, recipe=RECIPE, s3_bucket=S3_BUCKET, diff=diff))
+            node, recipe=RECIPE, diff=diff))
     finally:
         manager.teardown(farm)
 
