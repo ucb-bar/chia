@@ -35,9 +35,10 @@ import buildtools.bitbuilder as bitbuilder
 from buildtools.buildconfigfile import BuildConfigFile
 
 
-def rsync_local(remote_dir, local_dir=None, upload=True, extra_opts="", capture=False, **kw):
+def rsync_local(remote_dir, local_dir=None, upload=True, exclude=(), extra_opts="", capture=False, **kw):
     src, dst = (local_dir, remote_dir) if upload else (remote_dir, local_dir)
-    return local(f"rsync -a {extra_opts} {src} {dst}", capture=capture, shell="/bin/bash")
+    excludes = " ".join(f"--exclude={e}" for e in ([exclude] if isinstance(exclude, str) else exclude))
+    return local(f"rsync -a {excludes} {extra_opts} {src} {dst}", capture=capture, shell="/bin/bash")
 
 
 bitbuilder.run = lambda cmd, **kw: local(cmd, shell="/bin/bash")
