@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -26,7 +27,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
 import ray
 
-from chia.base.ChiaFunction import ChiaFunction
+from chia.base.ChiaFunction import ChiaFunction, ObjectRefCallback
 from chia.base.llm_call import QueryResult, LLMCallBase
 
 if TYPE_CHECKING:
@@ -309,11 +310,65 @@ class OpenCodeQueryResult(QueryResult):
     dict pushed to the profiler as ``_last_metadata``): ``input_tokens``,
     ``output_tokens``, ``reasoning_tokens``, ``cache_read``, ``cache_write``,
     ``cost_usd`` (from opencode's model price table) and ``num_turns``.
-    ``session_id`` is opencode's id for the session the run created.
+    ``session_id`` is opencode's id for the session the run created or resumed.
+    With ``resume_session=True``, ``session_transcript`` is the portable JSON
+    export as bytes. ``call_export`` contains only this call's new messages;
+    ``usage`` and ``stream_result`` likewise exclude previous calls. Output and
+    reasoning token counts are separate in OpenCode's native usage schema.
     """
 
     usage: Optional[dict] = None
     session_id: Optional[str] = None
+    session_transcript: Optional[bytes] = None
+    call_export: Optional[dict] = None
+
+
+def _session_tracked(chia_fn):
+    """Attach OpenCode session sync to remote prompt calls when persistence is on."""
+
+    def _wrap(instance, ref):
+        if getattr(instance, "_resume_session", False):
+            return ObjectRefCallback(ref, instance._sync_session)
+        return ref
+
+    class _TrackedHandle:
+        def __init__(self, inner_handle, instance):
+            self._inner = inner_handle
+            self._instance = instance
+
+        def chia_remote(self, *args, **kwargs):
+            return _wrap(self._instance, self._inner.chia_remote(*args, **kwargs))
+
+        def remote(self, *args, **kwargs):
+            return self.chia_remote(*args, **kwargs)
+
+    class _BoundTracked:
+        def __init__(self, instance):
+            self._instance = instance
+
+        def __call__(self, *args, **kwargs):
+            original = getattr(chia_fn, "_chia_original", chia_fn)
+            return original(self._instance, *args, **kwargs)
+
+        def chia_remote(self, *args, **kwargs):
+            return _wrap(self._instance, chia_fn.chia_remote(*args, **kwargs))
+
+        def options(self, **opts):
+            return _TrackedHandle(chia_fn.options(**opts), self._instance)
+
+        def __getattr__(self, name):
+            return getattr(chia_fn, name)
+
+    class _TrackedDescriptor:
+        def __get__(self, obj, objtype=None):
+            if obj is None:
+                return chia_fn
+            return _BoundTracked(obj)
+
+        def __getattr__(self, name):
+            return getattr(chia_fn, name)
+
+    return _TrackedDescriptor()
 
 
 class OpenCodeLLM(LLMCallBase):
@@ -323,6 +378,15 @@ class OpenCodeLLM(LLMCallBase):
     its id) then ``opencode export`` (to read the assistant response + usage
     from opencode's local DB). Returns the same :class:`QueryResult` shape as the
     other backends; ``returncode`` is the ``run`` exit code.
+
+    Set ``resume_session=True`` to keep conversation history across sequential
+    calls, including calls scheduled on different workers. ``get()`` synchronizes
+    the returned export onto this instance after remote calls. Each invocation
+    imports into a temporary private database and exports before removing it.
+    Credentials and workspace files are not transported. ``work_dir`` must be
+    available on each worker; if omitted in resume mode, a directory under the
+    worker's temporary directory is used. Without resume mode, calls remain
+    independent as before.
     """
 
     # Honors both --dangerously-skip-permissions and a `permission` config block.
@@ -345,6 +409,7 @@ class OpenCodeLLM(LLMCallBase):
         additional_providers: Optional[List[AdditionalModelProvider]] = None,
         dangerously_skip_permissions: bool = True,
         config: Optional[dict] = None,
+        resume_session: bool = False,
     ):
         super().__init__(system_message=system_message,
                          dangerously_skip_permissions=dangerously_skip_permissions,
@@ -356,7 +421,12 @@ class OpenCodeLLM(LLMCallBase):
         self.model = model
         self.opencode_bin = opencode_bin
         self.agent_name = agent_name
-        self.work_dir = work_dir
+        self.work_dir = os.path.abspath(work_dir) if work_dir else (
+            os.path.join(tempfile.gettempdir(), "chia-opencode-work") if resume_session else None
+        )
+        self._resume_session = resume_session
+        self._session_export: Optional[dict] = None
+        self._call_previous_export: Optional[dict] = None
         self.extra_cli_args = extra_cli_args or []
         self.additional_providers = additional_providers or []
         self.logger = logging.getLogger(logging_name)
@@ -388,6 +458,51 @@ class OpenCodeLLM(LLMCallBase):
     # Public API
     # ------------------------------------------------------------------
 
+    def restore_session(self, transcript: Optional[bytes]) -> None:
+        """Restore an ``OpenCodeQueryResult.session_transcript`` on any worker.
+
+        The export carries conversation history, not credentials or workspace
+        files. Calls within one session must be sequential.
+        """
+        if not self._resume_session:
+            raise ValueError("Session restoration requires resume_session=True")
+        export = json.loads(transcript) if transcript else None
+        if export is not None:
+            session_id = export.get("info", {}).get("id", "")
+            if not isinstance(session_id, str) or not re.fullmatch(r"ses_[A-Za-z0-9]+", session_id):
+                raise ValueError("Invalid OpenCode session ID in exported state")
+            self._current_call_export(None, export)
+        self._session_export = export
+
+    def _sync_session(self, result):
+        if result is not None and result.session_transcript is not None:
+            self.restore_session(result.session_transcript)
+        return result
+
+    @staticmethod
+    def _current_call_export(previous: Optional[dict], current: dict) -> dict:
+        """Select only new messages so resumed history is never billed twice."""
+        def messages(export):
+            entries = export.get("messages")
+            if not isinstance(entries, list):
+                raise ValueError("OpenCode session export has no messages")
+            ids = [m.get("info", {}).get("id") for m in entries]
+            if any(not isinstance(i, str) or not i for i in ids) or len(set(ids)) != len(ids):
+                raise ValueError("OpenCode export has missing or duplicate message IDs")
+            return dict(zip(ids, entries))
+
+        old = messages(previous) if previous else {}
+        new = messages(current)
+        if not old.keys() <= new.keys():
+            raise ValueError("OpenCode resume lost previous messages")
+        for key, message in old.items():
+            if message.get("info", {}).get("role") == "assistant":
+                for field in ("tokens", "cost"):
+                    if message["info"].get(field) != new[key]["info"].get(field):
+                        raise ValueError("OpenCode changed previously accounted usage")
+        return {"messages": [m for key, m in new.items() if key not in old]}
+
+    @_session_tracked
     @ChiaFunction(resources={"opencode_creds": 0.01})
     def prompt(
         self,
@@ -411,6 +526,7 @@ class OpenCodeLLM(LLMCallBase):
         from chia.trace.profiler import get_profiler
 
         profiler = get_profiler()
+        self._call_previous_export = self._session_export
 
         for attempt in range(self.retries):
             try:
@@ -473,7 +589,10 @@ class OpenCodeLLM(LLMCallBase):
                     "Unexpected error on attempt %d/%d: %s",
                     attempt + 1, self.retries, exc,
                 )
-        return OpenCodeQueryResult(result="", returncode=-1, stderr="", stream_result="", success=False)
+        return OpenCodeQueryResult(
+            result="", returncode=-1, stderr="", stream_result="", success=False,
+            session_transcript=json.dumps(self._session_export).encode() if self._session_export else None,
+        )
 
     def _get_node_id(self) -> str:
         try:
@@ -644,6 +763,33 @@ class OpenCodeLLM(LLMCallBase):
         tools: Optional[List[ChiaTool]] = None,
     ) -> QueryResult:
         """Run ``opencode run`` then ``opencode export`` and assemble a QueryResult."""
+        env = dict(os.environ)
+        if not self._resume_session:
+            return self._run_in_state(user_message, tools, env)
+        os.makedirs(self.work_dir, exist_ok=True)
+        # Each invocation gets its own SQLite database. Only this session's
+        # exported JSON crosses workers; credentials remain worker-local.
+        with tempfile.TemporaryDirectory(prefix="chia-opencode-") as directory:
+            original_data = env.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+            env["XDG_DATA_HOME"] = os.path.join(directory, "data")
+            env["XDG_STATE_HOME"] = os.path.join(directory, "state")
+            auth = os.path.join(original_data, "opencode", "auth.json")
+            if os.path.isfile(auth):
+                auth_dir = os.path.join(env["XDG_DATA_HOME"], "opencode")
+                os.makedirs(auth_dir, mode=0o700)
+                target = os.path.join(auth_dir, "auth.json")
+                shutil.copyfile(auth, target)
+                os.chmod(target, 0o600)
+            if self._session_export:
+                path = os.path.join(directory, "session.json")
+                with open(path, "w") as handle:
+                    json.dump(self._session_export, handle)
+                imported = self._capture([self.opencode_bin, "import", path], env)
+                if imported.returncode != 0:
+                    raise RuntimeError("OpenCode session import failed")
+            return self._run_in_state(user_message, tools, env)
+
+    def _run_in_state(self, user_message, tools, env):
         tools = tools or []
         cfg = self._build_config(tools)
 
@@ -658,11 +804,12 @@ class OpenCodeLLM(LLMCallBase):
         # config so a stray opencode.json in cwd can't shadow it. Stored
         # credentials / provider env vars in the inherited environment provide
         # auth (we don't touch them).
-        env = dict(os.environ)
         env["OPENCODE_CONFIG"] = cfg_path
         env["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1"
 
         run_cmd = self._build_run_cmd(user_message)
+        if self._resume_session and self._session_export:
+            run_cmd[-1:-1] = ["--session", self._session_export["info"]["id"]]
         self.logger.info("Running: %s ...", " ".join(run_cmd[:6]))
 
         try:
@@ -699,7 +846,20 @@ class OpenCodeLLM(LLMCallBase):
             )
 
         export = self._run_export(session_id, env)
-        final_text, meta, stream, export_error = self._extract_from_export(export)
+        call_export = export
+        if self._resume_session:
+            if export.get("info", {}).get("id") != session_id:
+                raise ValueError("OpenCode session export has a mismatched session ID")
+            if self._session_export and session_id != self._session_export["info"]["id"]:
+                raise ValueError("OpenCode resumed a different session")
+            call_export = self._current_call_export(self._call_previous_export, export)
+            # A failed prior attempt must not make all later attempts fail.
+            attempt_export = self._current_call_export(self._session_export, export)
+            final_text, _, _, export_error = self._extract_from_export(attempt_export)
+            self._session_export = export
+            _, meta, stream, _ = self._extract_from_export(call_export)
+        else:
+            final_text, meta, stream, export_error = self._extract_from_export(export)
         self._last_metadata = meta
         # Prefer the export's error (richer — full responseHeaders); fall back to
         # the run-stream error for pre-request failures the export never records.
@@ -734,6 +894,8 @@ class OpenCodeLLM(LLMCallBase):
             # and usage must stay the pure token/cost totals.
             usage=dict(meta) if meta else None,
             session_id=session_id,
+            session_transcript=json.dumps(export).encode() if self._resume_session else None,
+            call_export=call_export,
         )
 
     def _capture(self, cmd: list, env: dict) -> SimpleNamespace:
@@ -764,6 +926,7 @@ class OpenCodeLLM(LLMCallBase):
                     text=True,
                     timeout=self.timeout_seconds,
                     env=env,
+                    cwd=self.work_dir,
                 )
             with open(out_path, "r") as in_fh:
                 stdout = in_fh.read()

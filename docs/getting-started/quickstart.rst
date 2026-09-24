@@ -415,6 +415,33 @@ In the output of this run, you should now see the following lines:
     [UART] UART0 is here (stdin/stdout).
     - /home/ray/chipyard/sims/verilator/generated-src/chipyard.harness.TestHarness.RocketConfig/gen-collateral/TestDriver.v:179: Verilog $finish
 
+Continuing an OpenCode conversation across workers
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Opt in with ``resume_session=True``. Resolve each call before starting the next
+call in that conversation; Chia transfers the updated session when scheduling
+it on another worker:
+
+.. code-block:: python
+
+    llm = OpenCodeLLM(model="opencode/big-pickle", resume_session=True)
+    first = get(llm.prompt.chia_remote(llm, "Remember the number 42.", []))
+    second = get(llm.prompt.chia_remote(llm, "What number did I give you?", []))
+
+``first.session_transcript`` contains the exported conversation as JSON bytes.
+To continue from an archived result on a fresh ``OpenCodeLLM`` instance, enable
+``resume_session`` and call ``llm.restore_session(first.session_transcript)``.
+The next prompt imports that export into a private, temporary OpenCode database.
+``usage``, ``stream_result`` and ``call_export`` cover new messages only, including
+retry attempts within that prompt; they do not recount previous calls.
+OpenCode reports output and reasoning tokens separately.
+
+Only conversation state is transferred. Each worker still needs its own provider
+credentials and access to any workspace files. ``work_dir`` must exist or be
+creatable on every worker and is used consistently for import, run and export.
+With no explicit ``work_dir``, resume mode uses a directory under ``/tmp``.
+Sessions that fork into independently running agents need separate instances.
+
 4. Editing RTL to say Hello
 ---------------------------
 
