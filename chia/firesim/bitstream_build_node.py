@@ -3,9 +3,9 @@
 Runs inside the chisel-build container on an ECAD instance (see
 ``chia.firesim.specs.F2_ECAD``). The node applies the diff, writes the build
 configs, and runs the steps of ``firesim buildbitstream`` through FireSim's own
-functions (``_BUILD``). The CLI would ssh to ``localhost`` for Chisel, which
-under ``--net=host`` is the instance rather than this container, so those two
-steps run here directly; Vivado and the AGFI still go to the instance over ssh.
+functions (``_BUILD``). FireSim sends its build-host commands over ssh; here
+Chisel and the driver run in this container, and the Vivado step runs on the
+instance itself through ``nsenter``, as ``ubuntu`` in a login shell, as over ssh.
 """
 
 from __future__ import annotations
@@ -29,9 +29,10 @@ DEPLOY = f"{FIRESIM}/deploy"
 # This is FireSim's buildbitsterma code rewritten to not use localhost
 # swaps run for local so the commands are executed locally
 _BUILD = r"""
-import argparse, os, sys
+import argparse, os, shlex, sys
 sys.path.insert(0, os.getcwd())
-from fabric.api import local
+from fabric.api import local, settings
+from fabric.operations import _prefix_commands, _prefix_env_vars
 import buildtools.bitbuilder as bitbuilder
 from buildtools.buildconfigfile import BuildConfigFile
 
@@ -42,7 +43,15 @@ def rsync_local(remote_dir, local_dir=None, upload=True, exclude=(), extra_opts=
     return local(f"rsync -a {excludes} {extra_opts} {src} {dst}", capture=capture, shell="/bin/bash")
 
 
-bitbuilder.run = lambda cmd, **kw: local(cmd, shell="/bin/bash")
+def run_on_host(cmd, **kw):
+    # Fabric's run() with the instance as the build host: its cd/env prefixes
+    # go inside the host command, run as fabric's remote shell would.
+    cmd = _prefix_env_vars(_prefix_commands(cmd, "remote"))
+    with settings(command_prefixes=[]):
+        return local("sudo nsenter -t 1 -a -- sudo -u ubuntu /bin/bash -l -c "
+                     + shlex.quote(cmd), shell="/bin/bash")
+
+
 bitbuilder.rsync_project = rsync_local
 
 config = BuildConfigFile(argparse.Namespace(
@@ -52,10 +61,12 @@ config = BuildConfigFile(argparse.Namespace(
 config.request_build_hosts()
 config.wait_on_build_host_initializations()
 for build in config.builds_list:
+    bitbuilder.run = lambda cmd, **kw: local(cmd, shell="/bin/bash")
     print("[build] replace_rtl", flush=True)
     build.bitbuilder.replace_rtl()
     print("[build] build_driver", flush=True)
     build.bitbuilder.build_driver()
+    bitbuilder.run = run_on_host
     print("[build] build_bitstream", flush=True)
     if not build.bitbuilder.build_bitstream():
         sys.exit(1)
@@ -85,11 +96,7 @@ class BitstreamBuildNode:
                        "(python -c 'import fabric.api' 2>/dev/null || "
                        "pip install -q 'Fabric3==1.14.post1')", ""),
             ("build dir", f"sudo chown $(id -u):$(id -g) {BUILD_DIR}", ""),
-            # The real Vivado first on PATH: the image ships a stub `vivado`.
-            ("build", f"source {CHIPYARD}/env.sh && "
-                      "source $(ls /tools/Xilinx/Vivado/*/settings64.sh "
-                      "/opt/Xilinx/Vivado/*/settings64.sh 2>/dev/null | sort -V | tail -1) && "
-                      f"cd {DEPLOY} && python -", _BUILD),
+            ("build", f"source {CHIPYARD}/env.sh && cd {DEPLOY} && python -", _BUILD),
         ]
         self._write_configs(recipe)
         for name, cmd, stdin in steps:
