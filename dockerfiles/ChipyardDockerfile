@@ -151,7 +151,11 @@ RUN if [ ! -f sims/firesim/platforms/f2/aws-fpga-firesim-f2/sdk_setup.sh ]; then
 # At runtime, containers get SSH agent forwarding (not a PAT). Rewrite
 # HTTPS GitHub URLs to SSH so that git pull / submodule update uses the
 # forwarded agent instead of trying unauthenticated HTTPS.
+# TODO: check whether we can remove the ssh cloning config
+# aws-fpga-firesim-f2 stays on HTTPS: FireSim's bitstream build clones it on
+# workers without a forwarded agent.
 RUN git config --global url."git@github.com:".insteadOf "https://github.com/" \
+    && git config --global url."https://github.com/firesim/aws-fpga-firesim-f2".insteadOf "https://github.com/firesim/aws-fpga-firesim-f2" \
     && mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
 
 # Source chipyard and firesim env.sh in .bashrc so that
