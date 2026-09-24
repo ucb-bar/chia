@@ -11,7 +11,8 @@ git diff  ──────────── diff ─────────>
                                         make replace-rtl   (container: chipyard)
                                         make driver        (container: chipyard)
                                         Vivado             (host: FPGA Dev AMI)
-          <────────── FSBitstream ────  bitstream + driver, by value
+                                        create-fpga-image  (AWS mints the AGFI)
+          <────────── FSBitstream ────  agfi + driver
 ```
 
 ## What it builds
@@ -40,28 +41,26 @@ costs nothing.
 ```python
 EcadBuildResult(recipe_name="rocket-smoke", success=True,
                 bitstream=FSBitstream(quintuplet="f2-firesim-FireSim-...",
-                                      bitstream_bytes=b"...",   # the DCP tarball
+                                      agfi="agfi-0123...",      # flashable
                                       driver_bytes=b"..."))     # driver-bundle.tar.gz
 ```
 
-Both halves travel by value over Ray — tens of MB, so no S3 and no credentials
-are involved.
+That is exactly what `FireSimManagerNode.run_workload` takes, so the output of
+this test is directly runnable on an F2.
 
 ## What this does not do
-
-**No AGFI.** On f2 the thing you flash is an AGFI, minted by
-`aws ec2 create-fpga-image` from the DCP tarball, which needs the tarball in S3
-and AWS credentials on the builder. This test stops at the tarball. Until that
-step exists, the result cannot be handed to `FireSimManagerNode.run_workload`.
 
 **The ECAD machine never runs `firesim buildbitstream`.** It runs the same steps
 directly, because `deploy/firesim` pins Chisel elaboration to `hosts=['localhost']`
 and, under `--net=host`, that is the instance rather than the container where
-chipyard lives.
+chipyard lives. It runs the same sequence, ending in the same
+`create-fpga-image` call `F2BitBuilder` makes.
 
 ## Prerequisites
 
 - An EC2 key pair whose private key is the cluster's `ssh_private_key`. If those
   disagree the ECAD machine launches and silently fails to join.
 - Quota for one `z1d.2xlarge`.
+- An S3 bucket, and credentials on the ECAD machine that can write to it and
+  call `ec2:CreateFpgaImage` — AWS registers an f2 image from an S3 location.
 - Claude Code credentials mounted into the chipyard worker (see `cluster.yaml`).

@@ -9,9 +9,9 @@
                                          Vivado on the host
               <──────── FSBitstream ───  bitstream + driver, by value
 
-Small on purpose: Rocket at 75 MHz, the cheapest real f2 build there is. It is
-still Vivado, so expect a couple of hours. Everything before the ECAD launch is
-minutes, so run that part alone first with --diff-only.
+Small on purpose: Rocket at 75 MHz, the cheapest real f2 build there is. Budget
+1-3 hours for Vivado plus up to an hour for AWS to register the AGFI. Everything
+before the ECAD launch is minutes, so run that part alone first with --diff-only.
 
 Run (after `chia up <cluster>.yaml -y`):
     chia job submit --working-dir . -- python ecad_build_loop.py --diff-only
@@ -33,6 +33,8 @@ from chia.firesim.state_def import BuildRecipe
 
 CLUSTER_YAML = "cluster.yaml"
 CHIPYARD = "/home/ray/chipyard"
+# AWS reads the design checkpoint from S3 to register the AGFI.
+S3_BUCKET = "firesim-chia-builds"   #FILL
 
 # One line, in a file every FireSim target elaborates, so the diff provably
 # reaches the RTL without changing what the design does.
@@ -92,8 +94,9 @@ def main() -> int:
                              use_public_ip=cluster.aws_config.use_public_ip))
     farm = manager.launch(ECAD, count=1)
     try:
-        result = get(EcadBuildNode().build_bitstream.chia_remote(
-            EcadBuildNode(), recipe=RECIPE, diff=diff))
+        node = EcadBuildNode()
+        result = get(node.build_bitstream.chia_remote(
+            node, recipe=RECIPE, s3_bucket=S3_BUCKET, diff=diff))
     finally:
         manager.teardown(farm)
 
@@ -103,8 +106,8 @@ def main() -> int:
 
     bitstream = result.bitstream
     print(f"PASS: {bitstream.quintuplet}")
-    print(f"  bitstream {len(bitstream.bitstream_bytes) / 1e6:.1f} MB")
-    print(f"  driver    {len(bitstream.driver_bytes) / 1e6:.1f} MB")
+    print(f"  agfi   {bitstream.agfi}")
+    print(f"  driver {len(bitstream.driver_bytes) / 1e6:.1f} MB")
     return 0
 
 

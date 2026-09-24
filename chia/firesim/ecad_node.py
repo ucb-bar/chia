@@ -6,9 +6,10 @@ elaboration and the driver build need chipyard, which is in the container;
 Vivado needs the FPGA Developer AMI, which is on the host. ``--net=host`` makes
 ``localhost`` the host, so the Vivado steps go over ssh to there.
 
-The result is an :class:`~chia.firesim.fs_bitstream.FSBitstream` carrying the
-bitstream and the driver built against it, by value. Turning an f2 DCP tarball
-into an AGFI is a separate step and is not done here.
+The result is an :class:`~chia.firesim.fs_bitstream.FSBitstream` holding the
+AGFI and the driver built against it. The AGFI step mirrors FireSim's own
+``F2BitBuilder.aws_create_afi``: only AWS can turn a design checkpoint into a
+flashable image, and its API reads the checkpoint from an S3 location.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import logging
 import os
 import shlex
 import subprocess
+import time
+from datetime import datetime, timezone
 
 from chia.base.ChiaFunction import ChiaFunction
 from chia.firesim.fs_bitstream import FSBitstream
@@ -33,30 +36,36 @@ class EcadBuildNode:
 
     logging_name = "EcadBuildNode"
 
-    def __init__(self, chipyard: str = CHIPYARD, timeout_seconds: int = 86400):
+    def __init__(self, chipyard: str = CHIPYARD, timeout_seconds: int = 86400,
+                 agfi_timeout_seconds: int = 7200):
         """
         Args:
             chipyard: Chipyard checkout inside the container.
             timeout_seconds: Wall-clock limit for the Vivado step.
+            agfi_timeout_seconds: How long to wait for AWS to finish the image.
         """
         self.chipyard = chipyard
         self.timeout_seconds = timeout_seconds
+        self.agfi_timeout_seconds = agfi_timeout_seconds
         self.logger = logging.getLogger(self.logging_name)
 
     @ChiaFunction(resources={ECAD_RESOURCE: 1})
-    def build_bitstream(self, recipe: BuildRecipe,
+    def build_bitstream(self, recipe: BuildRecipe, s3_bucket: str,
                         diff: str = "") -> EcadBuildResult:
-        """Apply ``diff`` to chipyard, build the bitstream, return it.
+        """Apply ``diff`` to chipyard, build the bitstream, and mint the AGFI.
 
         Args:
             recipe: What to build — the FireSim quintuplet plus frequency and
                 Vivado strategy.
+            s3_bucket: Where the design checkpoint is staged for
+                ``create-fpga-image``. AWS reads the checkpoint from S3; there
+                is no other way to register an f2 image.
             diff: Unified diff applied to the chipyard checkout before
                 elaboration. Empty builds the image's chipyard unchanged.
 
         Returns:
-            :class:`EcadBuildResult`. On success its ``bitstream`` carries the
-            bitstream tar and the driver built against it, both by value.
+            :class:`EcadBuildResult`. On success its ``bitstream`` holds the
+            AGFI and the driver built against it.
         """
         quintuplet = recipe.quintuplet()
         log: list[str] = [f"quintuplet: {quintuplet}"]
@@ -78,16 +87,57 @@ class EcadBuildNode:
         if rc != 0:
             return self._failed(recipe, log)
 
-        bitstream = self._host_file(self._dcp_tar(quintuplet))
-        if not bitstream:
+        checkpoint = self._host_file(self._dcp_tar(quintuplet))
+        if not checkpoint:
             log.append("Vivado produced no tarball under build/checkpoints")
             return self._failed(recipe, log)
+
+        agfi, err = self._create_agfi(recipe, checkpoint, s3_bucket)
+        log.append(f"agfi: {agfi or err}")
+        if not agfi:
+            return self._failed(recipe, log)
+
         return EcadBuildResult(
             recipe_name=recipe.name, success=True, log="\n".join(log),
             bitstream=FSBitstream(
-                quintuplet=quintuplet,
-                bitstream_bytes=bitstream,
+                quintuplet=quintuplet, agfi=agfi,
                 driver_bytes=self._driver_bundle(recipe, quintuplet)))
+
+    def _create_agfi(self, recipe: BuildRecipe, checkpoint: bytes,
+                     s3_bucket: str) -> tuple[str, str]:
+        """Register the checkpoint with AWS and wait for the image.
+
+        Mirrors FireSim's ``F2BitBuilder.aws_create_afi``. Returns
+        ``(agfi, "")`` or ``("", reason)``.
+        """
+        import boto3
+
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+        key = f"dcp/{recipe.name}-{stamp}.tar"
+        s3, ec2 = boto3.client("s3"), boto3.client("ec2")
+        try:
+            s3.put_object(Bucket=s3_bucket, Key=key, Body=checkpoint)
+            image = ec2.create_fpga_image(
+                InputStorageLocation={"Bucket": s3_bucket, "Key": key},
+                LogsStorageLocation={"Bucket": s3_bucket, "Key": "logs/"},
+                Name=f"{recipe.name}-{stamp}")
+        except Exception as e:
+            return "", f"{type(e).__name__}: {e}"
+
+        agfi, afi = image["FpgaImageGlobalId"], image["FpgaImageId"]
+        self.logger.info(f"Created {afi}; waiting for it to become available")
+        # AWS finishes its own place-and-route and validation here; tens of
+        # minutes is normal.
+        deadline = time.monotonic() + self.agfi_timeout_seconds
+        while time.monotonic() < deadline:
+            state = ec2.describe_fpga_images(
+                FpgaImageIds=[afi])["FpgaImages"][0]["State"]["Code"]
+            if state == "available":
+                return agfi, ""
+            if state != "pending":
+                return "", f"{afi} entered state {state}"
+            time.sleep(30)
+        return "", f"{afi} still pending after {self.agfi_timeout_seconds}s"
 
     # ---- container-side steps ----------------------------------------------
 
