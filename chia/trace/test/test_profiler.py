@@ -60,9 +60,12 @@ TestProfilerWithRay (local Ray + collector):
         _chia_display_name works through func.options().chia_remote().
 """
 
+import json
 import os
 import time
+import tempfile
 import unittest
+from unittest import mock
 
 import ray
 
@@ -595,3 +598,53 @@ class TestProfilerWithRay(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ===================================================================
+
+class TestCollectorLifecycle(unittest.TestCase):
+    """start_collector() and stop_collector() against a profiler singleton that
+    already exists, and the events sent just before the stop."""
+
+    @classmethod
+    def setUpClass(cls):
+        if ray.is_initialized():
+            ray.shutdown()
+        ray.init(
+            ignore_reinit_error=True,
+            namespace="chia",
+            runtime_env={
+                "working_dir": os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+            },
+        )
+
+    @classmethod
+    def tearDownClass(cls):
+        _profiler_mod.stop_collector()
+        _profiler_mod.get_profiler.reset()
+        ray.shutdown()
+
+    def test_start_collector_enables_a_profiler_made_before_it(self):
+        """A driver that touched get_profiler() before start_collector() must still profile."""
+        _profiler_mod._collector_override = None
+        _profiler_mod.get_profiler.reset()
+        with mock.patch.object(_profiler_mod, "get_collector", return_value=None):
+            before = _profiler_mod.get_profiler()
+        self.assertFalse(before.enabled)
+        _profiler_mod.start_collector(log_dir=tempfile.mkdtemp())
+        after = _profiler_mod.get_profiler()
+        self.assertIsNot(after, before)
+        self.assertTrue(after.enabled)
+
+    def test_stop_collector_lands_the_events_already_sent(self):
+        """An event logged right before stop_collector() is in the log afterwards."""
+        if _profiler_mod.get_collector() is None:
+            _profiler_mod.start_collector(log_dir=tempfile.mkdtemp())
+        log_path = ray.get(_profiler_mod.get_collector().get_log_path.remote())
+        _profiler_mod.get_profiler().log_event("lifecycle_probe", marker=42)
+        _profiler_mod.stop_collector()
+        with open(log_path) as log_file:
+            events = [json.loads(line) for line in log_file if line.strip()]
+        self.assertTrue(any(e.get("type") == "lifecycle_probe" and e.get("marker") == 42 for e in events))
+        self.assertFalse(_profiler_mod.get_profiler().enabled)
+

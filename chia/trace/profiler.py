@@ -139,6 +139,9 @@ def start_collector(log_dir: Optional[str] = None, namespace: Optional[str] = No
     ``@ChiaFunction`` calls.  Idempotent — does nothing if the actor already
     exists.  Blocks until the actor is ready.
 
+    A profiler singleton created before the collector existed is disabled for
+    good, so this resets it: the next ``get_profiler()`` sees the collector.
+
     Args:
         log_dir: Optional directory to store the JSONL log file.  Defaults to ``/tmp/ray/{job_id}``.
         namespace: Ray namespace for the named actor.  Defaults to
@@ -154,6 +157,7 @@ def start_collector(log_dir: Optional[str] = None, namespace: Optional[str] = No
     try:
         existing = _ray.get_actor(_COLLECTOR_ACTOR_NAME, **lookup_kwargs)
         _collector_override = existing
+        reset_profiler()
         return
     except ValueError:
         pass
@@ -179,17 +183,28 @@ def start_collector(log_dir: Optional[str] = None, namespace: Optional[str] = No
     # Block until the actor is live and responding.
     _ray.get(actor.get_events.remote())
     _collector_override = actor
+    reset_profiler()
 
 
 def stop_collector() -> None:
     """Kill the profile collector actor started by ``start_collector()``.
-    Call from the driver once all profiled work is done. Idempotent."""
+    Call from the driver once all profiled work is done. Idempotent.
+
+    Events reach the actor as fire-and-forget calls, so this first waits for
+    the ones already sent to land in the log, then kills the actor and resets
+    the profiler singleton, which would otherwise keep a handle to a dead actor.
+    """
     global _collector_override
     import ray as _ray
 
     if _collector_override is not None:
+        try:
+            _ray.get(_collector_override.get_events.remote())
+        except Exception:
+            pass
         _ray.kill(_collector_override)
         _collector_override = None
+        reset_profiler()
 
 
 # Cached actor handle set by start_collector().  get_collector() checks

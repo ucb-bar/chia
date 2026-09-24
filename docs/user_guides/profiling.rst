@@ -41,6 +41,13 @@ can also stop it explicitly:
 
    stop_collector()   # idempotent
 
+``stop_collector()`` first waits for the events already sent to reach the log, then
+kills the actor. Events travel to the collector as fire-and-forget calls, so a script
+that reads the log while the loop is still running should call
+``ray.get(get_collector().get_events.remote())`` first. ``start_collector()`` resets
+an existing profiler singleton, so profiling starts even when ``get_profiler()`` ran
+before the collector existed.
+
 What gets recorded
 ------------------
 
