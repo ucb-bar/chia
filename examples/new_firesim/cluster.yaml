@@ -37,7 +37,7 @@ available_node_types:
     # Runs Claude Code. It edits the chipyard tree through a bash tool on the
     # chisel_build worker; claude_creds is what ClaudeCodeLLM.prompt requests.
     llm:
-        resources: {"llm": 1, "claude_creds": 1}
+        resources: {"claude_creds": 1}
         min_workers: 1
         max_workers: 1
         docker:
