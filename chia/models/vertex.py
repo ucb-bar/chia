@@ -211,6 +211,10 @@ class VertexGeminiLLM(LLMCallBase):
     Returns the same :class:`QueryResult` shape as the other backends so callers
     are interchangeable; ``returncode`` is synthesised (0 on success, -1 when
     every retry fails) and ``stderr`` is unused.
+
+    A rate limit (HTTP 429) raises :class:`RateLimitError` at once, like the
+    other backends; ``retry_rate_limit=True`` backs off and retries it within
+    ``retries`` instead, for loops that fan out many calls at a time.
     """
 
     def __init__(
@@ -227,6 +231,7 @@ class VertexGeminiLLM(LLMCallBase):
         max_tokens: int = 16000,
         max_tool_iterations: int = 100,
         client_kwargs: Optional[dict] = None,
+        retry_rate_limit: bool = False,
         dangerously_skip_permissions=UNSET,
         config=UNSET,
     ):
@@ -249,6 +254,7 @@ class VertexGeminiLLM(LLMCallBase):
         self.max_tokens = max_tokens
         self.max_tool_iterations = max_tool_iterations
         self.client_kwargs = client_kwargs or {}
+        self.retry_rate_limit = retry_rate_limit
         self.logger = logging.getLogger(logging_name)
         self._last_metadata: dict = {}
 
@@ -301,9 +307,18 @@ class VertexGeminiLLM(LLMCallBase):
                 cli.success = True
                 return cli
 
+            except RateLimitError:
+                if not self.retry_rate_limit or attempt == self.retries - 1:
+                    raise
+                backoff = min(5 * 2 ** attempt, 60)
+                self.logger.warning(
+                    "Rate limited on attempt %d/%d, backing off %ds",
+                    attempt + 1, self.retries, backoff,
+                )
+                _time.sleep(backoff)
+
             # -- Never retry: propagate immediately --
-            except (RateLimitError, AuthenticationError, InvalidRequestError,
-                    ContentBlockedError):
+            except (AuthenticationError, InvalidRequestError, ContentBlockedError):
                 raise
 
             # -- Retry once: a shorter generation may fit --

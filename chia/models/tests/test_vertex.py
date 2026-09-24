@@ -87,7 +87,10 @@ def _install_fake_genai(monkeypatch, responses, capture):
                 "contents": list(contents),  # snapshot; loop mutates in place
                 "config": config,
             })
-            return responses.pop(0)
+            item = responses.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return item
 
     class _FakeClient:
         def __init__(self, **kwargs):
@@ -436,6 +439,25 @@ def test_translate_429_to_rate_limit():
     t = llm._translate_error(_api_error(429))
     assert isinstance(t, RateLimitError)
     assert t.reset_time > datetime.now(timezone.utc)
+
+
+def test_rate_limit_raises_at_once_by_default(monkeypatch):
+    capture = {"calls": []}
+    _install_fake_genai(monkeypatch, [_api_error(429), _resp([_text_part("late")])], capture)
+    with pytest.raises(RateLimitError):
+        VertexGeminiLLM(model="m").prompt("hi", tools=[])
+    assert len(capture["calls"]) == 1
+
+
+def test_rate_limit_retried_when_opted_in(monkeypatch):
+    import time
+    monkeypatch.setattr(time, "sleep", lambda seconds: None)
+    capture = {"calls": []}
+    _install_fake_genai(monkeypatch, [_api_error(429), _resp([_text_part("late")])], capture)
+    cli = VertexGeminiLLM(model="m", retry_rate_limit=True).prompt("hi", tools=[])
+    assert cli.success is True
+    assert cli.result == "late"
+    assert len(capture["calls"]) == 2
 
 
 def test_translate_403_to_auth():
