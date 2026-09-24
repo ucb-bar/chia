@@ -5,7 +5,7 @@ from __future__ import annotations
 from chia.aws.manager import AWSWorkerSpec
 
 FPGA_RESOURCE = "firesim_fpga"
-ECAD_RESOURCE = "ecad"
+ECAD_RESOURCE = "F2_vivado"
 
 # Where the container reaches the host's sshd once the host has given up
 # 127.0.0.1 (see _MOVE_HOST_SSHD).
