@@ -35,3 +35,13 @@ Sim Splitter
 ------------
 
 .. automodule:: chia.firesim.sim_splitter
+
+Worker Specs
+------------
+
+.. automodule:: chia.firesim.specs
+
+ECAD Build Node
+---------------
+
+.. automodule:: chia.firesim.ecad_node

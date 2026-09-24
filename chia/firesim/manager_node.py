@@ -18,10 +18,10 @@ import time
 from chia.base.ChiaFunction import ChiaFunction
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.render import render_hwdb, render_runtime_config, stage_workload
+from chia.firesim.specs import FPGA_RESOURCE
 from chia.firesim.state_def import RunConfig, SimJob, SimJobResult
 
 FIRESIM_DIR = "/home/ray/firesim"
-FPGA_RESOURCE = "firesim_fpga"
 
 # `firesim` exits unless sourceme-manager.sh has run: it sets FIRESIM_SOURCED,
 # which check_env() requires, and loads ~/firesim.pem into an ssh-agent so both

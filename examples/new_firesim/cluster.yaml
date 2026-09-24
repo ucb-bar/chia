@@ -1,0 +1,56 @@
+# Cluster for the ECAD bitstream smoke test (see README.md).
+#
+#   chia up   examples/new_firesim/cluster.yaml -y
+#   chia job submit --working-dir examples/new_firesim -- python ecad_build_loop.py
+#   chia down examples/new_firesim/cluster.yaml
+#
+# Only the chipyard worker is declared here. The ECAD machine is not: the loop
+# launches it on EC2 through AWSManager and joins it at runtime, then
+# terminates it. Nothing in this file needs to know about it.
+#
+# SITE-SPECIFIC — edit every #FILL before first use.
+
+cluster_name: ecad-smoke
+
+available_node_types:
+
+    # Holds the chipyard checkout the LLM edits and diffs. One worker: the diff
+    # has to come from a single known tree.
+    chisel_build:
+        resources: {"chipyard": 1}
+        min_workers: 1
+        max_workers: 1
+        docker:
+            image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
+            container_name: "ecad-chisel-build-${USER}"
+            pull_before_run: True
+            pull_timeout: 7200   # the image is ~30GB
+            run_options:
+                - --ulimit nofile=65536:65536
+                - --shm-size=10.24gb
+                # Claude Code credentials for the editing step.
+                - "-v /scratch/${USER}/claude_config_dir/.claude:/home/ray/.claude"  #FILL
+                - "-v $SSH_AUTH_SOCK:/ssh-agent"
+                - "-e SSH_AUTH_SOCK=/ssh-agent"
+        compatible_ips: #FILL
+
+provider:
+    head_ip: #FILL
+
+auth:
+    ssh_user: ubuntu
+    # The EC2 key pair named in aws.key_name below must be THIS key, or the
+    # ECAD machine launches and then fails to join.
+    ssh_private_key: ~/firesim.pem   #FILL
+
+# Used by AWSManager to launch the ECAD instance.
+aws:
+    region: us-east-1
+    key_name: firesim                       #FILL: the EC2 key pair name
+    vpc_name: firesim                       #FILL
+    security_group_name: for-farms-only-firesim   #FILL
+    ssh_user: ubuntu
+    use_public_ip: false
+
+head_setup_commands: []
+worker_setup_commands: []
