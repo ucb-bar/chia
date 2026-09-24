@@ -63,6 +63,7 @@ class AWSWorkerSpec:
             the instance rather than in its container — FireSim's manager
             ssh'ing to "localhost" for the FPGA, or a build node invoking the
             AMI's Vivado. The key is generated if absent. ``None`` skips this.
+        user_data: Extra boot script lines, run as root after docker is installed.
     """
     name: str
     instance_type: str
@@ -73,6 +74,7 @@ class AWSWorkerSpec:
     run_options: list[str] = field(default_factory=list)
     push_aws_creds: bool = False
     host_ssh_key: str | None = None
+    user_data: str = ""
 
     def node_type(self) -> NodeTypeConfig:
         """The cluster's view of this worker, for ``setup_worker_node``."""
@@ -131,7 +133,7 @@ class AWSManager:
             ami_id=spec.ami_id,
             tags={"chia-op": spec.name,
                   "chia-cluster": self.cluster_config.cluster_name},
-            user_data=_USER_DATA,
+            user_data=_USER_DATA + spec.user_data,
         )
         logger.info(f"Launching {count}x {spec.instance_type} for '{spec.name}'")
         instances = launch_ec2_instances(

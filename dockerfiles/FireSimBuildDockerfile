@@ -1,0 +1,22 @@
+# Chipyard + FireSim image that runs `firesim buildbitstream` unmodified.
+#
+# FireSim's manager runs Chisel elaboration on `localhost` over ssh. Chia runs
+# containers with --net=host, so this image carries its own sshd bound to
+# 127.0.0.1:22, and the ECAD instance moves the host's sshd off that address
+# (see chia/firesim/specs.py). FireSim's `localhost` is then this container;
+# 127.0.0.2 is the host, where Vivado lives.
+#
+# No keys are baked in: AWSManager generates ~/firesim.pem at join time.
+ARG BASE_IMAGE=ghcr.io/ucb-bar/chia-chisel-build:latest
+FROM ${BASE_IMAGE}
+
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends openssh-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd \
+    && printf 'ListenAddress 127.0.0.1\nPasswordAuthentication no\n' \
+       > /etc/ssh/sshd_config.d/chia.conf
+
+USER ray
+# deploy/firesim imports fabric 1.x; FireSim's conda lock does not pin it.
+RUN bash -lc "python -c 'import fabric.api' 2>/dev/null || pip install --no-cache-dir 'Fabric3==1.14.post1'"

@@ -4,10 +4,8 @@
     ────────────────────────────         ───────────────────────────────
     LLM makes a small RTL change
     git diff  ─────────── diff ───────>  git apply
-                                         make replace-rtl
-                                         make driver
-                                         Vivado on the host
-              <──────── FSBitstream ───  bitstream + driver, by value
+                                         firesim buildbitstream
+              <──────── FSBitstream ───  agfi + driver
 
 Small on purpose: Rocket at 75 MHz, the cheapest real f2 build there is. Budget
 1-3 hours for Vivado plus up to an hour for AWS to register the AGFI. Everything
