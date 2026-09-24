@@ -10,12 +10,12 @@ into. Each step is the code ``chia up`` runs for AWS nodes:
 
 The tunnel carries every Ray connection between the worker and the head, so
 the head needs no inbound ports and may sit anywhere. Its ports are read from
-the running head rather than fixed in advance.
+the running cluster rather than from the cluster file.
 """
 
 from __future__ import annotations
 
-import re
+import os
 from dataclasses import dataclass, replace
 
 from chia.aws.config import AWSConfig
@@ -104,19 +104,29 @@ class AWSManager:
                 terminate_ec2_instances(ids, region=farm.region)
 
     def _head_tunnel_config(self) -> TunnelConfig:
-        """Tunnel ports for the running head: its raylet ports as Ray reports
-        them, and its worker-port range from its start command."""
+        """Tunnel ports for the running head, all read from the running cluster:
+        GCS and raylet ports as Ray reports them, and the worker-port range from
+        the head raylet's arguments (this runs on the head)."""
         import ray
 
+        gcs_port = int(ray.get_runtime_context().gcs_address.rsplit(":", 1)[1])
         head = next(n for n in ray.nodes()
                     if n["Alive"] and "node:__internal_head__" in n["Resources"])
         low, high = sorted((head["NodeManagerPort"], head["ObjectManagerPort"]))
-        command = " ".join(self.cluster_config.head_start_ray_commands)
-        ports = {k: re.search(rf"--{k}-worker-port[= ](\d+)", command)
-                 for k in ("min", "max")}
-        if not all(ports.values()):
-            raise RuntimeError("The head's start command must set --min-worker-port "
-                               "and --max-worker-port: each port is tunneled")
-        return TunnelConfig(head_node_manager_port=low, head_object_manager_port=high,
-                            head_worker_port_min=int(ports["min"].group(1)),
-                            head_worker_port_max=int(ports["max"].group(1)))
+        args = next(a for a in (_cmdline(p) for p in os.listdir("/proc") if p.isdigit())
+                    if f"--node_id={head['NodeID']}" in a)
+        worker = {k: int(next(a.split("=", 1)[1] for a in args
+                              if a.startswith(f"--{k}_worker_port=")))
+                  for k in ("min", "max")}
+        return TunnelConfig(gcs_tunnel_port=gcs_port,
+                            head_node_manager_port=low, head_object_manager_port=high,
+                            head_worker_port_min=worker["min"],
+                            head_worker_port_max=worker["max"])
+
+
+def _cmdline(pid: str) -> list[str]:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().decode(errors="replace").split("\0")
+    except OSError:
+        return []
