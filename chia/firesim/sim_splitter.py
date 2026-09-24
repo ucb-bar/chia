@@ -1,12 +1,15 @@
-"""Run a multi-job FireMarshal workload across a farm of F2 FPGAs.
+"""Split a FireMarshal workload into jobs and bring up F2 FPGAs to run them on.
 
-Only the F2 bring-up is ours. Once the instances are running, their IPs go
-through :func:`~chia.cluster.node_setup.setup_worker_node`, the same call
-``chia up`` uses, so the F2s join exactly like any other Chia worker — one unit
-of ``firesim_fpga`` each. Jobs are then submitted all at once and Ray admits one
-per free FPGA, so nothing here schedules.
+Two things only: turn one multi-job workload into one :class:`SimJob` per job,
+and put N F2 instances in the cluster, each advertising one unit of
+``firesim_fpga``. Running a job is not here — the caller hands a job and an
+:class:`~chia.firesim.fs_bitstream.FSBitstream` to
+:meth:`~chia.firesim.manager_node.FireSimManagerNode.run_workload`, and Ray
+places it on whichever FPGA is free.
 
-Runs on the head node, not as a Ray task, so it can wait on the jobs it submits.
+Only the F2 bring-up is our own code. The instances join through
+:func:`~chia.cluster.node_setup.setup_worker_node`, the same call ``chia up``
+makes for every other worker.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ import os
 import shlex
 import tarfile
 import tempfile
-import time
 from concurrent.futures import ThreadPoolExecutor
 
 from chia.aws.config import AWSConfig, EC2InstanceConfig
@@ -28,9 +30,8 @@ from chia.cluster.node_setup import setup_worker_node
 from chia.cluster.ssh import SSHClient
 from chia.aws.s3 import S3Node
 from chia.chipyard.state_def import FireMarshalArtifact
-from chia.firesim.fs_bitstream import FSBitstream
-from chia.firesim.manager_node import FPGA_RESOURCE, FireSimManagerNode
-from chia.firesim.state_def import SimFarm, SimJob, SimJobResult
+from chia.firesim.manager_node import FPGA_RESOURCE
+from chia.firesim.state_def import SimFarm, SimJob
 
 logger = get_logger("firesim.sim_splitter")
 
@@ -47,7 +48,7 @@ usermod -aG docker ubuntu
 
 
 class SimSplitter:
-    """Owns a farm of F2 instances and runs one workload job per FPGA."""
+    """Splits a workload into jobs and puts F2 FPGAs in the cluster."""
 
     def __init__(
         self,
@@ -144,31 +145,6 @@ class SimSplitter:
             self.teardown(farm)
             raise
         return farm
-
-    def run(self, jobs: list[SimJob],
-            bitstream: FSBitstream) -> dict[str, SimJobResult]:
-        """Run every job on the farm and collect the results."""
-        from chia.base.ChiaFunction import get
-
-        published = bitstream.publish(self.s3_bucket, f"bitstreams/{bitstream.quintuplet}")
-        node = FireSimManagerNode()
-        # Ray is the queue: submit everything, the scheduler admits one job per
-        # free firesim_fpga unit, so there is no window to keep here.
-        refs = {job.benchmark_name: node.run_job.chia_remote(
-                    node, job=job, bitstream=published)
-                for job in jobs}
-        logger.info(f"Submitted {len(refs)} job(s) to the farm")
-
-        results = {}
-        for name, ref in refs.items():
-            try:
-                results[name] = get(ref)
-            except Exception as e:
-                logger.error(f"Job {name} raised: {e}")
-                results[name] = SimJobResult(name, success=False, log=repr(e))
-            logger.info(f"Job {name}: "
-                        f"{'SUCCESS' if results[name].success else 'FAILED'}")
-        return results
 
     def teardown(self, farm: SimFarm) -> None:
         """Terminate every instance in the farm."""

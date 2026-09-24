@@ -52,7 +52,7 @@ class FireSimManagerNode:
         self.logger = logging.getLogger(self.logging_name)
 
     @ChiaFunction(resources={FPGA_RESOURCE: 1})
-    def run_job(self, job: SimJob, bitstream: FSBitstream) -> SimJobResult:
+    def run_workload(self, job: SimJob, bitstream: FSBitstream) -> SimJobResult:
         """Stage the job, flash the FPGA, run it, and collect the results.
 
         Infrasetup and runworkload are one task on purpose: as separate Ray

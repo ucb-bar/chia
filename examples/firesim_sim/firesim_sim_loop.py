@@ -1,13 +1,12 @@
 """Run a multi-job FireMarshal workload across a farm of F2 FPGAs.
 
-    FireMarshal workload (N jobs) ─┐
-                                   ├─> SimSplitter.launch(num_fpgas)
-    FSBitstream (image + driver)  ─┘        └─> one FireSimManagerNode per FPGA
-                                                 └─> results back to the splitter
+    SimSplitter.split_workload(workload) -> jobs
+    SimSplitter.launch(num_fpgas)        -> F2 workers in the cluster
+    FireSimManagerNode.run_workload(job, bitstream) -> runs on any free FPGA
 
-SimSplitter brings the F2 instances up, joins them to this Ray cluster as
-ordinary Chia workers, and submits one job per FPGA. With more jobs than FPGAs
-Ray queues the rest, so nothing here has to schedule.
+SimSplitter only splits and brings up FPGAs. Running a job is the manager's,
+and Ray places each one on whichever FPGA is free, so with more jobs than FPGAs
+the rest just queue.
 
 Run (after `chia up <cluster>.yaml -y`):
     chia job submit --working-dir . -- python firesim_sim_loop.py
@@ -22,6 +21,7 @@ from chia.cluster.config import load_config
 from chia.base.ChiaFunction import get
 from chia.chipyard.firemarshal_node import FireMarshalNode
 from chia.firesim.fs_bitstream import FSBitstream
+from chia.firesim.manager_node import FireSimManagerNode
 from chia.firesim.sim_splitter import SimSplitter
 
 S3_BUCKET = "firesim-chia-builds"
@@ -54,17 +54,24 @@ def main() -> int:
                            s3_bucket=S3_BUCKET)
     jobs = splitter.split_workload(workload)
     farm = splitter.launch(NUM_FPGAS)
+
+    # Submit every job; Ray places each on whichever FPGA is free.
+    manager = FireSimManagerNode()
+    bitstream = BITSTREAM.publish(S3_BUCKET, "bitstreams/rocket")
     try:
-        results = splitter.run(jobs, BITSTREAM)
+        refs = [manager.run_workload.chia_remote(manager, job=job,
+                                                 bitstream=bitstream)
+                for job in jobs]
+        results = [get(ref) for ref in refs]
     finally:
         splitter.teardown(farm)
 
-    for name, result in sorted(results.items()):
+    for result in results:
         status = "PASS" if result.success else "FAIL"
-        print(f"{name}: {status} ({result.duration_seconds:.1f}s)")
+        print(f"{result.benchmark_name}: {status} ({result.duration_seconds:.1f}s)")
         print((result.uartlog or result.log)[-500:])
 
-    return 0 if all(r.success for r in results.values()) else 1
+    return 0 if all(r.success for r in results) else 1
 
 
 if __name__ == "__main__":
