@@ -8,6 +8,7 @@ prompts for an email address, and it only copies sample configs anyway.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import re
@@ -17,7 +18,7 @@ import yaml
 
 from chia.cluster.log import get_logger
 from chia.firesim.fs_bitstream import FSBitstream
-from chia.firesim.state_def import SimJob
+from chia.firesim.state_def import RunConfig, SimJob
 
 logger = get_logger("firesim.render")
 
@@ -47,36 +48,76 @@ _METASIM = {
     "metasimulation_only_vcs_plusargs": "+vcs+initreg+0 +vcs+initmem+0",
 }
 
+# Used only when the node has no config_runtime.yaml yet. The FireSim image
+# ships one (the sample managerinit would have copied), so normally the file on
+# the node is the baseline and we only patch it.
+_BASELINE = {
+    "target_config": {
+        "topology": "no_net_config",
+        "no_net_num_nodes": 1,
+        "link_latency": 6405,
+        "switching_latency": 10,
+        "net_bandwidth": 200,
+        "profile_interval": -1,
+        "plusarg_passthrough": "",
+    },
+    "tracing": {"enable": False, "output_format": 0, "selector": 1,
+                "start": 0, "end": -1},
+    "autocounter": {"read_rate": 0},
+    "host_debug": {"zero_out_dram": False, "disable_synth_asserts": False},
+    "synth_print": {"start": 0, "end": -1, "cycle_prefix": True},
+}
 
-def render_runtime_config(deploy_dir: str, job: SimJob) -> str:
-    """Write ``config_runtime.yaml`` for a single-FPGA, single-job run."""
-    config = {
-        "run_farm": _RUN_FARM,
-        "metasimulation": _METASIM,
-        "target_config": {
-            "topology": "no_net_config",
-            "no_net_num_nodes": 1,
-            "link_latency": 6405,
-            "switching_latency": 10,
-            "net_bandwidth": 200,
-            "profile_interval": -1,
-            "default_hw_config": HW_CONFIG_NAME,
-            "plusarg_passthrough": "",
-        },
-        "tracing": {"enable": False, "output_format": 0, "selector": 1,
-                    "start": 0, "end": -1},
-        "autocounter": {"read_rate": 0},
-        "workload": {
-            "workload_name": f"{job.benchmark_name}.json",
-            # The run farm host is ours, not FireSim's — it must not try to
-            # tear down a machine it does not own.
-            "terminate_on_completion": False,
-            "suffix_tag": None,
-        },
-        "host_debug": {"zero_out_dram": False, "disable_synth_asserts": False},
-        "synth_print": {"start": 0, "end": -1, "cycle_prefix": True},
-    }
-    return _dump(os.path.join(deploy_dir, "config_runtime.yaml"), config)
+# RunConfig field -> (config_runtime.yaml section, key).
+_KNOBS = {
+    "plusarg_passthrough": ("target_config", "plusarg_passthrough"),
+    "profile_interval": ("target_config", "profile_interval"),
+    "trace_enable": ("tracing", "enable"),
+    "trace_output_format": ("tracing", "output_format"),
+    "trace_selector": ("tracing", "selector"),
+    "trace_start": ("tracing", "start"),
+    "trace_end": ("tracing", "end"),
+    "autocounter_read_rate": ("autocounter", "read_rate"),
+    "zero_out_dram": ("host_debug", "zero_out_dram"),
+    "disable_synth_asserts": ("host_debug", "disable_synth_asserts"),
+    "print_start": ("synth_print", "start"),
+    "print_end": ("synth_print", "end"),
+    "print_cycle_prefix": ("synth_print", "cycle_prefix"),
+}
+
+
+def render_runtime_config(deploy_dir: str, job: SimJob,
+                          config: RunConfig | None = None) -> str:
+    """Patch ``config_runtime.yaml`` for this job and return its path.
+
+    Read-modify-write, not generate: the file on the node is the baseline, so a
+    hand-edit there survives. Only the fields this design owns and the
+    :class:`RunConfig` fields that are set get rewritten.
+    """
+    path = os.path.join(deploy_dir, "config_runtime.yaml")
+    if os.path.isfile(path):
+        with open(path) as f:
+            runtime = yaml.safe_load(f) or {}
+    else:
+        runtime = copy.deepcopy(_BASELINE)
+
+    # Ours: these hold the one-local-FPGA design together.
+    runtime["run_farm"] = _RUN_FARM
+    runtime["metasimulation"] = _METASIM
+    runtime.setdefault("target_config", {})["default_hw_config"] = HW_CONFIG_NAME
+    runtime.setdefault("workload", {}).update({
+        "workload_name": f"{job.benchmark_name}.json",
+        # The run farm host is SimSplitter's, not FireSim's — it must not try
+        # to tear down a machine it does not own.
+        "terminate_on_completion": False,
+    })
+
+    for field, (section, key) in _KNOBS.items():
+        value = getattr(config, field, None)
+        if value is not None:
+            runtime.setdefault(section, {})[key] = value
+
+    return _dump(path, runtime)
 
 
 def render_hwdb(deploy_dir: str, bitstream: FSBitstream) -> str:

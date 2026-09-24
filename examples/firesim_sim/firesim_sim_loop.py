@@ -22,6 +22,7 @@ from chia.base.ChiaFunction import get
 from chia.chipyard.firemarshal_node import FireMarshalNode
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.manager_node import FireSimManagerNode
+from chia.firesim.state_def import RunConfig
 from chia.firesim.sim_splitter import SimSplitter
 
 S3_BUCKET = "firesim-chia-builds"
@@ -59,8 +60,10 @@ def main() -> int:
     manager = FireSimManagerNode()
     bitstream = BITSTREAM.publish(S3_BUCKET, "bitstreams/rocket")
     try:
-        refs = [manager.run_workload.chia_remote(manager, job=job,
-                                                 bitstream=bitstream)
+        # Unset RunConfig fields keep whatever config_runtime.yaml already has.
+        refs = [manager.run_workload.chia_remote(
+                    manager, job=job, bitstream=bitstream,
+                    config=RunConfig(autocounter_read_rate=1000))
                 for job in jobs]
         results = [get(ref) for ref in refs]
     finally:

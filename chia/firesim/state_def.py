@@ -116,3 +116,32 @@ class SimFarm:
     """The F2 instances a :class:`~chia.firesim.sim_splitter.SimSplitter` owns."""
     instance_ids: list[str]
     region: str
+
+
+@dataclass
+class RunConfig:
+    """Runtime knobs for one FireSim job, patched into ``config_runtime.yaml``.
+
+    Every field defaults to ``None``, meaning "leave whatever is in the file".
+    Only the fields you set are rewritten, so a hand-edit on the node survives
+    unless a field explicitly overrides it. The flip side is that settings
+    persist across jobs on the same worker: pass ``trace_enable=False`` to turn
+    tracing back off, not ``None``.
+    """
+    plusarg_passthrough: str | None = None
+    profile_interval: int | None = None        # FASED memory_stats; -1 is off
+    # TracerV
+    trace_enable: bool | None = None
+    trace_output_format: int | None = None     # 0 human, 1 binary, 2 flamegraph
+    trace_selector: int | None = None          # 0 none, 1 cycle, 2 pc, 3 insn
+    trace_start: int | None = None
+    trace_end: int | None = None
+    # AutoCounter
+    autocounter_read_rate: int | None = None   # 0 is off
+    # host_debug
+    zero_out_dram: bool | None = None
+    disable_synth_asserts: bool | None = None
+    # Synthesized prints
+    print_start: int | None = None
+    print_end: int | None = None
+    print_cycle_prefix: bool | None = None

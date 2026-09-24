@@ -18,7 +18,7 @@ import time
 from chia.base.ChiaFunction import ChiaFunction
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.render import render_hwdb, render_runtime_config, stage_workload
-from chia.firesim.state_def import SimJob, SimJobResult
+from chia.firesim.state_def import RunConfig, SimJob, SimJobResult
 
 FIRESIM_DIR = "/home/ray/firesim"
 FPGA_RESOURCE = "firesim_fpga"
@@ -52,16 +52,20 @@ class FireSimManagerNode:
         self.logger = logging.getLogger(self.logging_name)
 
     @ChiaFunction(resources={FPGA_RESOURCE: 1})
-    def run_workload(self, job: SimJob, bitstream: FSBitstream) -> SimJobResult:
+    def run_workload(self, job: SimJob, bitstream: FSBitstream,
+                     config: RunConfig | None = None) -> SimJobResult:
         """Stage the job, flash the FPGA, run it, and collect the results.
 
         Infrasetup and runworkload are one task on purpose: as separate Ray
         tasks the scheduler could flash one FPGA and run on another. The
         bitstream's ``driver_tar`` makes FireSim skip ``make driver``, which is
         why this container needs no chipyard.
+
+        ``config`` patches only the fields it sets into ``config_runtime.yaml``;
+        anything left unset keeps whatever is already on the node.
         """
         t0 = time.monotonic()
-        render_runtime_config(self.deploy_dir, job)
+        render_runtime_config(self.deploy_dir, job, config)
         render_hwdb(self.deploy_dir, bitstream)
         stage_workload(self.deploy_dir, job)
 

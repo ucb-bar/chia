@@ -18,7 +18,7 @@ from chia.firesim.render import (
     render_runtime_config,
     stage_workload,
 )
-from chia.firesim.state_def import SimJob
+from chia.firesim.state_def import RunConfig, SimJob
 
 
 def _bitstream(**kwargs) -> FSBitstream:
@@ -100,3 +100,47 @@ def test_stage_workload_fetches_images_and_writes_descriptor(tmp_path):
     assert descriptor["common_bootbinary"] == "br-base-bin"
     assert descriptor["common_outputs"] == ["/output"]
     assert "workloads" not in descriptor
+
+
+def _job(name="gcc"):
+    return SimJob(benchmark_name=name, rootfs_uri="s3://b/gcc.img",
+                  bootbinary_uri="s3://b/br-base-bin")
+
+
+def test_runconfig_patches_only_the_fields_it_sets(tmp_path):
+    render_runtime_config(str(tmp_path), _job())
+    path = render_runtime_config(str(tmp_path), _job(),
+                                 RunConfig(trace_enable=True, autocounter_read_rate=1000))
+    config = yaml.safe_load(open(path))
+
+    assert config["tracing"]["enable"] is True
+    assert config["autocounter"]["read_rate"] == 1000
+    # Untouched knobs keep their previous values.
+    assert config["tracing"]["selector"] == 1
+    assert config["host_debug"]["zero_out_dram"] is False
+
+
+def test_unset_runconfig_preserves_a_hand_edit(tmp_path):
+    path = render_runtime_config(str(tmp_path), _job())
+    config = yaml.safe_load(open(path))
+    config["tracing"]["enable"] = True          # stand-in for editing on the node
+    config["autocounter"]["read_rate"] = 42
+    yaml.safe_dump(config, open(path, "w"))
+
+    config = yaml.safe_load(open(render_runtime_config(str(tmp_path), _job())))
+    assert config["tracing"]["enable"] is True
+    assert config["autocounter"]["read_rate"] == 42
+
+
+def test_owned_fields_are_always_rewritten(tmp_path):
+    path = render_runtime_config(str(tmp_path), _job("gcc"))
+    config = yaml.safe_load(open(path))
+    config["workload"]["terminate_on_completion"] = True    # would kill our host
+    config["run_farm"]["recipe_arg_overrides"]["run_farm_hosts_to_use"] = [{"1.2.3.4": "x"}]
+    yaml.safe_dump(config, open(path, "w"))
+
+    config = yaml.safe_load(open(render_runtime_config(str(tmp_path), _job("mcf"))))
+    assert config["workload"]["terminate_on_completion"] is False
+    assert config["workload"]["workload_name"] == "mcf.json"
+    assert (config["run_farm"]["recipe_arg_overrides"]["run_farm_hosts_to_use"]
+            == [{RUN_FARM_HOST: "one_fpga_spec"}])
