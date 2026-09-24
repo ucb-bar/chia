@@ -194,6 +194,7 @@ class AWSManager:
             raise RuntimeError(f"push_aws_creds is set but {creds} does not exist")
         auth = self.cluster_config.get_ssh_auth(ip)
         ssh = SSHClient(ip, auth.ssh_user, auth.ssh_private_key)
+        ssh.wait_for_ssh(timeout=300)
         ssh.run("mkdir -p ~/.aws", timeout=30)
         ssh.rsync_up(f"{creds}/", "/home/ubuntu/.aws/")
 
