@@ -458,7 +458,7 @@ class VertexGeminiLLM(LLMCallBase):
             contents = [types.Content(
                 role="user", parts=[types.Part.from_text(text=user_message)]
             )]
-            meta = {"input_tokens": 0, "output_tokens": 0, "num_turns": 0}
+            meta = {"input_tokens": 0, "output_tokens": 0, "thinking_tokens": 0, "num_turns": 0}
             final_text = ""
 
             for _ in range(self.max_tool_iterations):
@@ -478,8 +478,10 @@ class VertexGeminiLLM(LLMCallBase):
                 meta["num_turns"] += 1
                 usage = getattr(resp, "usage_metadata", None)
                 if usage is not None:
+                    thoughts = getattr(usage, "thoughts_token_count", 0) or 0
                     meta["input_tokens"] += getattr(usage, "prompt_token_count", 0) or 0
-                    meta["output_tokens"] += getattr(usage, "candidates_token_count", 0) or 0
+                    meta["output_tokens"] += (getattr(usage, "candidates_token_count", 0) or 0) + thoughts
+                    meta["thinking_tokens"] += thoughts
 
                 candidate = (resp.candidates or [None])[0]
                 if candidate is None or candidate.content is None:

@@ -61,7 +61,7 @@ def _fc_part(name, args):
     return types.Part(function_call=types.FunctionCall(name=name, args=args))
 
 
-def _resp(parts, finish="STOP", in_tok=0, out_tok=0):
+def _resp(parts, finish="STOP", in_tok=0, out_tok=0, thoughts_tok=0):
     return types.GenerateContentResponse(
         candidates=[types.Candidate(
             content=types.Content(role="model", parts=parts),
@@ -70,7 +70,8 @@ def _resp(parts, finish="STOP", in_tok=0, out_tok=0):
         usage_metadata=types.GenerateContentResponseUsageMetadata(
             prompt_token_count=in_tok,
             candidates_token_count=out_tok,
-            total_token_count=in_tok + out_tok,
+            thoughts_token_count=thoughts_tok,
+            total_token_count=in_tok + out_tok + thoughts_tok,
         ),
     )
 
@@ -304,6 +305,19 @@ def test_generate_tool_loop_executes_mcp_and_feeds_results(monkeypatch):
 
     assert llm._last_metadata["num_turns"] == 2
     assert llm._last_metadata["input_tokens"] == 13
+
+def test_thinking_tokens_count_as_output_and_apart(monkeypatch):
+    # Thinking-model usage reports thoughts_token_count beside candidates_token_count;
+    # the provider bills thoughts as output. They must be in output_tokens (the bill)
+    # and in thinking_tokens (their own line), not silently dropped.
+    capture = {"calls": []}
+    _install_fake_genai(monkeypatch, [_resp([_text_part("ok")], in_tok=10, out_tok=5, thoughts_tok=7)], capture)
+    llm = VertexGeminiLLM(model="m")
+    llm.prompt("hi", tools=[])
+    assert llm._last_metadata["input_tokens"] == 10
+    assert llm._last_metadata["output_tokens"] == 12
+    assert llm._last_metadata["thinking_tokens"] == 7
+
 
 
 def test_generate_unknown_tool_reports_error(monkeypatch):
