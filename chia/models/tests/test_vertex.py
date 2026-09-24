@@ -269,6 +269,22 @@ def test_generate_no_tools_request_shaping_and_result(monkeypatch):
     assert llm._last_metadata["model"] == "gemini-2.0-flash-001"
 
 
+def test_generation_config_is_passed_through(monkeypatch):
+    capture = {"calls": []}
+    _install_fake_genai(monkeypatch, [_resp([_text_part("{}")])], capture)
+    llm = VertexGeminiLLM(model="m", max_tokens=1234, generation_config={
+        "temperature": 0.7, "response_mime_type": "application/json",
+        "thinking_config": {"thinking_budget": 1024}, "max_output_tokens": 9,
+    })
+    llm.prompt("hi", tools=[])
+    config = capture["calls"][0]["config"]
+    assert config.temperature == 0.7
+    assert config.response_mime_type == "application/json"
+    assert config.thinking_config.thinking_budget == 1024
+    assert config.max_output_tokens == 1234
+    assert config.automatic_function_calling.disable is True
+
+
 def test_generate_tool_loop_executes_mcp_and_feeds_results(monkeypatch):
     capture = {"calls": [], "urls": [], "tool_calls": []}
     _install_fake_genai(

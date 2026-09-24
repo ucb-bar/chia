@@ -211,6 +211,11 @@ class VertexGeminiLLM(LLMCallBase):
     Returns the same :class:`QueryResult` shape as the other backends so callers
     are interchangeable; ``returncode`` is synthesised (0 on success, -1 when
     every retry fails) and ``stderr`` is unused.
+
+    ``generation_config`` passes further ``GenerateContentConfig`` fields
+    (``temperature``, ``response_mime_type``, ``thinking_config``, ...); the
+    node's own arguments (``max_tokens``, ``system_message``, tools) take
+    precedence over it.
     """
 
     def __init__(
@@ -227,6 +232,7 @@ class VertexGeminiLLM(LLMCallBase):
         max_tokens: int = 16000,
         max_tool_iterations: int = 100,
         client_kwargs: Optional[dict] = None,
+        generation_config: Optional[dict] = None,
         dangerously_skip_permissions=UNSET,
         config=UNSET,
     ):
@@ -249,6 +255,7 @@ class VertexGeminiLLM(LLMCallBase):
         self.max_tokens = max_tokens
         self.max_tool_iterations = max_tool_iterations
         self.client_kwargs = client_kwargs or {}
+        self.generation_config = generation_config or {}
         self.logger = logging.getLogger(logging_name)
         self._last_metadata: dict = {}
 
@@ -444,6 +451,7 @@ class VertexGeminiLLM(LLMCallBase):
                     dispatch[api_name] = (session, fn.name)
 
             config_kwargs: dict = {
+                **self.generation_config,
                 "max_output_tokens": self.max_tokens,
                 # We run the loop ourselves; don't let the SDK auto-call.
                 "automatic_function_calling": types.AutomaticFunctionCallingConfig(
