@@ -96,3 +96,5 @@ class EC2InstanceConfig:
     # Cloud-init user-data script executed as root on first boot.
     # If None, no user-data is passed.
     user_data: str | None = None
+    # IAM instance profile to attach, giving the instance a role's credentials.
+    iam_instance_profile: str | None = None

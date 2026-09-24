@@ -225,6 +225,8 @@ def launch_ec2_instances(
     }
     if instance_config.user_data:
         create_args["UserData"] = instance_config.user_data
+    if instance_config.iam_instance_profile:
+        create_args["IamInstanceProfile"] = {"Name": instance_config.iam_instance_profile}
     if market_options:
         create_args["InstanceMarketOptions"] = market_options
 

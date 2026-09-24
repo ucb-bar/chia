@@ -14,7 +14,6 @@ has to itself (an FPGA, a Vivado install), which is the case this is for.
 
 from __future__ import annotations
 
-import os
 import shlex
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -29,13 +28,12 @@ from chia.cluster.ssh import SSHClient
 
 logger = get_logger("aws.manager")
 
-# Docker is what the worker runs in, and the AMIs we use do not ship it.
-_USER_DATA = """#!/bin/bash
-while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do sleep 5; done
-apt-get update -qq && apt-get install -y -qq docker.io > /dev/null
-systemctl start docker
-usermod -aG docker ubuntu
-"""
+# Run on every instance before the worker starts, as chia up does
+# (DEFAULT_AWS_SETUP_COMMANDS): the AMIs we use do not ship docker.
+_SETUP_COMMANDS = [
+    "command -v docker >/dev/null 2>&1 || (curl -fsSL https://get.docker.com | sudo sh)",
+    "sudo usermod -aG docker $USER",
+]
 
 
 @dataclass
@@ -54,16 +52,15 @@ class AWSWorkerSpec:
         volume_size_gb: Root EBS volume size.
         run_options: Extra ``docker run`` flags. ``--net=host`` is already
             added by :class:`~chia.cluster.docker.DockerManager`.
-        push_aws_creds: Copy the head's ``~/.aws`` to the instance and mount it
-            into the container. Needed by workers that call AWS themselves —
-            ``create-fpga-image`` for one. Instances with an IAM role do not
-            need it.
+        iam_instance_profile: IAM instance profile giving the instance a role's
+            credentials, for workers that call AWS themselves.
         host_ssh_key: Path, inside the container, of an ssh key to authorize on
             the host. Set it when the worker must reach tooling that lives on
             the instance rather than in its container — FireSim's manager
             ssh'ing to "localhost" for the FPGA, or a build node invoking the
             AMI's Vivado. The key is generated if absent. ``None`` skips this.
-        user_data: Extra boot script lines, run as root after docker is installed.
+        setup_commands: Commands run over ssh on the instance, after docker is
+            installed and before the worker starts.
     """
     name: str
     instance_type: str
@@ -72,21 +69,18 @@ class AWSWorkerSpec:
     ami_id: str | None = None
     volume_size_gb: int = 300
     run_options: list[str] = field(default_factory=list)
-    push_aws_creds: bool = False
+    iam_instance_profile: str | None = None
     host_ssh_key: str | None = None
-    user_data: str = ""
+    setup_commands: list[str] = field(default_factory=list)
 
     def node_type(self) -> NodeTypeConfig:
         """The cluster's view of this worker, for ``setup_worker_node``."""
-        run_options = list(self.run_options)
-        if self.push_aws_creds:
-            run_options += ["-v", "/home/ubuntu/.aws:/home/ray/.aws:ro"]
         return NodeTypeConfig(
             name=self.name,
             resources=dict(self.resources),
             docker=DockerConfig(image=self.image,
                                 container_name=f"chia-{self.name}",
-                                run_options=run_options),
+                                run_options=list(self.run_options)),
         )
 
 
@@ -133,7 +127,7 @@ class AWSManager:
             ami_id=spec.ami_id,
             tags={"chia-op": spec.name,
                   "chia-cluster": self.cluster_config.cluster_name},
-            user_data=_USER_DATA + spec.user_data,
+            iam_instance_profile=spec.iam_instance_profile,
         )
         logger.info(f"Launching {count}x {spec.instance_type} for '{spec.name}'")
         instances = launch_ec2_instances(
@@ -173,9 +167,7 @@ class AWSManager:
 
     def _join(self, spec: AWSWorkerSpec, ip: str) -> bool:
         try:
-            if spec.push_aws_creds:
-                # Before the container exists, so it can be mounted into it.
-                self._push_aws_creds(ip)
+            self._setup_host(spec, ip)
             setup_worker_node(self.cluster_config, NodeAssignment(
                 ip=ip, node_type=spec.node_type(),
                 resources=dict(spec.resources)))
@@ -187,16 +179,12 @@ class AWSManager:
             logger.error(f"[{ip}] Join failed: {e}")
             return False
 
-    def _push_aws_creds(self, ip: str) -> None:
-        """Copy the head's AWS credentials onto the instance."""
-        creds = os.path.expanduser(self.aws_config.aws_creds_dir or "~/.aws")
-        if not os.path.isdir(creds):
-            raise RuntimeError(f"push_aws_creds is set but {creds} does not exist")
+    def _setup_host(self, spec: AWSWorkerSpec, ip: str) -> None:
+        """Prepare the instance, synchronously, before the worker starts."""
         auth = self.cluster_config.get_ssh_auth(ip)
         ssh = SSHClient(ip, auth.ssh_user, auth.ssh_private_key)
         ssh.wait_for_ssh(timeout=300)
-        ssh.run("mkdir -p ~/.aws", timeout=30)
-        ssh.rsync_up(f"{creds}/", "/home/ubuntu/.aws/")
+        ssh.run_script(_SETUP_COMMANDS + spec.setup_commands, timeout=1800)
 
     def _authorize_container_key(self, spec: AWSWorkerSpec, ip: str) -> None:
         """Let the worker's container ssh into the instance hosting it."""

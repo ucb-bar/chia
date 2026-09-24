@@ -29,17 +29,17 @@ F2_SIM = AWSWorkerSpec(
 # keeps its private IP and 127.0.0.2, freeing 127.0.0.1 for the container's.
 # Socket activation (Ubuntu 22.10+) ignores ListenAddress, hence the switch to
 # the plain service.
-_MOVE_HOST_SSHD = f"""
-IP=$(curl -s -H "X-aws-ec2-metadata-token: $(curl -s -X PUT \\
-  -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \\
-  http://169.254.169.254/latest/api/token)" \\
-  http://169.254.169.254/latest/meta-data/local-ipv4)
-printf 'ListenAddress %s\\nListenAddress {HOST_LOOPBACK}\\n' "$IP" \\
-  > /etc/ssh/sshd_config.d/00-chia.conf
-systemctl disable --now ssh.socket 2>/dev/null || true
-systemctl enable ssh.service
-systemctl restart ssh.service
-"""
+_MOVE_HOST_SSHD = [
+    "IP=$(curl -s -H \"X-aws-ec2-metadata-token: $(curl -s -X PUT "
+    "-H 'X-aws-ec2-metadata-token-ttl-seconds: 60' "
+    "http://169.254.169.254/latest/api/token)\" "
+    "http://169.254.169.254/latest/meta-data/local-ipv4) && test -n \"$IP\" && "
+    f"printf 'ListenAddress %s\\nListenAddress {HOST_LOOPBACK}\\n' \"$IP\" "
+    "| sudo tee /etc/ssh/sshd_config.d/00-chia.conf",
+    "sudo systemctl disable --now ssh.socket 2>/dev/null || true",
+    "sudo systemctl enable ssh.service",
+    "sudo systemctl restart ssh.service",
+]
 
 # Builds a bitstream with FireSim's own `buildbitstream`, AGFI included.
 ECAD = AWSWorkerSpec(
@@ -48,7 +48,10 @@ ECAD = AWSWorkerSpec(
     resources={ECAD_RESOURCE: 1},
     image="ghcr.io/ucb-bar/chia-chisel-build:latest",
     volume_size_gb=500,      # Vivado writes tens of GB of intermediates
-    push_aws_creds=True,     # aws_create_afi runs from the container
+    # aws_create_afi runs from the container; the role supplies credentials,
+    # but not a region.
+    run_options=["-e", "AWS_DEFAULT_REGION=us-east-1"],
+    iam_instance_profile="FireSim",
     host_ssh_key="/home/ray/firesim.pem",
-    user_data=_MOVE_HOST_SSHD,
+    setup_commands=_MOVE_HOST_SSHD,
 )
