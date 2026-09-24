@@ -151,6 +151,7 @@ RUN if [ ! -f sims/firesim/platforms/f2/aws-fpga-firesim-f2/sdk_setup.sh ]; then
 # At runtime, containers get SSH agent forwarding (not a PAT). Rewrite
 # HTTPS GitHub URLs to SSH so that git pull / submodule update uses the
 # forwarded agent instead of trying unauthenticated HTTPS.
+# TODO: check whether we can remove the ssh cloning config
 RUN git config --global url."git@github.com:".insteadOf "https://github.com/" \
     && mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
 
