@@ -78,8 +78,18 @@ def main() -> int:
     if args.diff_only:
         return 0
 
-    manager = AWSManager(cluster_config=load_config(CLUSTER_YAML),
-                         aws_config=AWSConfig(ssh_private_key="~/firesim.pem"))
+    # One source of truth for the key: the cluster's aws block, not a literal
+    # here, so the EC2 key pair and the ssh key cannot drift apart.
+    cluster = load_config(CLUSTER_YAML)
+    manager = AWSManager(cluster_config=cluster,
+                         aws_config=AWSConfig(
+                             region=cluster.aws_config.region,
+                             key_name=cluster.aws_config.key_name,
+                             vpc_name=cluster.aws_config.vpc_name,
+                             security_group_name=cluster.aws_config.security_group_name,
+                             ssh_user=cluster.aws_config.ssh_user,
+                             ssh_private_key=cluster.ssh_private_key,
+                             use_public_ip=cluster.aws_config.use_public_ip))
     farm = manager.launch(ECAD, count=1)
     try:
         result = get(EcadBuildNode().build_bitstream.chia_remote(
