@@ -1,8 +1,14 @@
-"""The two EC2 worker kinds FireSim needs, ready to hand to ``AWSManager``."""
+"""The two EC2 workers FireSim needs, ready to hand to ``AWSManager.launch``.
+
+Each is a ``(NodeTypeConfig, AWSNodeConfig)`` pair — a cluster file's node type
+and its ``aws_nodes:`` entry. ``KeyName`` and the ssh key are account values
+AWSManager fills in; an empty ``ImageId`` means the FPGA Developer AMI.
+"""
 
 from __future__ import annotations
 
-from chia.aws.manager import AWSWorkerSpec
+from chia.cluster.aws_nodes import AWSNodeConfig
+from chia.cluster.config import DockerConfig, NodeTypeConfig
 
 FPGA_RESOURCE = "firesim_fpga"
 ECAD_RESOURCE = "F2_vivado"
@@ -11,35 +17,59 @@ ECAD_RESOURCE = "F2_vivado"
 # at the same path so its tens of GB of writes bypass the container's overlay.
 BUILD_DIR = "/home/ubuntu/firesim-build"
 
+
+def _root_volume(gb: int) -> dict:
+    return {"BlockDeviceMappings": [{"DeviceName": "/dev/sda1",
+                                     "Ebs": {"VolumeSize": gb, "VolumeType": "gp3"}}]}
+
+
 # Runs a simulation on the FPGA attached to the instance. The manager inside
 # the container reaches that FPGA by ssh'ing to "localhost", which --net=host
-# makes the instance itself; --privileged and /dev are what let it through.
-F2_SIM = AWSWorkerSpec(
-    name="firesim",
-    instance_type="f2.6xlarge",
-    resources={FPGA_RESOURCE: 1},
-    image="ghcr.io/ucb-bar/chia-firesim:latest",
-    run_options=["--privileged", "-v", "/dev:/dev"],
-    host_ssh_key="/home/ray/firesim.pem",   # the path deploy/firesim hardcodes
+# makes the instance itself, so its key goes into the instance's
+# authorized_keys (mounted in); --privileged and /dev let it reach the FPGA.
+F2_SIM = (
+    NodeTypeConfig(
+        name="firesim",
+        resources={FPGA_RESOURCE: 1},
+        docker=DockerConfig(
+            image="ghcr.io/ucb-bar/chia-firesim:latest",
+            container_name="chia-firesim",
+            run_options=["--privileged", "-v", "/dev:/dev",
+                         "-v", "/home/ubuntu/.ssh:/home/ray/.host-ssh"],
+            run_setup_commands=[
+                "test -f ~/firesim.pem || ssh-keygen -q -t rsa -b 2048 -N '' -f ~/firesim.pem",
+                "grep -qxFf ~/firesim.pem.pub ~/.host-ssh/authorized_keys || "
+                "cat ~/firesim.pem.pub >> ~/.host-ssh/authorized_keys",
+            ],
+        ),
+    ),
+    AWSNodeConfig(KeyName="", InstanceType="f2.6xlarge", count=1, ImageId="",
+                  extra_args=_root_volume(300)),
 )
 
 # Builds a bitstream with FireSim's own build code, AGFI included, entirely
 # inside the container.
-ECAD = AWSWorkerSpec(
-    name="ecad",
-    instance_type="z1d.2xlarge",
-    resources={ECAD_RESOURCE: 1},
-    image="ghcr.io/ucb-bar/chia-chisel-build:latest",
-    volume_size_gb=500,      # Vivado writes tens of GB of intermediates
-    run_options=[
-        # aws_create_afi runs from the container; the role supplies
-        # credentials, but not a region.
-        "-e", "AWS_DEFAULT_REGION=us-east-1",
-        # The AMI's Vivado, so the whole build runs in the container. The AMI
-        # has used both install roots; a missing one mounts as an empty dir.
-        "-v", "/tools/Xilinx:/tools/Xilinx:ro",
-        "-v", "/opt/Xilinx:/opt/Xilinx:ro",
-        "-v", f"{BUILD_DIR}:{BUILD_DIR}",
-    ],
-    iam_instance_profile="FireSim",
+ECAD = (
+    NodeTypeConfig(
+        name="ecad",
+        resources={ECAD_RESOURCE: 1},
+        docker=DockerConfig(
+            image="ghcr.io/ucb-bar/chia-chisel-build:latest",
+            container_name="chia-ecad",
+            run_options=[
+                # aws_create_afi runs from the container; the role supplies
+                # credentials, but not a region.
+                "-e", "AWS_DEFAULT_REGION=us-east-1",
+                # The AMI's Vivado, so the whole build runs in the container.
+                # The AMI has used both install roots; a missing one mounts as
+                # an empty dir.
+                "-v", "/tools/Xilinx:/tools/Xilinx:ro",
+                "-v", "/opt/Xilinx:/opt/Xilinx:ro",
+                "-v", f"{BUILD_DIR}:{BUILD_DIR}",
+            ],
+        ),
+    ),
+    AWSNodeConfig(KeyName="", InstanceType="z1d.2xlarge", count=1, ImageId="",
+                  extra_args={"IamInstanceProfile": {"Name": "FireSim"},
+                              **_root_volume(500)}),   # Vivado intermediates
 )

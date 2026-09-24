@@ -62,8 +62,7 @@ auth:
     # ECAD machine launches and then fails to join.
     ssh_private_key: ~/firesim.pem   #FILL
 
-# Used by AWSManager to launch the ECAD instance. Give subnet_id and an "sg-"
-# id when the VPC has no Name tag — the by-name lookup needs one.
+# Account values AWSManager fills into the ECAD node: region, key pair, ssh.
 #
 # Copy this to cluster.local.yaml, fill it there, and run with that. The local
 # copy is git-excluded so infrastructure ids never land in the repo.
@@ -72,8 +71,6 @@ aws:
     key_name: firesim                       #FILL: the EC2 key pair name
     ssh_user: ubuntu
     ssh_private_key: ~/firesim.pem          #FILL: private half of key_name
-    subnet_id:                              #FILL: subnet-...
-    security_group_name:                    #FILL: sg-... or a group name
     use_public_ip: false
 
 # The head's Ray and chia come from this env (README: conda env named chia_env).

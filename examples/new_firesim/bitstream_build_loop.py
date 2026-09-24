@@ -94,12 +94,8 @@ def main() -> int:
                          aws_config=AWSConfig(
                              region=cluster.aws_config.region,
                              key_name=cluster.aws_config.key_name,
-                             vpc_name=cluster.aws_config.vpc_name,
-                             security_group_name=cluster.aws_config.security_group_name,
                              ssh_user=cluster.aws_config.ssh_user,
-                             ssh_private_key=cluster.aws_config.ssh_private_key,
-                             subnet_id=cluster.aws_config.subnet_id,
-                             use_public_ip=cluster.aws_config.use_public_ip))
+                             ssh_private_key=cluster.aws_config.ssh_private_key))
     farm = manager.launch(ECAD, count=1)
     try:
         node = BitstreamBuildNode()

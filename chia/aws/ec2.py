@@ -66,13 +66,6 @@ def _get_vpc_and_security_group(
       2. Auto-detected from this instance's IMDS (same subnet as head node)
       3. First subnet in the VPC (fallback)
     """
-    # Explicit subnet + security-group id: use them as given. Not every VPC
-    # carries a Name tag, and the lookup below needs one.
-    if aws_config.subnet_id and aws_config.security_group_name.startswith("sg-"):
-        logger.info(f"Using explicit subnet {aws_config.subnet_id} and "
-                    f"security group {aws_config.security_group_name}")
-        return aws_config.subnet_id, aws_config.security_group_name
-
     vpc_filter = [{"Name": "tag:Name", "Values": [aws_config.vpc_name]}]
     vpcs = list(ec2_resource.vpcs.filter(Filters=vpc_filter))
     if not vpcs:
@@ -225,8 +218,6 @@ def launch_ec2_instances(
     }
     if instance_config.user_data:
         create_args["UserData"] = instance_config.user_data
-    if instance_config.iam_instance_profile:
-        create_args["IamInstanceProfile"] = {"Name": instance_config.iam_instance_profile}
     if market_options:
         create_args["InstanceMarketOptions"] = market_options
 
