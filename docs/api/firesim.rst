@@ -20,3 +20,18 @@ State Def
 
 .. automodule:: chia.firesim.state_def
    :exclude-members: SuiteRunResult
+
+Bitstream
+---------
+
+.. automodule:: chia.firesim.fs_bitstream
+
+Worker Specs
+------------
+
+.. automodule:: chia.firesim.specs
+
+ECAD Build Node
+---------------
+
+.. automodule:: chia.firesim.bitstream_build_node

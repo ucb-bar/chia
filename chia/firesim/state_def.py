@@ -79,3 +79,37 @@ class SuiteRunResult:
     total_duration_seconds: float = 0.0
     scores: dict[str, dict[str, float]] = field(default_factory=dict)
     # scores maps workload_name -> {RealTime, UserTime, KernelTime, score}
+
+
+@dataclass
+class BuildRecipe:
+    """What to build: the FireSim quintuplet plus the Vivado knobs.
+
+    Mirrors one stanza of ``config_build_recipes.yaml``.
+    """
+    name: str
+    design: str = "FireSim"
+    target_config: str = "FireSimRocketConfig"
+    platform_config: str = "BaseF2Config"
+    platform: str = "f2"
+    target_project: str = "firesim"
+    fpga_frequency: int = 75
+    build_strategy: str = "TIMING"
+    java_heap_size: str = "16G"
+
+    def quintuplet(self) -> str:
+        return "-".join([self.platform, self.target_project, self.design,
+                         self.target_config, self.platform_config])
+
+
+@dataclass
+class EcadBuildResult:
+    """Result of an :meth:`~chia.firesim.bitstream_build_node.BitstreamBuildNode.build_bitstream`.
+
+    ``bitstream`` is the artifact to hand to a run, and is ``None`` unless the
+    build succeeded; ``log`` carries the reason when it did not.
+    """
+    recipe_name: str
+    success: bool
+    bitstream: "FSBitstream | None" = None
+    log: str = ""

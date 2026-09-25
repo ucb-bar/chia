@@ -125,6 +125,10 @@ USER ray
 # also public, so no auth is needed for submodule init.
 RUN ./build-setup.sh -s 4 -s 9
 
+# FireSim's build-setup-nolog.sh pip-installs fab-classic with deps, replacing the lock's cryptography 40.0.2 with one pyOpenSSL 23.2 (and so `aws`) can't load.
+# TODO: fix this in FireSim's environment installation (build-setup-nolog.sh) and drop this step.
+RUN source env.sh && pip install --no-deps "cryptography==40.0.2"
+
 # Pre-build the MacroCompiler classpath jar (tapeout.jar) so SRAM remapping
 # (chia.chipyard.macrocompiler.remap_with_macrocompiler, which runs
 # `java -cp .classpath_cache/tapeout.jar tapeout.macros.MacroCompiler`) works
@@ -151,6 +155,7 @@ RUN if [ ! -f sims/firesim/platforms/f2/aws-fpga-firesim-f2/sdk_setup.sh ]; then
 # At runtime, containers get SSH agent forwarding (not a PAT). Rewrite
 # HTTPS GitHub URLs to SSH so that git pull / submodule update uses the
 # forwarded agent instead of trying unauthenticated HTTPS.
+# TODO: check whether we can remove the ssh cloning config
 RUN git config --global url."git@github.com:".insteadOf "https://github.com/" \
     && mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
 
