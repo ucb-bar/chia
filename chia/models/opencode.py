@@ -15,13 +15,16 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+import random
 import re
 import shutil
 import subprocess
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
@@ -133,6 +136,15 @@ class ServerError(OpenCodeError):
             self.__class__,
             (self.node_id, self.exit_code, self.raw_message, self.retry_after),
         )
+
+
+class ModelCapacityError(ServerError):
+    """The provider temporarily lacks capacity for this model."""
+
+    def __init__(self, node_id: str, exit_code: int = -1,
+                 raw_message: str = "", retry_after: Optional[int] = None):
+        self.retry_after = retry_after
+        OpenCodeError.__init__(self, node_id, "model_capacity", exit_code, raw_message)
 
 
 class MaxOutputTokensError(OpenCodeError):
@@ -387,6 +399,11 @@ class OpenCodeLLM(LLMCallBase):
     available on each worker; if omitted in resume mode, a directory under the
     worker's temporary directory is used. Without resume mode, calls remain
     independent as before.
+
+    ``capacity_attempts`` bounds temporary capacity and rate-limit failures
+    across one prompt (default 8). Retries wait 15 seconds, doubling to a
+    300-second base with 20% jitter, or longer when Retry-After requires it.
+    Authentication, billing and invalid-request errors are not retried.
     """
 
     # Honors both --dangerously-skip-permissions and a `permission` config block.
@@ -410,6 +427,7 @@ class OpenCodeLLM(LLMCallBase):
         dangerously_skip_permissions: bool = True,
         config: Optional[dict] = None,
         resume_session: bool = False,
+        capacity_attempts: int = 8,
     ):
         super().__init__(system_message=system_message,
                          dangerously_skip_permissions=dangerously_skip_permissions,
@@ -417,6 +435,9 @@ class OpenCodeLLM(LLMCallBase):
         self.logging_level = logging_level
         self.logging_name = logging_name
         self.retries = retries
+        if isinstance(capacity_attempts, bool) or not isinstance(capacity_attempts, int) or capacity_attempts < 1:
+            raise ValueError("capacity_attempts must be a positive integer")
+        self.capacity_attempts = capacity_attempts
         self.timeout_seconds = timeout_seconds
         self.model = model
         self.opencode_bin = opencode_bin
@@ -516,8 +537,8 @@ class OpenCodeLLM(LLMCallBase):
             or ``success=False`` when every retry attempt failed.
 
         Raises:
-            RateLimitError / AuthenticationError / BillingError /
-            InvalidRequestError: propagate immediately.
+            RateLimitError / ModelCapacityError: after capacity_attempts failures.
+            AuthenticationError / BillingError / InvalidRequestError: immediately.
             ServerError: after all retries with exponential backoff.
             MaxOutputTokensError: after one retry attempt.
         """
@@ -527,31 +548,54 @@ class OpenCodeLLM(LLMCallBase):
 
         profiler = get_profiler()
         self._call_previous_export = self._session_export
+        capacity_attempt = 0
 
         for attempt in range(self.retries):
             try:
-                self._last_metadata = {}
-                self._last_export_error = None
-                cli = self._run_opencode(user_message, tools)
-                self._last_metadata["model"] = self.model or "<opencode default>"
-                self._last_metadata["tools"] = [
-                    {"name": t.name, "hostname": getattr(t, "hostname", None),
-                     "port": getattr(t, "port", None),
-                     "node_id": getattr(t, "node_id", None)}
-                    for t in tools
-                ]
-                if profiler.enabled and self._last_metadata:
-                    profiler.add_info(self._last_metadata)
+                while True:
+                    try:
+                        self._last_metadata = {}
+                        self._last_export_error = None
+                        cli = self._run_opencode(user_message, tools)
+                        self._last_metadata["model"] = self.model or "<opencode default>"
+                        self._last_metadata["tools"] = [
+                            {"name": t.name, "hostname": getattr(t, "hostname", None),
+                             "port": getattr(t, "port", None),
+                             "node_id": getattr(t, "node_id", None)}
+                            for t in tools
+                        ]
+                        if profiler.enabled and self._last_metadata:
+                            profiler.add_info(self._last_metadata)
 
-                self._classify_error(
-                    cli, export_error=getattr(self, "_last_export_error", None),
-                )
+                        self._classify_error(
+                            cli, export_error=getattr(self, "_last_export_error", None),
+                        )
+                        break
+                    except (RateLimitError, ModelCapacityError) as exc:
+                        capacity_attempt += 1
+                        if capacity_attempt >= self.capacity_attempts:
+                            self.logger.warning(
+                                "%s exhausted after %d/%d capacity attempts",
+                                exc.error_type, capacity_attempt, self.capacity_attempts,
+                            )
+                            raise
+                        delay = min(15 * 2 ** (capacity_attempt - 1), 300)
+                        delay *= random.uniform(0.8, 1.2)
+                        if isinstance(exc, RateLimitError):
+                            delay = max(delay, (exc.reset_time - datetime.now(timezone.utc)).total_seconds())
+                        elif exc.retry_after is not None:
+                            delay = max(delay, exc.retry_after)
+                        self.logger.warning(
+                            "%s on capacity attempt %d/%d, retrying in %.1fs",
+                            exc.error_type, capacity_attempt, self.capacity_attempts, delay,
+                        )
+                        _time.sleep(delay)
 
                 cli.success = True
                 return cli
 
-            # -- Never retry: propagate immediately --
-            except (RateLimitError, AuthenticationError, BillingError, InvalidRequestError):
+            # -- Permanent failures or exhausted capacity retries --
+            except (RateLimitError, ModelCapacityError, AuthenticationError, BillingError, InvalidRequestError):
                 raise
 
             # -- Retry once: stochastic generation may produce shorter output --
@@ -571,7 +615,8 @@ class OpenCodeLLM(LLMCallBase):
                     "Server error on attempt %d/%d, backing off %ds",
                     attempt + 1, self.retries, backoff,
                 )
-                _time.sleep(backoff)
+                if attempt + 1 < self.retries:
+                    _time.sleep(backoff)
 
             except UnknownOpenCodeError as exc:
                 self.logger.warning(
@@ -599,6 +644,27 @@ class OpenCodeLLM(LLMCallBase):
             return ray.get_runtime_context().get_node_id()
         except Exception:
             return "unknown"
+
+    @staticmethod
+    def _retry_reset_time(headers: dict) -> datetime:
+        """Parse Retry-After seconds or HTTP date; otherwise use local backoff."""
+        now = datetime.now(timezone.utc)
+        value = next((v for k, v in headers.items() if k.lower() == "retry-after"), None)
+        if value is None:
+            return now
+        try:
+            seconds = float(value)
+            if math.isfinite(seconds) and seconds >= 0:
+                return now + timedelta(seconds=seconds)
+        except (TypeError, ValueError, OverflowError):
+            pass
+        try:
+            date = parsedate_to_datetime(str(value))
+            if date.tzinfo is not None:
+                return max(now, date)
+        except (TypeError, ValueError, OverflowError):
+            pass
+        return now
 
     def _classify_error(self, cli: QueryResult,
                         export_error: Optional[dict] = None) -> None:
@@ -633,35 +699,38 @@ class OpenCodeLLM(LLMCallBase):
             message = data.get("message", "") or ""
             status = data.get("statusCode")
 
-            # Rate limit — honor the provider's Retry-After when present.
-            if status == 429:
-                headers = data.get("responseHeaders", {}) or {}
-                retry_after = headers.get("retry-after") or headers.get("Retry-After")
-                reset_time = datetime.now(timezone.utc) + timedelta(seconds=60)
-                if retry_after:
-                    try:
-                        reset_time = datetime.now(timezone.utc) + timedelta(
-                            seconds=int(retry_after),
-                        )
-                    except (ValueError, TypeError):
-                        pass
-                raise RateLimitError(
-                    node_id=node_id,
-                    reset_time=reset_time,
-                    raw_message=message,
-                    exit_code=cli.returncode,
-                )
+            headers = data.get("responseHeaders", {}) or {}
+            reset_time = self._retry_reset_time(headers)
 
-            # Authentication.
+            # Permanent failures win over 429 when an exhausted account uses
+            # that status too. Ordinary request/token rate limits remain retryable.
             if name == "ProviderAuthError" or status in (401, 403):
                 raise AuthenticationError(node_id, cli.returncode, message)
+            exhausted = re.search(
+                r"insufficient[_ ]quota|insufficient (?:credits?|balance)|"
+                r"(?:credits?|balance|spending limit).{0,30}(?:exhausted|depleted|exceeded)|"
+                r"out of credits|payment required", message, re.I,
+            )
+            if status == 402 or exhausted:
+                raise BillingError(node_id, cli.returncode, message)
+            if status == 429:
+                raise RateLimitError(
+                    node_id=node_id, reset_time=reset_time,
+                    raw_message=message, exit_code=cli.returncode,
+                )
+            if name == "APIError" and any(kw in message.lower() for kw in (
+                "billing", "quota", "payment", "credit", "subscription", "plan",
+            )):
+                raise BillingError(node_id, cli.returncode, message)
 
-            # Billing / quota — APIError whose message names a billing problem.
-            if name == "APIError" and message:
-                if any(kw in message.lower() for kw in (
-                    "billing", "quota", "payment", "credit", "subscription", "plan",
-                )):
-                    raise BillingError(node_id, cli.returncode, message)
+            if name == "APIError" and (status is None or status >= 500) and re.search(
+                r"overloaded|(?:at|model|available) capacity|capacity (?:exceeded|unavailable)",
+                message, re.I,
+            ):
+                raise ModelCapacityError(
+                    node_id, cli.returncode, message,
+                    max(0, (reset_time - datetime.now(timezone.utc)).total_seconds()),
+                )
 
             # Output token limit / context overflow.
             if name in ("ContextOverflowError", "MessageOutputLengthError"):

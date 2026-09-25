@@ -436,6 +436,15 @@ The next prompt imports that export into a private, temporary OpenCode database.
 retry attempts within that prompt; they do not recount previous calls.
 OpenCode reports output and reasoning tokens separately.
 
+Rate-limit (HTTP 429) and temporary model-capacity failures are retried within
+Chia, with ``capacity_attempts=8`` by default. Waits start at 15 seconds and
+increase to a 300-second base with 20% random variation; a longer provider
+``Retry-After`` takes precedence. No wait follows the final failed attempt.
+Ordinary server failures retain the separate ``retries`` budget. Invalid
+credentials, exhausted credits and invalid requests fail immediately.
+Resumed retries retain completed tool results and count only new messages;
+a prior failed message does not invalidate a later successful response.
+
 Only conversation state is transferred. Each worker still needs its own provider
 credentials and access to any workspace files. ``work_dir`` must exist or be
 creatable on every worker and is used consistently for import, run and export.
