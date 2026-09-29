@@ -139,9 +139,6 @@ def start_collector(log_dir: Optional[str] = None, namespace: Optional[str] = No
     ``@ChiaFunction`` calls.  Idempotent — does nothing if the actor already
     exists.  Blocks until the actor is ready.
 
-    A profiler singleton created before the collector existed is disabled for
-    good, so this resets it: the next ``get_profiler()`` sees the collector.
-
     Args:
         log_dir: Optional directory to store the JSONL log file.  Defaults to ``/tmp/ray/{job_id}``.
         namespace: Ray namespace for the named actor.  Defaults to
@@ -157,7 +154,6 @@ def start_collector(log_dir: Optional[str] = None, namespace: Optional[str] = No
     try:
         existing = _ray.get_actor(_COLLECTOR_ACTOR_NAME, **lookup_kwargs)
         _collector_override = existing
-        reset_profiler()
         return
     except ValueError:
         pass
@@ -183,7 +179,6 @@ def start_collector(log_dir: Optional[str] = None, namespace: Optional[str] = No
     # Block until the actor is live and responding.
     _ray.get(actor.get_events.remote())
     _collector_override = actor
-    reset_profiler()
 
 
 def stop_collector() -> None:
