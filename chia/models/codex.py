@@ -229,6 +229,7 @@ class CodexQueryResult(QueryResult):
     session_bundle: bytes | None = None
     session_bundle_paths: tuple[str, ...] = ()
     terminal_outcome: CodexTerminalOutcome | None = None
+    node_id: str | None = None
 
 
 def parse_session_id(stdout: str) -> str | None:
@@ -299,9 +300,10 @@ def _session_tracked(chia_fn):
             return original(self._instance, *args, **kwargs)
 
         def chia_remote(self, *args, **kwargs):
-            return _wrap(self._instance, chia_fn.chia_remote(*args, **kwargs))
+            return self.options().chia_remote(*args, **kwargs)
 
         def options(self, **opts):
+            opts = {**self._instance.node_affinity_options(), **opts}
             return _TrackedHandle(chia_fn.options(**opts), self._instance)
 
         def __getattr__(self, name):
@@ -446,6 +448,7 @@ class CodexLLM(LLMCallBase):
         self._call_counter = 0
         self._resume_session = resume_session
         self._session_id: str | None = None
+        self._last_node_id: str | None = None
         self._session_bundle: bytes | None = None
         self._session_bundle_paths: tuple[str, ...] = ()
         self._session_storage_key = self._validated_session_storage_key(
@@ -577,6 +580,7 @@ class CodexLLM(LLMCallBase):
                     record_attempt(True)
                     attach_attempt_metadata()
                     cli.success = True
+                    cli.node_id = self._get_node_id()
                     return cli
                 except (
                     RateLimitError,
@@ -650,6 +654,9 @@ class CodexLLM(LLMCallBase):
         """Copy worker-observed Codex session state onto this instance."""
         if not self._resume_session:
             return cli
+        node_id = getattr(cli, "node_id", None)
+        if node_id and node_id != "unknown":
+            self._last_node_id = node_id
         session_id = getattr(cli, "session_id", None)
         session_bundle = getattr(cli, "session_bundle", None)
         if session_id:
@@ -658,6 +665,22 @@ class CodexLLM(LLMCallBase):
             self._session_bundle = session_bundle
             self._session_bundle_paths = getattr(cli, "session_bundle_paths", ())
         return cli
+
+    def node_affinity_options(self) -> dict:
+        """Prefer the last session worker, falling back if it is unavailable.
+
+        Custom dispatch wrappers can pass these options to their ChiaFunction
+        and copy the returned ``CodexQueryResult.node_id`` to ``_last_node_id``.
+        A busy live worker may queue the call. Explicit scheduling overrides
+        on ``prompt.options()`` take precedence over this preference.
+        """
+        if not self._resume_session or not self._last_node_id:
+            return {}
+        from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+        return {"scheduling_strategy": NodeAffinitySchedulingStrategy(
+            node_id=self._last_node_id, soft=True,
+        )}
 
     def _capacity_backoff_delay(self, retry_index: int) -> float:
         delay = min(
@@ -692,6 +715,8 @@ class CodexLLM(LLMCallBase):
         self._session_storage_key_explicit = True
 
     def _get_node_id(self) -> str:
+        if not ray.is_initialized():
+            return "unknown"
         try:
             return ray.get_runtime_context().get_node_id()
         except Exception:

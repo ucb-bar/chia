@@ -1447,3 +1447,52 @@ def test_live_remote_codex_bypass_runs(remote_prompt):
     cli = remote_prompt(llm, "Reply with exactly the word: PONG", "codex_creds")
     assert cli.success is True
     assert "PONG" in cli.result.upper()
+
+
+def test_session_node_preference_tracks_actual_worker_and_is_per_instance():
+    main = CodexLLM(resume_session=True)
+    critic = CodexLLM(resume_session=True)
+    assert main.node_affinity_options() == {}
+    cli = _cli(returncode=0)
+    cli.node_id = "a" * 56
+    main._sync_session(cli)
+    strategy = main.node_affinity_options()["scheduling_strategy"]
+    assert strategy.node_id == "a" * 56
+    assert strategy.soft is True
+    assert critic.node_affinity_options() == {}
+    # After fallback, subsequent calls prefer the actual replacement.
+    cli.node_id = "b" * 56
+    main._sync_session(cli)
+    assert main.node_affinity_options()["scheduling_strategy"].node_id == "b" * 56
+    stateless = CodexLLM()
+    stateless._sync_session(cli)
+    assert stateless.node_affinity_options() == {}
+
+
+def test_remote_session_dispatch_applies_preference_and_respects_override():
+    calls = []
+
+    class Dispatch:
+        def options(self, **options):
+            calls.append(options)
+            return self
+
+        def chia_remote(self, *args, **kwargs):
+            return "fake-ref"
+
+    class Session(CodexLLM):
+        prompt = codex_mod._session_tracked(Dispatch())
+
+    llm = Session(resume_session=True)
+    llm._last_node_id = "a" * 56
+    llm.prompt.chia_remote(llm, "next turn")
+    assert calls[-1]["scheduling_strategy"].node_id == "a" * 56
+    llm.prompt.options(scheduling_strategy="SPREAD").chia_remote(llm, "override")
+    assert calls[-1]["scheduling_strategy"] == "SPREAD"
+
+
+def test_successful_prompt_tags_worker(monkeypatch):
+    llm = CodexLLM(resume_session=True)
+    monkeypatch.setattr(llm, "_run_codex", lambda *a, **kw: _cli(returncode=0, result="ok"))
+    monkeypatch.setattr(llm, "_get_node_id", lambda: "a" * 56)
+    assert llm.prompt("hello").node_id == "a" * 56

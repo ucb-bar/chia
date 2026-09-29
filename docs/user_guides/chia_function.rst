@@ -325,3 +325,15 @@ See also
 - :doc:`/user_guides/caching_and_bypass` — the ``_chia_tag`` cache/replay workflow.
 - :doc:`/user_guides/profiling` — recording and visualizing a loop's execution.
 - :ref:`cli-viz-profile` — rendering a recorded profile from the CLI.
+
+Codex session worker preference
+-------------------------------
+
+Resumable ``CodexLLM`` instances remember the worker from the last completed
+remote prompt. Subsequent ``llm.prompt.chia_remote(...)`` calls prefer that
+worker using soft node affinity. If it disappears or cannot support the task,
+Ray can schedule elsewhere; a busy live worker may queue the call. Resources
+are released after each prompt, and separate instances keep separate preferences.
+Explicit ``prompt.options(scheduling_strategy=...)`` overrides take precedence.
+Custom dispatch wrappers can use ``llm.node_affinity_options()`` and retain the
+returned ``CodexQueryResult.node_id`` for their next call.
