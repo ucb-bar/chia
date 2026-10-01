@@ -1,0 +1,68 @@
+{
+  "name" : "spec26-intrate",
+  "base" : "br-base.json",
+  "workdir" : "..",
+  "host-init" : "build-intrate.sh ref",
+  "overlay" : "speckle/build/overlay/intrate/ref",
+  "rootfs-size" : "32GiB",
+  "outputs" : ["/output"],
+  "post_run_hook" : "handle-results.py -d ref -s intrate",
+  "jobs" : [
+    {
+      "name": "706.stockfish_r",
+      "command": "./intrate.sh 706.stockfish_r --copies 4"
+    },
+    {
+      "name": "707.ntest_r",
+      "command": "./intrate.sh 707.ntest_r --copies 4"
+    },
+    {
+      "name": "708.sqlite_r",
+      "command": "./intrate.sh 708.sqlite_r --copies 4"
+    },
+    {
+      "name": "710.omnetpp_r",
+      "command": "./intrate.sh 710.omnetpp_r --copies 4"
+    },
+    {
+      "name": "714.cpython_r",
+      "command": "./intrate.sh 714.cpython_r --copies 4"
+    },
+    {
+      "name": "721.gcc_r",
+      "command": "./intrate.sh 721.gcc_r --copies 4"
+    },
+    {
+      "name": "723.llvm_r",
+      "command": "./intrate.sh 723.llvm_r --copies 4"
+    },
+    {
+      "name": "727.cppcheck_r",
+      "command": "./intrate.sh 727.cppcheck_r --copies 4"
+    },
+    {
+      "name": "729.abc_r",
+      "command": "./intrate.sh 729.abc_r --copies 4"
+    },
+    {
+      "name": "734.vpr_r",
+      "command": "./intrate.sh 734.vpr_r --copies 4"
+    },
+    {
+      "name": "735.gem5_r",
+      "command": "./intrate.sh 735.gem5_r --copies 4"
+    },
+    {
+      "name": "750.sealcrypto_r",
+      "command": "./intrate.sh 750.sealcrypto_r --copies 4"
+    },
+    {
+      "name": "753.ns3_r",
+      "command": "./intrate.sh 753.ns3_r --copies 4"
+    },
+    {
+      "name": "777.zstd_r",
+      "command": "./intrate.sh 777.zstd_r --copies 4"
+    }
+  ]
+}

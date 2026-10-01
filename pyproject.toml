@@ -64,6 +64,7 @@ addopts = "--import-mode=importlib"
 
 [tool.setuptools.package-data]
 "chia.trace" = ["*.html"]
+"chia.firesim" = ["spec/**/*"]
 
 [tool.setuptools.packages.find]
 # include is load-bearing: pyproject config defaults to namespace discovery,

@@ -1,0 +1,19 @@
+# FireSim build recipes, in FireSim's config_build_recipes.yaml format.
+# chia reads one with BuildRecipe.from_yaml(path, name).
+
+# MegaBoom V3 with FireSim's default bridges (named in TARGET_CONFIG, joined
+# with "_"), on FASED's FCFS DDR3 model with 16 GB in four ranks.
+megaboom_fcfs16:
+    PLATFORM: f2
+    TARGET_PROJECT: firesim
+    TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+    DESIGN: FireSim
+    TARGET_CONFIG: WithDefaultFireSimBridges_WithFireSimConfigTweaks_chipyard.MegaBoomV3Config
+    PLATFORM_CONFIG: FCFS16GBQuadRank_DefaultF2Config
+    deploy_quintuplet: null
+    platform_config_args:
+        fpga_frequency: 50
+        build_strategy: TIMING
+    post_build_hook: null
+    metasim_customruntimeconfig: null
+    bit_builder_recipe: bit-builder-recipes/f2.yaml

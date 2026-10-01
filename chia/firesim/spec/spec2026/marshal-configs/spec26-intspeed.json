@@ -1,0 +1,64 @@
+{
+  "name" : "spec26-intspeed",
+  "base" : "br-base.json",
+  "workdir" : "..",
+  "host-init" : "build-intspeed.sh ref",
+  "overlay" : "speckle/build/overlay/intspeed/ref",
+  "rootfs-size" : "64GiB",
+  "outputs" : ["/output"],
+  "post_run_hook" : "handle-results.py -d ref -s intspeed",
+  "jobs" : [
+    {
+      "name": "801.xz_s",
+      "command": "./intspeed.sh 801.xz_s --threads 4"
+    },
+    {
+      "name": "807.ntest_s",
+      "command": "./intspeed.sh 807.ntest_s --threads 4"
+    },
+    {
+      "name": "817.flac_s",
+      "command": "./intspeed.sh 817.flac_s --threads 4"
+    },
+    {
+      "name": "821.gcc_s",
+      "command": "./intspeed.sh 821.gcc_s --threads 4"
+    },
+    {
+      "name": "823.llvm_s",
+      "command": "./intspeed.sh 823.llvm_s --threads 4"
+    },
+    {
+      "name": "827.cppcheck_s",
+      "command": "./intspeed.sh 827.cppcheck_s --threads 4"
+    },
+    {
+      "name": "829.abc_s",
+      "command": "./intspeed.sh 829.abc_s --threads 4"
+    },
+    {
+      "name": "834.vpr_s",
+      "command": "./intspeed.sh 834.vpr_s --threads 4"
+    },
+    {
+      "name": "835.gem5_s",
+      "command": "./intspeed.sh 835.gem5_s --threads 4"
+    },
+    {
+      "name": "838.diamond_s",
+      "command": "./intspeed.sh 838.diamond_s --threads 4"
+    },
+    {
+      "name": "846.minizinc_s",
+      "command": "./intspeed.sh 846.minizinc_s --threads 4"
+    },
+    {
+      "name": "853.ns3_s",
+      "command": "./intspeed.sh 853.ns3_s --threads 4"
+    },
+    {
+      "name": "854.graph500_s",
+      "command": "./intspeed.sh 854.graph500_s --threads 4"
+    }
+  ]
+}

@@ -19,11 +19,13 @@ from pathlib import Path
 
 import ray
 
+import chia.firesim
+
 from chia.base.ChiaFunction import get
 from chia.chipyard.riscv_build_node import RiscvBuildNode
 from chia.chipyard.firemarshal_node import FireMarshalNode
 
-COLLATERAL = Path(__file__).parent / "collateral"
+COLLATERAL = Path(chia.firesim.__path__[0]) / "spec" / "spec2006"
 WORK_DIR = "/tmp/spec_build"
 SUITE_DIR = "cint2006/test"   # speckle overlay subpath for CINT2006, test inputs
 CINT = ["400.perlbench", "401.bzip2", "403.gcc", "429.mcf", "445.gobmk", "456.hmmer",

@@ -19,5 +19,8 @@ if [ ! -d speckle ]; then
     git -C speckle submodule update --init --recursive
 fi
 
+# A caller's SPEC config for the RISC-V compile replaces speckle's.
+[ ! -f riscv.cfg ] || cp riscv.cfg speckle/riscv-cpu2006.cfg
+
 echo "Building SPEC CPU2006 CINT2006 with $1 inputs"
 make spec06-cint2006 INPUT=$1

@@ -1,0 +1,31 @@
+# FireSim runtime settings, in FireSim's config_runtime.yaml format.
+# chia reads them with RunConfig.from_yaml(path), and writes the run farm, the
+# workload and the hardware config itself.
+metasimulation:
+    metasimulation_enabled: false
+    metasimulation_host_simulator: verilator
+    metasimulation_only_plusargs: "+fesvr-step-size=128 +max-cycles=100000000"
+    metasimulation_only_vcs_plusargs: "+vcs+initreg+0 +vcs+initmem+0"
+target_config:
+    topology: no_net_config
+    no_net_num_nodes: 1
+    link_latency: 6405
+    switching_latency: 10
+    net_bandwidth: 200
+    profile_interval: -1
+    plusarg_passthrough: ""
+tracing:
+    enable: no
+    output_format: 0
+    selector: 1
+    start: 0
+    end: -1
+autocounter:
+    read_rate: 0
+host_debug:
+    zero_out_dram: no
+    disable_synth_asserts: no
+synth_print:
+    start: 0
+    end: -1
+    cycle_prefix: yes

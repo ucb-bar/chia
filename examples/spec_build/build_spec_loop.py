@@ -1,6 +1,6 @@
 """Build SPEC CPU2006 CINT2006 (test) via RiscvBuildNode.build_program.
 
-Copies the vendored collateral (build-cint.sh + Makefile) into the task dir as
+Copies chia's SPEC 2006 build files (build-cint.sh + Makefile) into the task dir as
 input files; build-cint.sh clones speckle (pinned) and builds the CINT2006 suite
 against the SPEC install at $SPEC_DIR (from the worker's -e in cluster.yaml). The
 overlay binaries land at speckle/build/overlay/... and are collected back as bytes.
@@ -14,6 +14,8 @@ from pathlib import Path
 
 import ray
 
+import chia.firesim
+
 from chia.base.ChiaFunction import get
 from chia.chipyard.riscv_build_node import RiscvBuildNode
 from chia.chipyard.state_def import ProgramBuildArtifact
@@ -21,7 +23,7 @@ from chia.chipyard.state_def import ProgramBuildArtifact
 WORK_DIR = "/tmp/spec_build"
 BUILD_TIMEOUT_S = 4 * 60 * 60
 
-COLLATERAL = Path(__file__).parent / "collateral"
+COLLATERAL = Path(chia.firesim.__path__[0]) / "spec" / "spec2006"
 
 
 def main() -> int:
