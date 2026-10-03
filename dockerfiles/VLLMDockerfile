@@ -17,15 +17,24 @@
 # ---------------------------------------------------------------------------
 # vLLM is GPU-first. The default base (vllm/vllm-openai) is CUDA/NVIDIA; AMD uses
 # a different ROCm image, so we parameterize VLLM_BASE. There is no practical CPU
-# path (unlike Ollama). Run with `--gpus all` (NVIDIA).
+# path (unlike Ollama). CI publishes one image per vendor (.github/workflows/vllm.yml).
 #
-#   NVIDIA:  --build-arg VLLM_BASE=vllm/vllm-openai:latest   (default)
-#   AMD:     --build-arg VLLM_BASE=rocm/vllm:latest          (ROCm; verify tag)
+#   NVIDIA:  --build-arg VLLM_BASE=vllm/vllm-openai:latest        (default)
+#            -> ghcr.io/ucb-bar/chia-vllm
+#   AMD:     --build-arg VLLM_BASE=vllm/vllm-openai-rocm:latest   (ROCm)
+#            -> ghcr.io/ucb-bar/chia-vllm-amd
+#
+# The run examples below are NVIDIA (`--gpus all`). For the AMD image, replace
+# `--gpus all` with:
+#   --device /dev/kfd --device /dev/dri --group-add video --ipc=host
 #
 # ---------------------------------------------------------------------------
 # Build (from the chia repo root)
 # ---------------------------------------------------------------------------
 #   docker build -f dockerfiles/VLLMDockerfile -t ghcr.io/ucb-bar/chia-vllm:latest .
+#   docker build -f dockerfiles/VLLMDockerfile \
+#       --build-arg VLLM_BASE=vllm/vllm-openai-rocm:latest \
+#       -t ghcr.io/ucb-bar/chia-vllm-amd:latest .
 #
 # ---------------------------------------------------------------------------
 # Run (GPU required)
