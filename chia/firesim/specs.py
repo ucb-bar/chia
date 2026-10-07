@@ -13,11 +13,6 @@ from chia.cluster.config import DockerConfig, NodeTypeConfig
 FPGA_RESOURCE = "firesim_fpga"
 ECAD_RESOURCE = "F2_vivado"
 
-# Vivado's working directory on the ECAD instance, mounted into the container
-# at the same path: the container copies the design in, Vivado on the host
-# builds it there.
-BUILD_DIR = "/home/ubuntu/firesim-build"
-
 
 def _root_volume(gb: int) -> dict:
     return {"BlockDeviceMappings": [{"DeviceName": "/dev/sda1",
@@ -43,8 +38,8 @@ F2_SIM = (
                   extra_args=_root_volume(300)),
 )
 
-# Builds a bitstream with FireSim's own build code, AGFI included: Chisel in
-# the container, Vivado on the instance (the FPGA Developer AMI).
+# Builds a bitstream with FireSim's own build code, AGFI included, all in the
+# container. Vivado is the instance's (the FPGA Developer AMI), mounted in.
 F2_ECAD = (
     NodeTypeConfig(
         name="ecad",
@@ -53,9 +48,16 @@ F2_ECAD = (
             image="ghcr.io/ucb-bar/chia-chisel-build:latest",
             container_name="chia-ecad",
             run_options=[
-                # Lets the container run the Vivado step on the host with nsenter.
-                "--privileged", "--pid=host",
-                "-v", f"{BUILD_DIR}:{BUILD_DIR}",
+                # Vivado's multi-process synthesis leaves orphan workers. Without
+                # an init as PID 1 to reap them, Vivado waits on them forever.
+                "--init",
+                "-v", "/opt/Xilinx:/opt/Xilinx:ro",
+                "-e", "XILINX_VIVADO=/opt/Xilinx/Vivado/2024.2",
+            ],
+            # Puts Vivado on the PATH of the container's login shells, as the
+            # AMI's login shell does on the instance.
+            run_setup_commands=[
+                "echo 'export PATH=$XILINX_VIVADO/bin:$PATH' | sudo tee /etc/profile.d/vivado.sh",
             ],
         ),
     ),
