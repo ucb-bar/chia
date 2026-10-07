@@ -1,4 +1,4 @@
-"""Build an f2 bitstream with FireSim's own build code."""
+"""Build a bitstream with FireSim's own build code."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import yaml
 
 from chia.base.ChiaFunction import ChiaFunction
 from chia.firesim.fs_bitstream import DRIVER_TAR_NAME, FSBitstream
-from chia.firesim.specs import ECAD_RESOURCE
 from chia.firesim.state_def import BuildRecipe, EcadBuildResult
 
 CHIPYARD = "/home/ray/chipyard"
@@ -31,9 +30,12 @@ class BitstreamBuildNode:
         self.timeout_seconds = timeout_seconds
         self.logger = logging.getLogger("BitstreamBuildNode")
 
-    @ChiaFunction(resources={ECAD_RESOURCE: 1})
+    @ChiaFunction()
     def build_bitstream(self, recipe: BuildRecipe,
                         diffs: "list[str] | None" = None) -> EcadBuildResult:
+        """Builds ``recipe`` with ``diffs`` applied to chipyard, in order. Call it with the
+        resource of the machines to build on, for example
+        ``build_bitstream.options(resources={vivado_resource(recipe.platform): 1})``."""
         log = []
         out = f"{FIRESIM}/sim/output/{recipe.platform}/{recipe.quintuplet()}"
         bundle = f"{out}/{DRIVER_TAR_NAME}"
@@ -64,12 +66,18 @@ class BitstreamBuildNode:
                 return EcadBuildResult(recipe.name, success=False, log="\n".join(log))
 
         with open(f"{DEPLOY}/built-hwdb-entries/{recipe.name}") as f:
-            agfi = yaml.safe_load(f)[recipe.name]["agfi"]
+            entry = yaml.safe_load(f)[recipe.name]
         with open(bundle, "rb") as f:
             driver = f.read()
+        # F2 builds an AGFI; the other platforms build a bitstream tar.
+        tar = None
+        if "bitstream_tar" in entry:
+            with open(entry["bitstream_tar"].removeprefix("file://"), "rb") as f:
+                tar = f.read()
         return EcadBuildResult(
             recipe.name, success=True, log="\n".join(log),
-            bitstream=FSBitstream(recipe.quintuplet(), agfi=agfi, driver_bytes=driver))
+            bitstream=FSBitstream(recipe.quintuplet(), agfi=entry.get("agfi"),
+                                  bitstream_bytes=tar, driver_bytes=driver))
 
     @staticmethod
     def _write_configs(recipe: BuildRecipe) -> None:
