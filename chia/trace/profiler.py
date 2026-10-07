@@ -183,13 +183,23 @@ def start_collector(log_dir: Optional[str] = None, namespace: Optional[str] = No
 
 def stop_collector() -> None:
     """Kill the profile collector actor started by ``start_collector()``.
-    Call from the driver once all profiled work is done. Idempotent."""
+    Call from the driver once all profiled work is done. Idempotent.
+
+    Events reach the actor as fire-and-forget calls, so this first waits for
+    the ones already sent to land in the log, then kills the actor and resets
+    the profiler singleton, which would otherwise keep a handle to a dead actor.
+    """
     global _collector_override
     import ray as _ray
 
     if _collector_override is not None:
+        try:
+            _ray.get(_collector_override.get_events.remote())
+        except Exception:
+            pass
         _ray.kill(_collector_override)
         _collector_override = None
+        reset_profiler()
 
 
 # Cached actor handle set by start_collector().  get_collector() checks
