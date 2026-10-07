@@ -11,74 +11,13 @@ import yaml
 
 from chia.base.ChiaFunction import ChiaFunction
 from chia.firesim.fs_bitstream import DRIVER_TAR_NAME, FSBitstream
-from chia.firesim.specs import BUILD_DIR, ECAD_RESOURCE
+from chia.firesim.specs import ECAD_RESOURCE
 from chia.firesim.state_def import BuildRecipe, EcadBuildResult
 
 CHIPYARD = "/home/ray/chipyard"
 FIRESIM = f"{CHIPYARD}/sims/firesim"
 DEPLOY = f"{FIRESIM}/deploy"
-
-_BUILD = r"""
-import argparse, os, shlex, shutil, sys, tempfile
-from pathlib import Path
-sys.path.insert(0, os.getcwd())
-import lddwrap
-from fabric.api import local, settings
-from fabric.operations import _prefix_commands, _prefix_env_vars
-import buildtools.bitbuilder as bitbuilder
-from buildtools.buildconfigfile import BuildConfigFile
-
-driver, bundle = sys.argv[1:]
-
-
-def rsync_local(remote_dir, local_dir=None, upload=True, exclude=(), extra_opts="", capture=False, **kw):
-    src, dst = (local_dir, remote_dir) if upload else (remote_dir, local_dir)
-    excludes = " ".join(f"--exclude={e}" for e in ([exclude] if isinstance(exclude, str) else exclude))
-    return local(f"rsync -a {excludes} {extra_opts} {src} {dst}", capture=capture, shell="/bin/bash")
-
-
-def run_on_host(cmd, **kw):
-    # Fabric's run() with the instance as the build host: its cd/env prefixes
-    # go inside the host command, run as fabric's remote shell would.
-    cmd = _prefix_env_vars(_prefix_commands(cmd, "remote"))
-    with settings(command_prefixes=[]):
-        return local("sudo nsenter -t 1 -a -- sudo -u ubuntu /bin/bash -l -c "
-                     + shlex.quote(cmd), shell="/bin/bash")
-
-
-def bundle_driver():
-    # The driver and the libraries it loads from this conda env, which the run
-    # host lacks. Not FireSim's get_local_shared_libraries: in this image it also
-    # takes glibc, which crashes on the host.
-    with tempfile.TemporaryDirectory() as d:
-        shutil.copy(driver, d)
-        for dso in lddwrap.list_dependencies(Path(driver)):
-            if dso.path and str(dso.path).startswith(os.environ["CONDA_PREFIX"]):
-                shutil.copy(os.path.realpath(dso.path), os.path.join(d, dso.soname))
-        local(f"tar -czf {bundle} -C {d} {' '.join(os.listdir(d))}")
-
-
-bitbuilder.rsync_project = rsync_local
-
-config = BuildConfigFile(argparse.Namespace(
-    launchtime=None, forceterminate=True, buildconfigfile="config_build.yaml",
-    buildrecipesconfigfile="config_build_recipes.yaml",
-    hwdbconfigfile="config_hwdb.yaml"))
-config.request_build_hosts()
-config.wait_on_build_host_initializations()
-for build in config.builds_list:
-    bitbuilder.run = lambda cmd, **kw: local(cmd, shell="/bin/bash")
-    print("[build] replace_rtl", flush=True)
-    build.bitbuilder.replace_rtl()
-    print("[build] build_driver", flush=True)
-    build.bitbuilder.build_driver()
-    print("[build] driver_bundle", flush=True)
-    bundle_driver()
-    bitbuilder.run = run_on_host
-    print("[build] build_bitstream", flush=True)
-    if not build.bitbuilder.build_bitstream():
-        sys.exit(1)
-"""
+BUILD_DIR = "/home/ray/firesim-build"
 
 
 class BitstreamBuildNode:
@@ -103,10 +42,18 @@ class BitstreamBuildNode:
                           if diffs else "true", ""),
             *((f"git apply {i}", f"cd {CHIPYARD} && git apply -", diff)
               for i, diff in enumerate(diffs or [], 1)),
-            ("build dir", f"sudo chown $(id -u):$(id -g) {BUILD_DIR}", ""),
-            ("build", f"source {CHIPYARD}/env.sh && cd {DEPLOY} && "
-                      f"JAVA_HEAP_SIZE={recipe.java_heap_size} python - "
-                      f"{out}/{recipe.design}-{recipe.platform} {bundle}", _BUILD),
+            ("build", f"export PATH=$XILINX_VIVADO/bin:$PATH && source {CHIPYARD}/env.sh && "
+                      f"cd {FIRESIM} && source sourceme-manager.sh --skip-ssh-setup && "
+                      f"JAVA_HEAP_SIZE={recipe.java_heap_size} firesim buildbitstream", ""),
+            # The driver and the libraries it loads from the conda env, which the run
+            # host lacks. Not FireSim's get_local_shared_libraries: in this image it
+            # also takes glibc, which crashes on the host.
+            ("driver bundle", f"source {CHIPYARD}/env.sh && cd {out} && rm -rf bundle && "
+                              f"mkdir bundle && cp {recipe.design}-{recipe.platform} bundle && "
+                              f"ldd {recipe.design}-{recipe.platform} | awk -v p=$CONDA_PREFIX/ "
+                              f"'index($3, p) == 1 {{print $3, $1}}' | "
+                              f"while read lib name; do cp -L $lib bundle/$name; done && "
+                              f"cd bundle && tar -czf {bundle} *", ""),
         ]
         self._write_configs(recipe)
         for name, cmd, stdin in steps:
@@ -135,7 +82,6 @@ class BitstreamBuildNode:
                 "base_recipe": "build-farm-recipes/externally_provisioned.yaml",
                 "recipe_arg_overrides": {
                     "default_build_dir": BUILD_DIR,
-                    # Only names the build; _BUILD runs every step locally.
                     "build_farm_hosts": ["localhost"],
                 },
             },
@@ -166,20 +112,12 @@ class BitstreamBuildNode:
                 yaml.safe_dump(config, f, sort_keys=False)
 
     def _sh(self, cmd: str, stdin: str = "") -> tuple[int, str]:
-        """Run in this container and return its output; print only the
-        ``[build]`` step lines as they come. Never raises."""
+        """Run in this container and return its output. Never raises."""
         self.logger.info(f"$ {cmd[:200]}")
         p = subprocess.Popen(["bash", "-lc", cmd], stdin=subprocess.PIPE,
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         timer = threading.Timer(self.timeout_seconds, p.kill)
         timer.start()
-        p.stdin.write(stdin)
-        p.stdin.close()
-        out = []
-        for line in p.stdout:
-            out.append(line)
-            if line.startswith("[build] "):
-                print(line, end="", flush=True)
-        rc = p.wait()
+        out, _ = p.communicate(stdin)
         timer.cancel()
-        return rc, "".join(out)
+        return p.returncode, out

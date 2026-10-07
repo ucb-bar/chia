@@ -114,8 +114,8 @@ RUN /tmp/install-conda.sh --prefix /home/ray/conda
 
 SHELL ["/bin/bash", "-cl"]
 
-# Stub vivado binary to pass hdk_setup.sh checks during FireSim setup.
-# Vivado runs natively on the FPGA AMI host, never inside this container.
+# Stub vivado binary to pass hdk_setup.sh checks during FireSim setup. The
+# bitstream build puts the instance's Vivado, which F2_ECAD mounts, before it.
 USER root
 RUN printf '#!/bin/bash\necho "Vivado v2024.2 (64-bit)"\n' > /usr/local/bin/vivado \
     && chmod +x /usr/local/bin/vivado
@@ -161,6 +161,15 @@ RUN echo 'source /home/ray/chipyard/env.sh' >> ~/.bashrc \
     && echo 'cd /home/ray/chipyard/sims/firesim/platforms/f2/aws-fpga-firesim-f2' >> ~/.bashrc \
     && echo 'cd /home/ray' >> ~/.bashrc
 
+# The F2 build runs here with the instance's Vivado. Vivado forces
+# LC_ALL=en_US.UTF-8 and, on Ubuntu 22.04, loads the system's libtinfo.so.5.
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends locales libtinfo5 \
+    && locale-gen en_US.UTF-8 && rm -rf /var/lib/apt/lists/*
+
 USER ray
+# The HDK checks out its IP with git LFS, through chipyard's conda git, which
+# reads ray's git config but not the system's.
+RUN git lfs install
 ENV HOME=/home/ray
 WORKDIR /home/ray
