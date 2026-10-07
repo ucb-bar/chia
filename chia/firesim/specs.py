@@ -54,6 +54,11 @@ F2_ECAD = (
                 "-v", "/opt/Xilinx:/opt/Xilinx:ro",
                 "-e", "XILINX_VIVADO=/opt/Xilinx/Vivado/2024.2",
             ],
+            # Puts Vivado on the PATH of the container's login shells, as the
+            # AMI's login shell does on the instance.
+            run_setup_commands=[
+                "echo 'export PATH=$XILINX_VIVADO/bin:$PATH' | sudo tee /etc/profile.d/vivado.sh",
+            ],
         ),
     ),
     AWSNodeConfig(KeyName="", InstanceType="z1d.2xlarge", count=1, ImageId="",

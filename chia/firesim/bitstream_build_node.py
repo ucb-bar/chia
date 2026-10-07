@@ -42,8 +42,8 @@ class BitstreamBuildNode:
                           if diffs else "true", ""),
             *((f"git apply {i}", f"cd {CHIPYARD} && git apply -", diff)
               for i, diff in enumerate(diffs or [], 1)),
-            ("build", f"export PATH=$XILINX_VIVADO/bin:$PATH && source {CHIPYARD}/env.sh && "
-                      f"cd {FIRESIM} && source sourceme-manager.sh --skip-ssh-setup && "
+            ("build", f"source {CHIPYARD}/env.sh && cd {FIRESIM} && "
+                      f"source sourceme-manager.sh --skip-ssh-setup && "
                       f"JAVA_HEAP_SIZE={recipe.java_heap_size} firesim buildbitstream", ""),
             # The driver and the libraries it loads from the conda env, which the run
             # host lacks. Not FireSim's get_local_shared_libraries: in this image it
