@@ -708,9 +708,21 @@ workers, and stops them on ``chia down``.
 Constraints: every worker must be a tailnet worker or colocated on the
 head machine (the head advertises a loopback IP that LAN workers cannot
 route to); mixing with SSH-tunneled/cloud workers is rejected at config
-load; ``chia up --add`` is not yet supported (re-run ``chia up`` —
-existing workers are detected and skipped). See
-``examples/tailscale/`` for a complete working example.
+load. See ``examples/tailscale/`` for a complete working example.
+
+``chia up --add`` grows a running tailnet cluster like any other —
+including provisioning new ``aws_nodes``/``gcp_nodes`` machines and
+joining them to the tailnet. Live workers are identified from the
+running cluster itself (each one's advertise IP, port block, and
+machine), so they are never renumbered, even when the YAML change
+shifts what a fresh ``chia up`` would allocate; new workers take the
+lowest free advertise IPs and per-machine port blocks. Every machine's
+relay must learn the new workers' routes: running relays are
+hot-reloaded (``SIGHUP``) without dropping the connections they carry,
+and new machines get a fresh relay. Relays started by a CHIA version
+without hot reload are restarted instead, with a warning. Changing
+``worker_block_base``/``worker_block_size`` between ``chia up`` and
+``--add`` is rejected — that needs a full ``chia down``/``chia up``.
 
 A mixed on-prem + cloud example
 -------------------------------

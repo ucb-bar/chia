@@ -26,6 +26,11 @@ Run from the head machine (after ``chia up`` of any example config):
 
     export RAY_ADDRESS=127.200.0.1:6379
     python examples/tailscale/connectivity-matrix.py
+
+Extra resource tags given as arguments are swept too — e.g. logical
+workers added with ``chia up --add`` under their own tags:
+
+    python examples/tailscale/connectivity-matrix.py head_added ec2_added
 """
 import asyncio
 import os
@@ -90,7 +95,13 @@ def _print_matrix(title: str, tags: list, rows: dict):
 def main():
     ray.init(address=os.environ.get("RAY_ADDRESS", "auto"),
              ignore_reinit_error=True)
-    tags = [t for t in MACHINE_TAGS if ray.cluster_resources().get(t, 0) > 0]
+    extra = [t for t in sys.argv[1:] if t not in MACHINE_TAGS]
+    tags = [t for t in MACHINE_TAGS + extra
+            if ray.cluster_resources().get(t, 0) > 0]
+    missing = [t for t in extra if t not in tags]
+    if missing:
+        print(f"Requested tags not in the cluster: {missing}")
+        sys.exit(1)
     if len(tags) < 2:
         print(f"Need >=2 machine resource tags, found: {tags}. "
               f"Are the example configs' --resources in place?")

@@ -3,6 +3,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
+import uuid
 from dataclasses import dataclass
 
 from chia.cluster.config import (
@@ -28,8 +29,13 @@ _REMOTE_BASE = "/tmp/chia_tailnet_relay_$USER"
 # proxy to the peer's tailnet IP (same port). Inbound tailnet traffic
 # needs no relay: userspace tailscaled delivers it to 127.0.0.1:<port>,
 # where Ray's wildcard-bound services receive it directly.
+#
+# SIGHUP hot-reloads the spec file in place (``chia up --add``): new
+# listeners are bound, removed ones closed, and ``routes`` is updated —
+# without touching established connections. The READY line's trailing
+# "reload" advertises this; relays started before it existed lack it.
 RELAY_SCRIPT = r'''
-import json, selectors, socket, struct, sys, threading
+import json, selectors, signal, socket, struct, sys, threading
 
 
 def socks5_connect(proxy, dest_ip, dest_port, timeout=15):
@@ -160,39 +166,108 @@ def _handle(conn, proxy, dest_ip, dest_port, via="socks"):
     _splice(conn, up)
 
 
+def _bind(sel, servers, entry):
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        srv.bind((entry["bind_ip"], entry["port"]))
+    except OSError:
+        srv.close()
+        raise
+    srv.listen(128)
+    srv.setblocking(False)
+    sel.register(srv, selectors.EVENT_READ, entry)
+    servers[(entry["bind_ip"], entry["port"])] = srv
+
+
+def _reload(spec_path, sel, servers, routes):
+    # Diff the new spec against the live listeners: keep (re-tagging
+    # their entry), close, or bind. Established connections are never
+    # touched — closing a listener only stops new accepts.
+    try:
+        with open(spec_path) as f:
+            spec = json.load(f)
+    except (OSError, ValueError) as e:
+        sys.stderr.write("relay: reload failed to read spec: %s\n" % e)
+        print("CHIA_RELAY_RELOAD_FAILED", flush=True)
+        return
+    wanted = {(e["bind_ip"], e["port"]): e for e in spec["listeners"]}
+    for addr in [a for a in servers if a not in wanted]:
+        srv = servers.pop(addr)
+        sel.unregister(srv)
+        srv.close()
+    errors = 0
+    for addr, entry in wanted.items():
+        if addr in servers:
+            sel.modify(servers[addr], selectors.EVENT_READ, entry)
+            continue
+        try:
+            _bind(sel, servers, entry)
+        except OSError as e:
+            sys.stderr.write("relay: cannot bind %s:%d: %s\n"
+                             % (addr[0], addr[1], e))
+            errors += 1
+    # Updated in place: CONNECT handler threads share this dict.
+    new_routes = spec.get("routes", {})
+    routes.update(new_routes)
+    for host in [h for h in routes if h not in new_routes]:
+        routes.pop(host, None)
+    print("CHIA_RELAY_RELOADED %s %d errors=%d"
+          % (spec.get("reload_token", "-"), len(servers), errors), flush=True)
+
+
 def main():
-    with open(sys.argv[1]) as f:
+    spec_path = sys.argv[1]
+    with open(spec_path) as f:
         spec = json.load(f)
     proxy_host, proxy_port = spec["socks_proxy"].rsplit(":", 1)
     proxy = (proxy_host, int(proxy_port))
+    routes = dict(spec.get("routes", {}))
 
     threading.stack_size(256 * 1024)
     sel = selectors.DefaultSelector()
+    servers = {}
     for entry in spec["listeners"]:
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
-            srv.bind((entry["bind_ip"], entry["port"]))
+            _bind(sel, servers, entry)
         except OSError as e:
             sys.stderr.write("relay: cannot bind %s:%d: %s\n"
                              % (entry["bind_ip"], entry["port"], e))
             sys.exit(1)
-        srv.listen(128)
-        srv.setblocking(False)
-        sel.register(srv, selectors.EVENT_READ, entry)
 
-    print("CHIA_RELAY_READY %d" % len(spec["listeners"]), flush=True)
+    # SIGHUP -> reload, via a self-pipe so the reload runs in the select
+    # loop rather than inside the signal handler.
+    wake_r, wake_w = socket.socketpair()
+    wake_r.setblocking(False)
+    wake_w.setblocking(False)
+    sel.register(wake_r, selectors.EVENT_READ, None)
+
+    def _on_hup(_signum, _frame):
+        try:
+            wake_w.send(b"\0")
+        except OSError:
+            pass  # a wakeup is already pending
+    signal.signal(signal.SIGHUP, _on_hup)
+
+    print("CHIA_RELAY_READY %d reload" % len(spec["listeners"]), flush=True)
     while True:
         for key, _ in sel.select():
+            if key.data is None:
+                try:
+                    wake_r.recv(4096)
+                except OSError:
+                    pass
+                _reload(spec_path, sel, servers, routes)
+                continue
             try:
                 conn, _addr = key.fileobj.accept()
             except OSError:
-                continue
+                continue  # also: a listener closed by a reload in this batch
             conn.setblocking(True)
             entry = key.data
             if entry.get("via") == "connect":
                 t = threading.Thread(target=_handle_connect,
-                                     args=(conn, proxy, spec.get("routes", {})),
+                                     args=(conn, proxy, routes),
                                      daemon=True)
             else:
                 t = threading.Thread(
@@ -361,7 +436,44 @@ def allocate_tailnet_workers(
     """
     tn = config.tailnet_config
     assert tn is not None
+    _check_block_layout(tn)
 
+    result: dict[tuple[str, str, int], TailnetWorkerAlloc] = {}
+    next_addr = ipaddress.IPv4Address("127.0.0.2")
+
+    idx_by_machine: dict[str, int] = {}
+    for a in assignments:
+        if not _is_participant(config, a.ip):
+            continue
+        block_idx = idx_by_machine.get(a.ip, 0)
+        idx_by_machine[a.ip] = block_idx + 1
+        result[(a.ip, a.node_type.name, a.worker_index)] = _make_alloc(
+            tn, block_idx, str(next_addr),
+            _host_tailnet_ip(config, a.ip, tailnet_ip_map))
+
+        next_addr += 1
+        if next_addr == ipaddress.IPv4Address("127.0.0.1"):
+            next_addr += 1
+
+    return result
+
+
+def _is_participant(config: ClusterConfig, ip: str) -> bool:
+    # Workers colocated on the head machine aren't tailnet-marked (no
+    # SSH proxy, no tailscaled of their own) but are full mesh
+    # participants: peers reach them at the head's tailnet address.
+    return config.is_tailnet(ip) or ip == config.head_ip
+
+
+def _host_tailnet_ip(config: ClusterConfig, ip: str,
+                     tailnet_ip_map: dict[str, str] | None) -> str:
+    """The tailnet address peers dial to reach machine *ip*."""
+    if ip == config.head_ip:
+        return config.tailnet_config.head_tailnet_ip
+    return (tailnet_ip_map or {}).get(ip, ip)
+
+
+def _check_block_layout(tn: TailnetConfig) -> None:
     needed = _WORKER_PORT_OFFSET + tn.worker_port_count
     if needed > tn.worker_block_size:
         raise ConfigError(
@@ -372,52 +484,137 @@ def allocate_tailnet_workers(
             f"tailnet: tool_port_count ({tn.tool_port_count}) too large "
             f"(max {_WORKER_PORT_OFFSET - _TOOL_OFFSET})")
 
+
+def _make_alloc(tn: TailnetConfig, block_idx: int, advertise_ip: str,
+                tailnet_ip: str) -> TailnetWorkerAlloc:
+    """Build (and validate) the alloc for port block *block_idx*."""
+    base = tn.worker_block_base + block_idx * tn.worker_block_size
+    alloc = TailnetWorkerAlloc(
+        advertise_ip=advertise_ip,
+        tailnet_ip=tailnet_ip,
+        node_manager_port=base,
+        object_manager_port=base + 1,
+        tool_port_min=base + _TOOL_OFFSET,
+        tool_port_max=base + _TOOL_OFFSET + tn.tool_port_count - 1,
+        worker_port_min=base + _WORKER_PORT_OFFSET,
+        worker_port_max=base + _WORKER_PORT_OFFSET + tn.worker_port_count - 1,
+    )
+    if alloc.advertise_ip == tn.head_advertise_ip:
+        raise ConfigError(
+            f"tailnet: worker advertise IP collides with head_advertise_ip "
+            f"({tn.head_advertise_ip})")
+    if set(alloc.ports()) & set(head_ports(tn)):
+        raise ConfigError(
+            f"tailnet: worker port block [{base}, {base + tn.worker_block_size}) "
+            f"overlaps the head port ranges — adjust worker_block_base/"
+            f"head_worker_port_min or reduce worker count")
+    if alloc.worker_port_max > 65535:
+        raise ConfigError(
+            f"tailnet: worker port block [{base}, {base + tn.worker_block_size}) "
+            f"exceeds the top of port space (65535) — reduce worker "
+            f"count or worker_block_size, or lower worker_block_base")
+    return alloc
+
+
+def live_tailnet_workers(
+    config: ClusterConfig,
+    ray_nodes: list[dict],
+    head_routes: dict[str, str | None],
+    tailnet_ip_map: dict[str, str] | None = None,
+) -> list[tuple[str, dict, TailnetWorkerAlloc]]:
+    """Reconstruct the allocs of a running tailnet cluster's workers.
+
+    Returns ``(cluster_ip, resources, alloc)`` for every alive Ray node
+    except the head. A worker's advertise IP is its Ray ``NodeName``;
+    its machine comes from the head relay's ``routes`` (the tailnet IP
+    peers dial it at, or null for the head machine), mapped back to a
+    cluster address; its port block from its ``NodeManagerPort``.
+    Reading these from the live cluster rather than re-deriving them
+    from the YAML keeps ``chia up --add`` correct after the YAML
+    changed (e.g. a higher ``num_workers`` shifts every later worker's
+    YAML-derived advertise IP).
+    """
+    tn = config.tailnet_config
+    assert tn is not None
+    by_tailnet_ip = {_host_tailnet_ip(config, ip, tailnet_ip_map): ip
+                     for ip in config.worker_ips
+                     if config.is_tailnet(ip)}
+
+    result: list[tuple[str, dict, TailnetWorkerAlloc]] = []
+    for node in ray_nodes:
+        adv_ip = node.get("NodeName")
+        if not node.get("Alive") or adv_ip == tn.head_advertise_ip:
+            continue
+        if adv_ip not in head_routes:
+            raise RuntimeError(
+                f"Ray node {adv_ip} is not in the head relay's routes — "
+                f"cannot tell which machine it runs on (was the relay spec "
+                f"on the head overwritten?). Run a full 'chia down' and "
+                f"'chia up' instead")
+        route = head_routes[adv_ip]
+        if route is None:
+            cluster_ip = config.head_ip
+        else:
+            # A machine no longer in the YAML keeps its tailnet address
+            # as its key: still a peer in every relay spec, never set up.
+            cluster_ip = by_tailnet_ip.get(route, route)
+        offset = int(node.get("NodeManagerPort", -1)) - tn.worker_block_base
+        if offset < 0 or offset % tn.worker_block_size:
+            raise RuntimeError(
+                f"Ray node {adv_ip} has node manager port "
+                f"{node.get('NodeManagerPort')}, outside the tailnet port "
+                f"layout (worker_block_base={tn.worker_block_base}, "
+                f"worker_block_size={tn.worker_block_size}) — the layout "
+                f"changed since 'chia up'. Run a full 'chia down' and "
+                f"'chia up' instead")
+        alloc = _make_alloc(tn, offset // tn.worker_block_size, adv_ip,
+                            route if route is not None else tn.head_tailnet_ip)
+        result.append((cluster_ip, node.get("Resources", {}), alloc))
+    return result
+
+
+def allocate_added_tailnet_workers(
+    config: ClusterConfig,
+    new_assignments: list[NodeAssignment],
+    live: list[tuple[str, TailnetWorkerAlloc]],
+    tailnet_ip_map: dict[str, str] | None = None,
+) -> dict[tuple[str, str, int], TailnetWorkerAlloc]:
+    """Allocate workers joining a running cluster around the *live* ones.
+
+    *live* is ``(cluster_ip, alloc)`` for the workers already running
+    (see :func:`live_tailnet_workers`). Each new worker takes the lowest
+    advertise IP no live worker holds and the lowest port block free on
+    its machine, so nothing already running is renumbered. Advertise IPs
+    of dead workers are reused: every relay's route is rewritten when
+    the cluster's relays are reloaded.
+    """
+    tn = config.tailnet_config
+    assert tn is not None
+    _check_block_layout(tn)
+
+    used_ips = {alloc.advertise_ip for _, alloc in live}
+    used_ips.add(tn.head_advertise_ip)
+    used_blocks: dict[str, set[int]] = {}
+    for ip, alloc in live:
+        used_blocks.setdefault(ip, set()).add(
+            (alloc.node_manager_port - tn.worker_block_base)
+            // tn.worker_block_size)
+
     result: dict[tuple[str, str, int], TailnetWorkerAlloc] = {}
     next_addr = ipaddress.IPv4Address("127.0.0.2")
-    head_port_set = set(head_ports(tn))
-
-    idx_by_machine: dict[str, int] = {}
-    for a in assignments:
-        # Workers colocated on the head machine aren't tailnet-marked
-        # (no SSH proxy, no tailscaled of their own) but are full mesh
-        # participants: peers reach them at the head's tailnet address.
-        is_head_local = a.ip == config.head_ip
-        if not (config.is_tailnet(a.ip) or is_head_local):
+    for a in new_assignments:
+        if not _is_participant(config, a.ip):
             continue
-        block_idx = idx_by_machine.get(a.ip, 0)
-        idx_by_machine[a.ip] = block_idx + 1
-        base = tn.worker_block_base + block_idx * tn.worker_block_size
-        alloc = TailnetWorkerAlloc(
-            advertise_ip=str(next_addr),
-            tailnet_ip=(tn.head_tailnet_ip if is_head_local
-                        else (tailnet_ip_map or {}).get(a.ip, a.ip)),
-            node_manager_port=base,
-            object_manager_port=base + 1,
-            tool_port_min=base + _TOOL_OFFSET,
-            tool_port_max=base + _TOOL_OFFSET + tn.tool_port_count - 1,
-            worker_port_min=base + _WORKER_PORT_OFFSET,
-            worker_port_max=base + _WORKER_PORT_OFFSET + tn.worker_port_count - 1,
-        )
-        if alloc.advertise_ip == tn.head_advertise_ip:
-            raise ConfigError(
-                f"tailnet: worker advertise IP collides with head_advertise_ip "
-                f"({tn.head_advertise_ip})")
-        block = set(alloc.ports())
-        if block & head_port_set:
-            raise ConfigError(
-                f"tailnet: worker port block [{base}, {base + tn.worker_block_size}) "
-                f"overlaps the head port ranges — adjust worker_block_base/"
-                f"head_worker_port_min or reduce worker count")
-        if alloc.worker_port_max > 65535:
-            raise ConfigError(
-                f"tailnet: worker port block [{base}, {base + tn.worker_block_size}) "
-                f"exceeds the top of port space (65535) — reduce worker "
-                f"count or worker_block_size, or lower worker_block_base")
-        result[(a.ip, a.node_type.name, a.worker_index)] = alloc
-
-        next_addr += 1
-        if next_addr == ipaddress.IPv4Address("127.0.0.1"):
+        while str(next_addr) in used_ips or \
+                next_addr == ipaddress.IPv4Address("127.0.0.1"):
             next_addr += 1
+        blocks = used_blocks.setdefault(a.ip, set())
+        block_idx = min(set(range(len(blocks) + 1)) - blocks)
+        result[(a.ip, a.node_type.name, a.worker_index)] = _make_alloc(
+            tn, block_idx, str(next_addr),
+            _host_tailnet_ip(config, a.ip, tailnet_ip_map))
+        used_ips.add(str(next_addr))
+        blocks.add(block_idx)
 
     return result
 
@@ -522,6 +719,93 @@ def start_relay(ssh: SSHClient, spec: dict) -> None:
     ssh.run_script(script, timeout=120)
     logger.info(f"[{ssh.ip}] Tailnet relay up "
                 f"({len(spec['listeners'])} listeners)")
+
+
+def update_relay(ssh: SSHClient, spec: dict) -> None:
+    """Hot-reload the relay on *ssh*'s host with *spec*, or start it.
+
+    A running relay is sent SIGHUP to diff in the new listeners and
+    routes, so the Ray connections it is carrying survive (``chia up
+    --add``). A host without a running relay gets a fresh
+    :func:`start_relay`. A relay started before hot reload existed is
+    restarted too, with a warning: that drops its in-flight connections.
+    """
+    if not spec["listeners"]:
+        logger.debug(f"[{ssh.ip}] No relay listeners needed, skipping")
+        return
+    token = uuid.uuid4().hex
+    spec_json = json.dumps({**spec, "reload_token": token}, indent=1)
+    # One if/elif/else rather than early `exit 0`s: in a login shell,
+    # `exit` runs ~/.bash_logout, and Ubuntu's stock one (clear_console
+    # failing with no console) turns `exit 0` into exit status 1.
+    result = ssh.run_script([
+        f"PID=$(cat {_REMOTE_BASE}.pid 2>/dev/null || true)",
+        f'if [ -z "$PID" ] || ! pgrep -f "chia_tailnet_rela[y]_$USER.py" '
+        f'| grep -qx "$PID"; then echo CHIA_RELAY_ABSENT',
+        f'elif ! grep -q "^CHIA_RELAY_READY .* reload$" {_REMOTE_BASE}.log '
+        f'2>/dev/null; then echo CHIA_RELAY_LEGACY',
+        "else",
+        f"cat > {_REMOTE_BASE}.json <<'CHIA_RELAY_SPEC_EOF'\n"
+        f"{spec_json}\n"
+        f"CHIA_RELAY_SPEC_EOF",
+        'kill -HUP "$PID"',
+        f'for i in $(seq 1 40); do '
+        f'grep -q "^CHIA_RELAY_RELOADED {token} " {_REMOTE_BASE}.log && break; '
+        f'sleep 0.5; done',
+        f'if ! grep "^CHIA_RELAY_RELOADED {token} " {_REMOTE_BASE}.log; then '
+        f'echo "chia tailnet relay did not acknowledge the reload:"; '
+        f'tail -n 50 {_REMOTE_BASE}.log; exit 1; fi',
+        "fi",
+    ], timeout=120)
+    if "CHIA_RELAY_ABSENT" in result.stdout:
+        start_relay(ssh, spec)
+        return
+    if "CHIA_RELAY_LEGACY" in result.stdout:
+        logger.warning(
+            f"[{ssh.ip}] Tailnet relay predates hot reload — restarting it, "
+            f"which drops the Ray connections it carries")
+        start_relay(ssh, spec)
+        return
+    ack = next(line for line in result.stdout.splitlines()
+               if line.startswith(f"CHIA_RELAY_RELOADED {token} "))
+    if not ack.endswith(" errors=0"):
+        log = ssh.run(f"tail -n 50 {_REMOTE_BASE}.log", check=False)
+        raise RuntimeError(
+            f"Tailnet relay on {ssh.ip} failed to bind new listener(s) on "
+            f"reload ({ack}):\n{log.stdout}")
+    logger.info(f"[{ssh.ip}] Tailnet relay reloaded "
+                f"({len(spec['listeners'])} listeners)")
+
+
+def read_relay_spec(ssh: SSHClient) -> dict | None:
+    """The spec of the relay deployed on *ssh*'s host, or ``None``."""
+    result = ssh.run(f"cat {_REMOTE_BASE}.json", check=False)
+    if result.returncode != 0:
+        return None
+    try:
+        return json.loads(result.stdout)
+    except ValueError:
+        return None
+
+
+def query_tailnet_ip(ssh: SSHClient, tn: TailnetConfig) -> str | None:
+    """The tailnet IPv4 of the CHIA-managed tailscaled on *ssh*'s host,
+    or ``None`` when it isn't running — unlike :func:`ensure_tailscale`,
+    never installs, starts, or joins anything (safe for ``--dry-run``)."""
+    try:
+        result = ssh.run_script([
+            f'TS_DIR="{tn.tailscale_dir}"',
+            'if [ -S "$TS_DIR/run/tailscaled.sock" ]; then '
+            'echo "CHIA_TS_IP=$("$TS_DIR/tailscale" '
+            '--socket="$TS_DIR/run/tailscaled.sock" ip -4 2>/dev/null)"; fi',
+        ], timeout=60, check=False)
+    except Exception as e:
+        logger.debug(f"[{ssh.ip}] tailnet IP query failed: {e}")
+        return None
+    for line in result.stdout.splitlines():
+        if line.startswith("CHIA_TS_IP="):
+            return line.split("=", 1)[1].strip() or None
+    return None
 
 
 def stop_relay(ssh: SSHClient) -> None:
