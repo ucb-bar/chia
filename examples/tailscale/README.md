@@ -102,6 +102,9 @@ python examples/tailscale/connectivity-matrix.py   # full NxN sweep: ChiaFunctio
                                                # every machine, plus a BashTool
                                                # hosted on each machine and called
                                                # from each machine over MCP
+chia up examples/tailscale/cluster.yaml --add  # after adding workers/machines to
+                                               # the YAML: starts only the new ones,
+                                               # hot-reloading every relay's routes
 chia down examples/tailscale/cluster.yaml
 ```
 
@@ -204,8 +207,6 @@ its daemon yourself. `chia down` stops the managed daemons.
   the head advertises a loopback IP that ordinary LAN workers can't
   route to. Mixing with SSH-tunneled/cloud workers is rejected at
   config load.
-- `chia up --add` is not yet supported for tailnet clusters; re-run
-  `chia up` (existing workers are detected and skipped).
 - Throughput is bounded by userspace wireguard-go (fine for control
   traffic and moderate object transfer; don't expect LAN speeds).
 - ChiaTool HTTP servers on cluster machines advertise loopback URLs that
