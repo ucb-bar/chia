@@ -71,6 +71,35 @@ def _get_vpc_and_security_group(
     if not vpcs:
         raise RuntimeError(f"No VPC found with tag Name={aws_config.vpc_name}")
 
+    # Name tags are NOT unique. When several VPCs share one, taking vpcs[0]
+    # silently depends on AWS's response ordering, and the wrong pick fails far
+    # downstream as "No security group <name> in VPC <an-id-you-never-configured>".
+    # Prefer the VPC this host actually lives in, so builds land beside the
+    # manager (and private-IP SSH works); otherwise fail loudly listing the
+    # candidates rather than guessing.
+    if len(vpcs) > 1:
+        local_subnet = _get_local_subnet_id()
+        chosen = None
+        if local_subnet:
+            for v in vpcs:
+                if local_subnet in {s.subnet_id for s in v.subnets.filter()}:
+                    chosen = v
+                    break
+        if chosen is None:
+            ids = ", ".join(v.vpc_id for v in vpcs)
+            raise RuntimeError(
+                f"{len(vpcs)} VPCs are tagged Name={aws_config.vpc_name!r} ({ids}) "
+                f"and none contains this host's subnet "
+                f"({local_subnet or 'IMDS unavailable'}), so the right one cannot "
+                f"be determined. Re-tag the unwanted VPC, or set "
+                f"AWSConfig.subnet_id to a subnet in the VPC you want."
+            )
+        logger.info(
+            f"{len(vpcs)} VPCs tagged Name={aws_config.vpc_name!r}; "
+            f"selected {chosen.vpc_id} (contains this host's subnet {local_subnet})"
+        )
+        vpcs = [chosen]
+
     if aws_config.subnet_id:
         subnet_id = aws_config.subnet_id
         logger.info(f"Using configured subnet: {subnet_id}")

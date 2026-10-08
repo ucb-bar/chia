@@ -456,7 +456,7 @@ class TestHeadColocated(unittest.TestCase):
         with mock.patch.object(node_setup, "setup_head_node"), \
              mock.patch.object(node_setup, "setup_worker_node"), \
              mock.patch.object(node_setup, "start_relay",
-                               side_effect=lambda ssh, spec:
+                               side_effect=lambda ssh, spec, cluster_name:
                                    started.append((ssh.ip, spec))), \
              mock.patch.object(node_setup, "_make_ssh",
                                side_effect=lambda cfg, ip:
