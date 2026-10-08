@@ -4,6 +4,10 @@
 as the other Chia LLM backends.  Chia MCP tools are passed as per-run Codex
 config overrides, so this backend does not mutate the user's persistent Codex
 configuration.
+
+Each CLI call runs in its own process group. On timeout or interruption, the
+group is killed before session cleanup so launcher children cannot hold NFS
+session files open across retries.
 """
 
 from __future__ import annotations
@@ -15,6 +19,7 @@ import os
 import random
 import re
 import shutil
+import signal
 import sqlite3
 import stat
 import subprocess
@@ -856,19 +861,37 @@ class CodexLLM(LLMCallBase):
                 telemetry_home,
                 active_resume_session_id,
             )
-            result = subprocess.run(
+            with subprocess.Popen(
                 self._build_cmd(
                     tools or [],
                     output_last_message_path=output_path,
                     resume_session_id=active_resume_session_id,
                 ),
-                input=self._format_prompt(user_message),
-                capture_output=True,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=self.timeout_seconds,
+                start_new_session=True,
                 cwd=self._effective_work_dir(),
                 env=env,
-            )
+            ) as process:
+                try:
+                    stdout, stderr = process.communicate(
+                        self._format_prompt(user_message), timeout=self.timeout_seconds,
+                    )
+                except BaseException:
+                    # The CLI launcher spawns native Codex. Kill both before
+                    # session cleanup; surviving children hold NFS files open
+                    # and make the next retry fail with EBUSY on .nfs files.
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.communicate()
+                    raise
+                result = subprocess.CompletedProcess(
+                    process.args, process.returncode, stdout, stderr,
+                )
             with open(output_path) as f:
                 final_text = f.read()
             stream, meta, fallback, terminal_outcome = self._parse_jsonl_stream(

@@ -91,6 +91,26 @@ def _make_session_bundle(
     return buf.getvalue()
 
 
+def _fake_popen(monkeypatch, run):
+    class FakePopen:
+        def __init__(self, cmd, **kwargs):
+            self.args = cmd
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def communicate(self, input=None, timeout=None):
+            result = run(self.args, **self.kwargs, input=input, timeout=timeout)
+            self.returncode = result.returncode
+            return result.stdout, result.stderr
+
+    monkeypatch.setattr(codex_mod.subprocess, "Popen", FakePopen)
+
+
 def _fake_subprocess(monkeypatch, capture, *, stdout="", stderr="", returncode=0, final="PONG"):
     def fake_run(cmd, **kwargs):
         capture.update(cmd=cmd, kwargs=kwargs)
@@ -105,7 +125,7 @@ def _fake_subprocess(monkeypatch, capture, *, stdout="", stderr="", returncode=0
             stderr=stderr,
         )
 
-    monkeypatch.setattr(codex_mod.subprocess, "run", fake_run)
+    _fake_popen(monkeypatch, fake_run)
 
 
 def _disable_profiler(monkeypatch):
@@ -688,7 +708,7 @@ def test_resume_session_first_call_records_id_and_second_call_resumes(monkeypatc
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     monkeypatch.setenv("CHIA_CODEX_SESSION_ROOT", str(tmp_path / "session-root"))
-    monkeypatch.setattr(codex_mod.subprocess, "run", fake_run)
+    _fake_popen(monkeypatch, fake_run)
 
     llm = CodexLLM(resume_session=True)
     cli1 = llm.prompt("first", tools=[])
@@ -931,6 +951,7 @@ def test_run_codex_subprocess_flow(monkeypatch):
     assert capture["kwargs"]["input"].startswith("[System Instructions]")
     assert capture["kwargs"]["timeout"] == 33
     assert capture["kwargs"]["cwd"] == "/tmp"
+    assert capture["kwargs"]["start_new_session"] is True
     assert not os.path.exists(capture["output_last_message"])
 
 
@@ -976,7 +997,7 @@ def test_run_codex_merges_rollout_context_metadata(monkeypatch, tmp_path):
         )
 
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
-    monkeypatch.setattr(codex_mod.subprocess, "run", fake_run)
+    _fake_popen(monkeypatch, fake_run)
     llm = CodexLLM()
 
     cli = llm._run_codex("say pong", tools=[])
