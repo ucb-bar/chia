@@ -192,6 +192,9 @@ class AWSClusterConfig:
     use_public_ip: bool = False
     s3_bucket: str = "firesim-chia-builds"
     workers: dict[str, dict] = field(default_factory=dict)
+    # "tunnel": SSH tunnels to the machines' public IPs. "vpc": direct, over private IPs in the head's VPC.
+    connection: str = "tunnel"
+    vpc_id: str | None = None
 
 
 @dataclass
@@ -566,6 +569,7 @@ def _inject_cloud_tunnel_overrides(
     raw: dict,
     ip_map: dict[str, list[str]],
     node_configs: dict | None = None,
+    tunnel: bool = True,
 ) -> None:
     """Add tunnel auth overrides for cloud-provisioned IPs (AWS or GCP).
 
@@ -576,6 +580,7 @@ def _inject_cloud_tunnel_overrides(
     (a default :class:`TunnelConfig`).  If the corresponding node config
     (``AWSNodeConfig`` / ``GCPNodeConfig``) has ``ssh_user`` or
     ``ssh_private_key`` set, they are also injected into the override.
+    With *tunnel* False, no tunnel is added.
     Mutates *raw* in place.
     """
     tunnel_default = _parse_tunnel_defaults(raw)
@@ -595,9 +600,8 @@ def _inject_cloud_tunnel_overrides(
             ssh_private_key = node_configs[name].ssh_private_key
 
         for ip in ips:
-            if ip not in overrides:
-                overrides[ip] = {"tunnel": _tunnel_value()}
-            elif "tunnel" not in overrides[ip]:
+            overrides.setdefault(ip, {})
+            if tunnel and "tunnel" not in overrides[ip]:
                 overrides[ip]["tunnel"] = _tunnel_value()
 
             if ssh_user and "ssh_user" not in overrides[ip]:
@@ -659,9 +663,12 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
     teardown never joins anything).
     """
     has_tailnet = raw.get("tailnet") is not None
+    # AWS machines with aws.connection "vpc" reach the head directly, without SSH tunnels.
+    aws_tunnel = (raw.get("aws") or {}).get("connection") != "vpc"
 
     joining_types = {}
-    for result, ip_map in ((aws_result, aws_ip_map), (gcp_result, gcp_ip_map)):
+    for result, ip_map, tunnel in ((aws_result, aws_ip_map, aws_tunnel),
+                                   (gcp_result, gcp_ip_map, True)):
         if result is None or not ip_map:
             continue
         node_configs = result[0]
@@ -676,7 +683,7 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
                     f"top-level 'tailnet:' section")
             (join_map if joins else tunnel_map)[name] = ips
         if tunnel_map:
-            _inject_cloud_tunnel_overrides(raw, tunnel_map, node_configs)
+            _inject_cloud_tunnel_overrides(raw, tunnel_map, node_configs, tunnel)
         if join_map:
             _inject_cloud_tailnet_overrides(raw, join_map, node_configs)
             joining_types.update({n: node_configs[n] for n in join_map})
@@ -828,6 +835,8 @@ def build_config(raw: dict) -> ClusterConfig:
             use_public_ip=aws_raw.get("use_public_ip", False),
             s3_bucket=aws_raw.get("s3_bucket", "firesim-chia-builds"),
             workers=aws_raw.get("workers", {}),
+            connection=aws_raw.get("connection", "tunnel"),
+            vpc_id=aws_raw.get("vpc_id"),
         )
         logger.debug(f"  AWS config: region={aws_config.region}, key={aws_config.key_name}")
 

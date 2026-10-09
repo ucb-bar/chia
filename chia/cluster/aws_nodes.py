@@ -87,36 +87,50 @@ class AWSNodeConfig:
 # Security group helpers
 # ---------------------------------------------------------------------------
 
-def _get_default_vpc(client: Any, region: str) -> tuple[str, dict[str, str]]:
-    """Return (vpc_id, {availability_zone: subnet_id}) for the account's default VPC.
+def _get_vpc(client: Any, region: str, vpc_id: str | None = None) -> tuple[str, dict[str, str]]:
+    """Return (vpc_id, {availability_zone: subnet_id}) for *vpc_id*, or the account's default VPC.
 
-    Returns every default-VPC subnet keyed by AZ so callers can pick one
+    Returns every subnet of the VPC keyed by AZ so callers can pick one
     whose AZ actually offers the desired instance type.
     """
-    vpcs = client.describe_vpcs(
-        Filters=[{"Name": "isDefault", "Values": ["true"]}],
-    )["Vpcs"]
-    if not vpcs:
-        raise RuntimeError(
-            f"No default VPC found in region {region}. "
-            "Create one with: aws ec2 create-default-vpc"
-        )
-    vpc_id = vpcs[0]["VpcId"]
+    if vpc_id is None:
+        vpcs = client.describe_vpcs(
+            Filters=[{"Name": "isDefault", "Values": ["true"]}],
+        )["Vpcs"]
+        if not vpcs:
+            raise RuntimeError(
+                f"No default VPC found in region {region}. "
+                "Create one with: aws ec2 create-default-vpc"
+            )
+        vpc_id = vpcs[0]["VpcId"]
 
     subnets = client.describe_subnets(
         Filters=[{"Name": "vpc-id", "Values": [vpc_id]}],
     )["Subnets"]
     if not subnets:
-        raise RuntimeError(f"No subnets found in default VPC {vpc_id}")
+        raise RuntimeError(f"No subnets found in VPC {vpc_id}")
     subnets_by_az: dict[str, str] = {}
     for s in subnets:
         subnets_by_az.setdefault(s["AvailabilityZone"], s["SubnetId"])
 
     logger.info(
-        f"Using default VPC {vpc_id}, {len(subnets_by_az)} subnets across AZs: "
+        f"Using VPC {vpc_id}, {len(subnets_by_az)} subnets across AZs: "
         f"{sorted(subnets_by_az)}"
     )
     return vpc_id, subnets_by_az
+
+
+def _head_network_interface(client: Any, head_ip: str) -> dict:
+    # connection: vpc needs the head on an EC2 machine; find its network interface by its private IP.
+    nics = client.describe_network_interfaces(
+        Filters=[{"Name": "addresses.private-ip-address", "Values": [head_ip]}],
+    )["NetworkInterfaces"]
+    if not nics:
+        raise RuntimeError(
+            f"connection: vpc needs the head on an EC2 machine in this region, and "
+            f"provider.head_ip ({head_ip}) set to its private IP"
+        )
+    return nics[0]
 
 
 def _pick_subnet_for_instance_type(
@@ -228,58 +242,67 @@ def _intra_vpc_enabled(default: bool) -> bool:
 def ensure_ssh_security_group(
     cluster_name: str,
     region: str,
+    vpc_id: str | None = None,
+    vpc_head_ip: str | None = None,
 ) -> tuple[dict[str, str], str]:
-    """Create or find the SSH security group in the default VPC.
+    """Create or find the cluster's security group in *vpc_id* or the default VPC.
 
     Inbound SSH (22) is locked to the head's public IP (see
     :func:`_resolve_head_ssh_cidrs`); egress is left at the AWS default.
 
+    With *vpc_head_ip* (``connection: vpc``), the group is in the head's VPC and,
+    instead of the SSH rule, admits all traffic from its own members. The head
+    becomes a member, so the head and the workers talk directly over private IPs.
+
     Returns ({availability_zone: subnet_id}, sg_id).
     """
     client = _boto3().client("ec2", region_name=region)
-    vpc_id, subnets_by_az = _get_default_vpc(client, region)
+    if vpc_head_ip:
+        head_nic = _head_network_interface(client, vpc_head_ip)
+        if vpc_id and vpc_id != head_nic["VpcId"]:
+            raise RuntimeError(
+                f"aws.vpc_id {vpc_id} is not the head's VPC {head_nic['VpcId']}; "
+                f"with connection: vpc the machines go in the head's VPC"
+            )
+        vpc_id = head_nic["VpcId"]
+    vpc_id, subnets_by_az = _get_vpc(client, region, vpc_id)
 
     sg_name = f"chia-{cluster_name}-ssh"
-    desired_cidrs = _resolve_head_ssh_cidrs()
-
-    # Check if SG already exists
     existing = client.describe_security_groups(
         Filters=[
             {"Name": "group-name", "Values": [sg_name]},
             {"Name": "vpc-id", "Values": [vpc_id]},
         ],
     )["SecurityGroups"]
-
     if existing:
         sg_id = existing[0]["GroupId"]
         logger.info(f"Security group {sg_name} already exists: {sg_id}")
+    else:
+        sg_id = client.create_security_group(
+            GroupName=sg_name,
+            Description=f"SSH access for chia cluster {cluster_name}",
+            VpcId=vpc_id,
+        )["GroupId"]
+        logger.info(f"Created security group {sg_name}: {sg_id}")
+
+    if vpc_head_ip:
+        try:
+            client.authorize_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[{"IpProtocol": "-1", "UserIdGroupPairs": [{"GroupId": sg_id}]}],
+            )
+        except client.exceptions.ClientError as exc:
+            if exc.response["Error"]["Code"] != "InvalidPermission.Duplicate":
+                raise
+        groups = [g["GroupId"] for g in head_nic["Groups"]]
+        if sg_id not in groups:
+            client.modify_network_interface_attribute(
+                NetworkInterfaceId=head_nic["NetworkInterfaceId"], Groups=groups + [sg_id],
+            )
+            logger.info(f"Added the head to security group {sg_name}")
+    else:
         # Reconcile in case the head IP changed or the SG predates the lockdown.
-        _reconcile_ssh_ingress(client, sg_id, desired_cidrs)
-        return subnets_by_az, sg_id
-
-    # Create new SG
-    resp = client.create_security_group(
-        GroupName=sg_name,
-        Description=f"SSH access for chia cluster {cluster_name}",
-        VpcId=vpc_id,
-    )
-    sg_id = resp["GroupId"]
-
-    client.authorize_security_group_ingress(
-        GroupId=sg_id,
-        IpPermissions=[
-            {
-                "IpProtocol": "tcp",
-                "FromPort": 22,
-                "ToPort": 22,
-                "IpRanges": [{"CidrIp": c, "Description": d} for c, d in desired_cidrs],
-            },
-        ],
-    )
-    logger.info(
-        f"Created security group {sg_name}: {sg_id} "
-        f"(SSH allowed from {[c for c, _ in desired_cidrs]})"
-    )
+        _reconcile_ssh_ingress(client, sg_id, _resolve_head_ssh_cidrs())
     return subnets_by_az, sg_id
 
 
@@ -362,19 +385,28 @@ def _launch_one_instance(
     return instances[0].id
 
 
+def vpc_settings(raw: dict) -> tuple[str | None, str | None]:
+    # The cluster file's aws.vpc_id, and the head's private IP when aws.connection is "vpc".
+    aws = raw.get("aws") or {}
+    return aws.get("vpc_id"), (raw["provider"]["head_ip"] if aws.get("connection") == "vpc" else None)
+
+
 def provision_aws_nodes(
     cluster_name: str,
     aws_nodes: dict[str, AWSNodeConfig],
     region: str,
+    vpc_id: str | None = None,
+    vpc_head_ip: str | None = None,
 ) -> dict[str, list[str]]:
     """Launch EC2 instances for each node type.
 
-    Returns ``{node_name: [public_ip_0, public_ip_1, ...]}``, ordered by
-    index.  Instances are tagged for discovery by :func:`discover_aws_nodes`.
+    Returns ``{node_name: [public_ip_0, public_ip_1, ...]}`` (private IPs with
+    *vpc_head_ip*), ordered by index.  Instances are tagged for discovery by
+    :func:`discover_aws_nodes`.
     """
     ec2_client = _boto3().client("ec2", region_name=region)
     ec2_resource = _boto3().resource("ec2", region_name=region)
-    subnets_by_az, sg_id = ensure_ssh_security_group(cluster_name, region)
+    subnets_by_az, sg_id = ensure_ssh_security_group(cluster_name, region, vpc_id, vpc_head_ip)
 
     # node_name -> list of instance IDs (ordered by index)
     ids_by_node: dict[str, list[str]] = {}
@@ -407,13 +439,15 @@ def provision_aws_nodes(
         raise
 
     # Wait for all instances to be running and collect IPs
-    return _wait_and_collect_ips(ids_by_node, region)
+    return _wait_and_collect_ips(ids_by_node, region, private=vpc_head_ip is not None)
 
 
 def provision_missing_aws_nodes(
     cluster_name: str,
     aws_nodes: dict[str, AWSNodeConfig],
     region: str,
+    vpc_id: str | None = None,
+    vpc_head_ip: str | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     """Launch only the EC2 instances missing to reach the desired count per node type.
 
@@ -429,7 +463,8 @@ def provision_missing_aws_nodes(
     Both maps use the same ``{node_name: [ip, ...]}`` shape as
     :func:`provision_aws_nodes`.
     """
-    existing = _discover_aws_nodes_with_indexes(cluster_name, region)
+    private = vpc_head_ip is not None
+    existing = _discover_aws_nodes_with_indexes(cluster_name, region, private)
 
     # For each node type, compute indexes we need to launch.
     indexes_to_launch: dict[str, list[int]] = {}
@@ -450,7 +485,7 @@ def provision_missing_aws_nodes(
     if indexes_to_launch:
         ec2_client = _boto3().client("ec2", region_name=region)
         ec2_resource = _boto3().resource("ec2", region_name=region)
-        subnets_by_az, sg_id = ensure_ssh_security_group(cluster_name, region)
+        subnets_by_az, sg_id = ensure_ssh_security_group(cluster_name, region, vpc_id, vpc_head_ip)
         launched_ids: list[str] = []
         try:
             for name, indexes in indexes_to_launch.items():
@@ -478,7 +513,7 @@ def provision_missing_aws_nodes(
             raise
 
     new_ip_map = (
-        _wait_and_collect_ips(new_ids_by_node, region) if new_ids_by_node else {}
+        _wait_and_collect_ips(new_ids_by_node, region, private=private) if new_ids_by_node else {}
     )
 
     # Merge existing (index, ip) with newly launched ips.
@@ -503,8 +538,9 @@ def _wait_and_collect_ips(
     ids_by_node: dict[str, list[str]],
     region: str,
     timeout: float = 600,
+    private: bool = False,
 ) -> dict[str, list[str]]:
-    """Wait for instances to reach running state, return public IPs."""
+    """Wait for instances to reach running state, return public IPs (private ones with *private*)."""
     ec2_resource = _boto3().resource("ec2", region_name=region)
     deadline = time.monotonic() + timeout
 
@@ -520,6 +556,10 @@ def _wait_and_collect_ips(
             if time.monotonic() > deadline:
                 raise TimeoutError(f"Timed out waiting for instance {iid}")
 
+            if private:
+                ips.append(inst.private_ip_address)
+                logger.info(f"  {iid}: private_ip={inst.private_ip_address}")
+                continue
             public_ip = inst.public_ip_address
             if not public_ip:
                 raise RuntimeError(
@@ -609,6 +649,7 @@ def run_aws_setup(
 def _discover_aws_nodes_with_indexes(
     cluster_name: str,
     region: str,
+    private: bool = False,
 ) -> dict[str, list[tuple[int, str]]]:
     """Find running EC2 instances and return ``{name: [(index, ip), ...]}``.
 
@@ -631,10 +672,10 @@ def _discover_aws_nodes_with_indexes(
             tags = {t["Key"]: t["Value"] for t in inst.get("Tags", [])}
             node_type = tags.get("chia-node-type")
             node_index = tags.get("chia-node-index")
-            public_ip = inst.get("PublicIpAddress")
+            ip = inst.get("PrivateIpAddress" if private else "PublicIpAddress")
 
-            if node_type and node_index is not None and public_ip:
-                nodes[node_type].append((int(node_index), public_ip))
+            if node_type and node_index is not None and ip:
+                nodes[node_type].append((int(node_index), ip))
 
     return {name: sorted(entries, key=lambda e: e[0]) for name, entries in nodes.items()}
 
@@ -642,13 +683,14 @@ def _discover_aws_nodes_with_indexes(
 def discover_aws_nodes(
     cluster_name: str,
     region: str,
+    private: bool = False,
 ) -> dict[str, list[str]]:
-    """Find running EC2 instances for this cluster and return their public IPs.
+    """Find running EC2 instances for this cluster and return their public IPs (private ones with *private*).
 
     Returns ``{node_name: [public_ip_0, ...]}``, same format as
     :func:`provision_aws_nodes`.
     """
-    entries_by_node = _discover_aws_nodes_with_indexes(cluster_name, region)
+    entries_by_node = _discover_aws_nodes_with_indexes(cluster_name, region, private)
     ip_map: dict[str, list[str]] = {
         name: [ip for _, ip in entries] for name, entries in entries_by_node.items()
     }

@@ -60,7 +60,8 @@ def cmd_down(args):
     if aws_result is not None:
         aws_nodes, aws_region = aws_result
         from chia.cluster.aws_nodes import discover_aws_nodes
-        aws_ip_map = discover_aws_nodes(cluster_name, aws_region)
+        aws_ip_map = discover_aws_nodes(
+            cluster_name, aws_region, private=(raw.get("aws") or {}).get("connection") == "vpc")
 
     if gcp_result is not None:
         gcp_nodes, gcp_project, _zone, _net, _sub = gcp_result

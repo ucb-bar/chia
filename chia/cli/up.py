@@ -152,9 +152,10 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     if aws_result is not None:
         aws_nodes, region = aws_result
         from chia.cluster.aws_nodes import (
-            discover_aws_nodes, provision_missing_aws_nodes,
+            discover_aws_nodes, provision_missing_aws_nodes, vpc_settings,
         )
-        existing = discover_aws_nodes(cluster_name, region)
+        vpc_id, vpc_head_ip = vpc_settings(raw)
+        existing = discover_aws_nodes(cluster_name, region, private=vpc_head_ip is not None)
         missing = {name: cfg.count - len(existing.get(name, []))
                    for name, cfg in aws_nodes.items()
                    if cfg.count - len(existing.get(name, [])) > 0}
@@ -179,7 +180,7 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
                     return
             try:
                 aws_ip_map, aws_new_ip_map = provision_missing_aws_nodes(
-                    cluster_name, aws_nodes, region)
+                    cluster_name, aws_nodes, region, vpc_id, vpc_head_ip)
                 if aws_new_ip_map:
                     logger.info(f"New AWS nodes provisioned: {aws_new_ip_map}")
             except Exception as e:
@@ -382,10 +383,10 @@ def cmd_up(args):
             if not args.yes and input("Provision AWS instances? [y/N] ").lower() != "y":
                 print("Aborted.")
                 return
-            from chia.cluster.aws_nodes import provision_aws_nodes
+            from chia.cluster.aws_nodes import provision_aws_nodes, vpc_settings
             try:
                 aws_ip_map = provision_aws_nodes(
-                    raw.get("cluster_name", "default"), aws_nodes, region)
+                    raw.get("cluster_name", "default"), aws_nodes, region, *vpc_settings(raw))
                 provisioned = True
                 logger.info(f"AWS nodes provisioned: {aws_ip_map}")
             except Exception as e:
