@@ -30,12 +30,12 @@ class BitstreamBuildNode:
         self.timeout_seconds = timeout_seconds
         self.logger = logging.getLogger("BitstreamBuildNode")
 
-    @ChiaFunction()
+    @ChiaFunction(resources={"VIVADO": 1})
     def build_bitstream(self, recipe: BuildRecipe,
                         diffs: "list[str] | None" = None) -> EcadBuildResult:
-        """Builds ``recipe`` with ``diffs`` applied to chipyard, in order. Call it with the
-        resource of the machines to build on, for example
-        ``build_bitstream.options(resources={"F2_VIVADO": 1})``."""
+        """Builds ``recipe`` with ``diffs`` applied to chipyard, in order, on a machine with
+        the ``VIVADO`` resource. To build on other machines, call it with their resource,
+        for example ``build_bitstream.options(resources={"F2_VIVADO": 1})``."""
         log = []
         out = f"{FIRESIM}/sim/output/{recipe.platform}/{recipe.quintuplet()}"
         bundle = f"{out}/{DRIVER_TAR_NAME}"
