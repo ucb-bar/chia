@@ -39,6 +39,11 @@ logger = get_logger("aws.manager")
 AWSWorker = tuple[NodeTypeConfig, AWSNodeConfig]
 
 
+def worker_resources(worker: AWSWorker) -> dict[str, float]:
+    # The resources that a machine of this definition advertises when it joins the cluster.
+    return dict(worker[0].resources)
+
+
 @dataclass
 class Farm:
     """The instances one :meth:`AWSManager.launch` brought up, and that manager."""
