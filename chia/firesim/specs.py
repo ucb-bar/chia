@@ -23,7 +23,7 @@ def _root_volume(gb: int) -> dict:
                                      "Ebs": {"VolumeSize": gb, "VolumeType": "gp3"}}]}
 
 
-def _vivado_docker(xilinx: str) -> DockerConfig:
+def _aws_vivado_firesim_docker(xilinx: str) -> DockerConfig:
     """The bitstream build container, with the instance's Vivado 2024.2 from ``xilinx``."""
     return DockerConfig(
         image="ghcr.io/ucb-bar/chia-chisel-build:latest",
@@ -66,7 +66,7 @@ F2_SIM = (
 # container. Vivado is the instance's (the FPGA Developer AMI), mounted in.
 F2_ECAD = (
     NodeTypeConfig(name="ecad", resources={vivado_resource("f2"): 1},
-                   docker=_vivado_docker("/opt/Xilinx")),
+                   docker=_aws_vivado_firesim_docker("/opt/Xilinx")),
     AWSNodeConfig(KeyName="", InstanceType="z1d.2xlarge", count=1, ImageId="",
                   extra_args={"IamInstanceProfile": {"Name": "FireSim"},
                               **_root_volume(500)}),   # Vivado intermediates
@@ -77,7 +77,7 @@ F2_ECAD = (
 # to that AWS Marketplace AMI. The ID is us-east-1's; a cluster file sets another.
 AMD_ECAD = (
     NodeTypeConfig(name="amd_ecad", resources={vivado_resource("corigine_mimicturbo_gt"): 1},
-                   docker=_vivado_docker("/tools/Xilinx")),
+                   docker=_aws_vivado_firesim_docker("/tools/Xilinx")),
     AWSNodeConfig(KeyName="", InstanceType="z1d.2xlarge", count=1,
                   ImageId="ami-0aca2408692c992fc", extra_args=_root_volume(500)),
 )
