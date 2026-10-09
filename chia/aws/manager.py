@@ -93,7 +93,7 @@ class AWSManager:
             # by assign_nodes' worker indexes, so the node joins the copy first
             # and its assignments come from assign_nodes.
             config.worker_ips = config.worker_ips + ips
-            # The container's AWS calls (F2_ECAD's aws_create_afi) need a region.
+            # The container's AWS calls (F2_VIVADO's aws_create_afi) need a region.
             docker = node_type.docker and replace(node_type.docker, run_options=[
                 *node_type.docker.run_options, "-e", f"AWS_DEFAULT_REGION={aws.region}"])
             config.node_types[node_type.name] = replace(

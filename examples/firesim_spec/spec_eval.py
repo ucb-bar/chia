@@ -30,7 +30,7 @@ from chia.chipyard.state_def import FireMarshalArtifact
 from chia.firesim.bitstream_build_node import BitstreamBuildNode
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.manager_node import FireSimManagerNode
-from chia.firesim.specs import F2_ECAD, F2_SIM, vivado_resource
+from chia.firesim.specs import F2_SIM, F2_VIVADO
 from chia.firesim.state_def import BuildRecipe, RunConfig, SimJobResult
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "spec_build"))
@@ -62,8 +62,8 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
               workload: FireMarshalArtifact | None = None, spec_flags: str = "",
               cores: int = 1, upload_to: str | None = None,
               max_fpgas: int = 12, small_images: bool = False,
-              build_worker: AWSWorker | None = F2_ECAD,
-              build_resource: str | None = None) -> SpecEvalResult:
+              build_worker: AWSWorker | None = F2_VIVADO,
+              build_resource: str = "F2_VIVADO") -> SpecEvalResult:
     """Run ``spec`` on ``recipe`` with ``diffs``, and score it. The SPEC build and the
     bitstream build run at the same time.
 
@@ -79,15 +79,14 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         max_fpgas: F2 machines at most.
         build_worker: The machine to launch for the bitstream build. ``None`` launches
             none: the build runs on a machine that the cluster already has.
-        build_resource: The resource that the bitstream build asks for. The default is
-            ``vivado_resource(recipe.platform)``; a cluster can name its own, for example
-            for a machine that builds every platform.
+        build_resource: The resource that the bitstream build asks for, for example
+            ``"AWS_VIVADO"`` with ``build_worker=AWS_VIVADO``. A cluster can name its own,
+            for example for a machine that builds every platform.
 
     Raises:
         ValueError: ``build_worker`` does not have ``build_resource``.
         RuntimeError: A build failed.
     """
-    build_resource = build_resource or vivado_resource(recipe.platform)
     if bitstream is None and build_worker and build_resource not in build_worker[0].resources:
         raise ValueError(f"{build_worker[0].name} has no resource {build_resource!r}, "
                          f"so the bitstream build would never run")

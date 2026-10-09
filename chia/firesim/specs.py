@@ -13,11 +13,6 @@ from chia.cluster.config import DockerConfig, NodeTypeConfig
 FPGA_RESOURCE = "firesim_fpga"
 
 
-def vivado_resource(platform: str) -> str:
-    """The resource of a machine that builds bitstreams for the FireSim ``platform``."""
-    return f"vivado_{platform}"
-
-
 def _root_volume(gb: int) -> dict:
     return {"BlockDeviceMappings": [{"DeviceName": "/dev/sda1",
                                      "Ebs": {"VolumeSize": gb, "VolumeType": "gp3"}}]}
@@ -64,19 +59,19 @@ F2_SIM = (
 
 # Builds a bitstream with FireSim's own build code, AGFI included, all in the
 # container. Vivado is the instance's (the FPGA Developer AMI), mounted in.
-F2_ECAD = (
-    NodeTypeConfig(name="ecad", resources={vivado_resource("f2"): 1},
+F2_VIVADO = (
+    NodeTypeConfig(name="ecad", resources={"F2_VIVADO": 1},
                    docker=_aws_vivado_firesim_docker("/opt/Xilinx")),
     AWSNodeConfig(KeyName="", InstanceType="z1d.2xlarge", count=1, ImageId="",
                   extra_args={"IamInstanceProfile": {"Name": "FireSim"},
                               **_root_volume(500)}),   # Vivado intermediates
 )
 
-# Builds Corigine MimicTurbo GT (VU19P) bitstreams as F2_ECAD builds F2 ones, with
+# Builds Corigine MimicTurbo GT (VU19P) bitstreams as F2_VIVADO builds F2 ones, with
 # the Vivado of AMD's "Vivado ML 2024.2 Developer AMI". The account must subscribe
 # to that AWS Marketplace AMI. The ID is us-east-1's; a cluster file sets another.
-AMD_ECAD = (
-    NodeTypeConfig(name="amd_ecad", resources={vivado_resource("corigine_mimicturbo_gt"): 1},
+AWS_VIVADO = (
+    NodeTypeConfig(name="amd_ecad", resources={"AWS_VIVADO": 1, "VIVADO-2024.2": 1},
                    docker=_aws_vivado_firesim_docker("/tools/Xilinx")),
     AWSNodeConfig(KeyName="", InstanceType="z1d.2xlarge", count=1,
                   ImageId="ami-0aca2408692c992fc", extra_args=_root_volume(500)),

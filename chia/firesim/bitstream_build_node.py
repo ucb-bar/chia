@@ -35,7 +35,7 @@ class BitstreamBuildNode:
                         diffs: "list[str] | None" = None) -> EcadBuildResult:
         """Builds ``recipe`` with ``diffs`` applied to chipyard, in order. Call it with the
         resource of the machines to build on, for example
-        ``build_bitstream.options(resources={vivado_resource(recipe.platform): 1})``."""
+        ``build_bitstream.options(resources={"F2_VIVADO": 1})``."""
         log = []
         out = f"{FIRESIM}/sim/output/{recipe.platform}/{recipe.quintuplet()}"
         bundle = f"{out}/{DRIVER_TAR_NAME}"
