@@ -23,7 +23,7 @@ from pathlib import Path
 
 from ray import cloudpickle
 
-from chia.aws.manager import AWSWorker
+from chia.aws.manager import AWSWorker, worker_resources
 from chia.aws.s3 import S3Node
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.chipyard.state_def import FireMarshalArtifact
@@ -63,7 +63,7 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
               cores: int = 1, upload_to: str | None = None,
               max_fpgas: int = 12, small_images: bool = False,
               build_worker: AWSWorker | None = F2_VIVADO,
-              build_resource: str = "F2_VIVADO") -> SpecEvalResult:
+              build_resource: str | None = None) -> SpecEvalResult:
     """Run ``spec`` on ``recipe`` with ``diffs``, and score it. The SPEC build and the
     bitstream build run at the same time.
 
@@ -79,17 +79,22 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         max_fpgas: F2 machines at most.
         build_worker: The machine to launch for the bitstream build. ``None`` launches
             none: the build runs on a machine that the cluster already has.
-        build_resource: The resource that the bitstream build asks for, for example
-            ``"AWS_VIVADO"`` with ``build_worker=AWS_VIVADO``. A cluster can name its own,
-            for example for a machine that builds every platform.
+        build_resource: The resource that the bitstream build asks for. Without it, the
+            build asks for ``build_worker``'s resources, or with no ``build_worker``, for
+            the build node's default, ``VIVADO``. A cluster can name its own, for example
+            for a machine that builds every platform.
 
     Raises:
         ValueError: ``build_worker`` does not have ``build_resource``.
         RuntimeError: A build failed.
     """
-    if bitstream is None and build_worker and build_resource not in build_worker[0].resources:
+    if (bitstream is None and build_worker and build_resource
+            and build_resource not in build_worker[0].resources):
         raise ValueError(f"{build_worker[0].name} has no resource {build_resource!r}, "
                          f"so the bitstream build would never run")
+    # None keeps the build node's default resource (VIVADO).
+    resources = ({build_resource: 1} if build_resource
+                 else worker_resources(build_worker) if build_worker else None)
     jobs = spec_build.jobs(spec, cores)
     workload_ref = None if workload else spec_build.start_workload(spec, cores, spec_flags,
                                                                    small_images, upload_to or "")
@@ -98,7 +103,7 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         ecad = get(aws.launch.chia_remote(build_worker, count=1)) if build_worker else None
         try:
             builder = BitstreamBuildNode()
-            build_ref = builder.build_bitstream.options(resources={build_resource: 1}).chia_remote(
+            build_ref = builder.build_bitstream.options(resources=resources).chia_remote(
                 builder, recipe=recipe, diffs=diffs)
             if workload_ref:
                 workload = _checked(get(workload_ref))
