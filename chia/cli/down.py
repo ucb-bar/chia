@@ -60,7 +60,7 @@ def cmd_down(args):
     if aws_result is not None:
         aws_nodes, aws_region = aws_result
         from chia.cluster.aws_nodes import discover_aws_nodes
-        aws_ip_map = discover_aws_nodes(cluster_name, aws_region)
+        aws_ip_map = discover_aws_nodes(cluster_name, aws_region, private=raw.get("connection") == "vpc")
 
     if gcp_result is not None:
         gcp_nodes, gcp_project, _zone, _net, _sub = gcp_result
@@ -129,13 +129,17 @@ def cmd_down(args):
             logger.error(f"Security group cleanup failed: {e}")
     elif "aws" in raw:
         # Instances that AWSManager launched at runtime carry the cluster's tag too.
-        from chia.cluster.aws_nodes import teardown_aws_nodes
+        from chia.cluster.aws_nodes import teardown_aws_nodes, cleanup_security_group
         try:
             terminated = teardown_aws_nodes(cluster_name, raw["aws"]["region"])
             if terminated:
                 logger.info(f"Terminated {len(terminated)} AWS instance(s)")
         except Exception as e:
             logger.error(f"AWS instance termination failed: {e}")
+        try:
+            cleanup_security_group(cluster_name, raw["aws"]["region"])
+        except Exception as e:
+            logger.error(f"Security group cleanup failed: {e}")
 
     # Delete GCP instances and clean up the firewall rules
     if gcp_result is not None:

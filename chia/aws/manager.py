@@ -66,6 +66,11 @@ class AWSManager:
         self.cluster_config = cluster_config
         self.aws_config = aws_config
         self._tunnels = {}     # farm ips -> the TunnelManager carrying their Ray traffic
+        if cluster_config.connection not in ("tunnel", "vpc"):
+            raise ValueError(f"AWSManager supports connection tunnel or vpc, not {cluster_config.connection}")
+        self._vpc_id = cluster_config.aws_config.vpc_id if cluster_config.aws_config else None
+        # The head's private IP with connection "vpc"; None means SSH tunnels.
+        self._vpc_head_ip = cluster_config.head_ip if cluster_config.connection == "vpc" else None
 
     def launch(self, worker: AWSWorker, count: int = 1) -> Farm:
         """Bring up ``count`` instances of ``worker`` and join them to the cluster."""
@@ -76,13 +81,13 @@ class AWSManager:
                           ImageId=machine.ImageId or get_default_ami(aws.region))
         nodes = {node_type.name: machine}
 
-        ips = provision_aws_nodes(self.cluster_config.cluster_name, nodes,
-                                  aws.region)[node_type.name]
+        ips = provision_aws_nodes(self.cluster_config.cluster_name, nodes, aws.region,
+                                  self._vpc_id, self._vpc_head_ip)[node_type.name]
         farm = Farm(node_type.name, aws.region, ips, ray.get_runtime_context().current_actor)
         try:
             # A copy: this launch's machines stay out of the manager's config.
             config = copy.deepcopy(self.cluster_config)
-            tunnel = self._head_tunnel_config()
+            tunnel = None if self._vpc_head_ip else self._head_tunnel_config()
             for ip in ips:
                 config.auth_overrides[ip] = SSHAuthConfig(
                     ssh_user=aws.ssh_user, ssh_private_key=aws.ssh_private_key,
@@ -125,8 +130,10 @@ class AWSManager:
         if farm.ips:
             import boto3
 
+            # With connection "vpc", the farm's IPs are private ones.
+            address = "private-ip-address" if self._vpc_head_ip else "ip-address"
             reservations = boto3.client("ec2", region_name=farm.region).describe_instances(
-                Filters=[{"Name": "ip-address", "Values": farm.ips}])["Reservations"]
+                Filters=[{"Name": address, "Values": farm.ips}])["Reservations"]
             ids = [i["InstanceId"] for r in reservations for i in r["Instances"]]
             if ids:
                 logger.info(f"Terminating {len(ids)} '{farm.name}' instance(s)")
