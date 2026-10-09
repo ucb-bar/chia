@@ -11,24 +11,27 @@ The cluster needs the workers of examples/spec_build/spec_sw_build_loop.py.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import json
 import re
 import statistics
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ray import cloudpickle
 
+from chia.aws.manager import AWSWorker, worker_resources
 from chia.aws.s3 import S3Node
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.chipyard.state_def import FireMarshalArtifact
-from chia.firesim.bitstream_build_node import BitstreamBuildNode
+from chia.firesim.bitstream_build_node import BUILD_LOGS_NAME, BitstreamBuildNode
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.manager_node import FireSimManagerNode
-from chia.firesim.specs import F2_ECAD, F2_SIM
+from chia.firesim.specs import F2_SIM, F2_VIVADO
 from chia.firesim.state_def import BuildRecipe, RunConfig, SimJobResult
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "spec_build"))
@@ -59,40 +62,74 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
               diffs: "list[str] | None" = None, bitstream: FSBitstream | None = None,
               workload: FireMarshalArtifact | None = None, spec_flags: str = "",
               cores: int = 1, upload_to: str | None = None,
-              max_fpgas: int = 12, small_images: bool = False) -> SpecEvalResult:
+              max_fpgas: int = 12, small_images: bool = False,
+              build_worker: AWSWorker | None = F2_VIVADO,
+              build_resource: str | None = None,
+              log_dir: str | None = None) -> SpecEvalResult:
     """Run ``spec`` on ``recipe`` with ``diffs``, and score it. The SPEC build and the
     bitstream build run at the same time.
 
     Args:
-        aws: The AWS manager that launches the F2 machines.
-        spec: e.g. ``"spec17-intspeed-test"``.
-        recipe, diffs: The design, and the chipyard changes to build it with (diffs
-            from the chipyard root, applied in order).
-        run_config: FireSim runtime settings.
-        bitstream, workload: Earlier results, so that they are not built.
-        spec_flags, cores, small_images: As in ``spec_sw_build_loop.start_workload``.
-        upload_to: ``s3://bucket/prefix`` for the bitstream and workload that it builds.
-        max_fpgas: F2 machines at most.
+        aws: The AWS manager that launches the build machine and the F2 simulation machines.
+        spec: The SPEC suite to build and run, for example ``"spec17-intspeed-test"``.
+        recipe: The FireSim build recipe of the design that the bitstream build makes.
+        run_config: FireSim runtime settings for the simulations; ``None`` keeps the
+            image's FireSim settings.
+        diffs: Chipyard changes, as diffs from the chipyard root, that the bitstream build
+            applies in order.
+        bitstream: An earlier bitstream to simulate; with it, no bitstream build runs.
+        workload: An earlier SPEC workload to run; with it, no SPEC build runs.
+        spec_flags: Flags added to each RISC-V compile and link of SPEC, for example
+            ``"-march=rv64gc_zba"``.
+        cores: The threads of a SPEC speed run, or the copies of a rate run.
+        upload_to: The S3 location, ``s3://bucket/prefix``, for the workload, and for the
+            bitstream that it builds with its build logs; ``None`` uploads nothing.
+        max_fpgas: The most F2 machines that it launches for the simulations, one for each
+            SPEC job.
+        small_images: With ``True``, each job's disk image holds only its own benchmark,
+            as spec26 needs.
+        build_worker: The machine that it launches for the bitstream build and terminates
+            after it; ``None`` uses a machine that the cluster already has.
+        build_resource: The resource that the bitstream build asks for; by default,
+            ``build_worker``'s resources, or the build node's ``VIVADO`` when
+            ``build_worker`` is ``None``.
+        log_dir: A folder on the head where it writes the bitstream build's logs and
+            reports as a ``.tar.gz``, also when the build fails; ``None`` writes none.
 
     Raises:
+        ValueError: ``build_worker`` does not have ``build_resource``.
         RuntimeError: A build failed.
     """
+    if (bitstream is None and build_worker and build_resource
+            and build_resource not in build_worker[0].resources):
+        raise ValueError(f"{build_worker[0].name} has no resource {build_resource!r}, "
+                         f"so the bitstream build would never run")
+    # None keeps the build node's default resource (VIVADO).
+    resources = ({build_resource: 1} if build_resource
+                 else worker_resources(build_worker) if build_worker else None)
     jobs = spec_build.jobs(spec, cores)
     workload_ref = None if workload else spec_build.start_workload(spec, cores, spec_flags,
                                                                    small_images, upload_to or "")
     built_bitstream = False
     if bitstream is None:
-        ecad = get(aws.launch.chia_remote(F2_ECAD, count=1))
+        ecad = get(aws.launch.chia_remote(build_worker, count=1)) if build_worker else None
         try:
             builder = BitstreamBuildNode()
-            build_ref = builder.build_bitstream.chia_remote(builder, recipe=recipe, diffs=diffs)
+            build_ref = builder.build_bitstream.options(resources=resources).chia_remote(
+                builder, recipe=recipe, diffs=diffs)
             if workload_ref:
                 workload = _checked(get(workload_ref))
             build = get(build_ref)
         finally:
-            ecad.teardown()
+            if ecad:
+                ecad.teardown()
+        if log_dir:
+            logs = Path(log_dir) / f"{recipe.name}-{time.strftime('%Y%m%d-%H%M%S')}-{BUILD_LOGS_NAME}"
+            logs.parent.mkdir(parents=True, exist_ok=True)
+            logs.write_bytes(build.logs)
         if not build.success:
-            raise RuntimeError(f"bitstream build failed:\n{build.log[-4000:]}")
+            raise RuntimeError(f"bitstream build failed:\n{build.log[-4000:]}"
+                               + (f"\nAll its logs: {logs}" if log_dir else ""))
         bitstream, built_bitstream = build.bitstream, True
     elif workload_ref:
         workload = _checked(get(workload_ref))
@@ -100,8 +137,10 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
     stored_bitstream = bitstream
     if upload_to and built_bitstream:   # the workload is in S3 already
         bucket, prefix = upload_to.removeprefix("s3://").split("/", 1)
-        stored_bitstream = get(bitstream.publish.chia_remote(
-            bitstream, bucket, f"{prefix}/{bitstream.agfi}"))
+        # F2 names its bitstream with an AGFI; the other platforms have only the bytes.
+        name = bitstream.agfi or hashlib.sha256(bitstream.bitstream_bytes).hexdigest()[:16]
+        stored_bitstream = get(bitstream.publish.chia_remote(bitstream, bucket, f"{prefix}/{name}"))
+        S3Node(bucket).put_bytes(f"{prefix}/{name}/{BUILD_LOGS_NAME}", build.logs)
 
     # F2 machines have no AWS credentials, so a driver in S3 travels by value.
     if bitstream.driver_uri and not bitstream.driver_bytes:

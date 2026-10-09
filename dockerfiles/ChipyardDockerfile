@@ -114,7 +114,7 @@ RUN /tmp/install-conda.sh --prefix /home/ray/conda
 
 SHELL ["/bin/bash", "-cl"]
 
-# Stub vivado binary to pass hdk_setup.sh checks during FireSim setup. F2_ECAD
+# Stub vivado binary to pass hdk_setup.sh checks during FireSim setup. F2_VIVADO
 # mounts the instance's Vivado and puts it before this stub on the PATH.
 USER root
 RUN printf '#!/bin/bash\necho "Vivado v2024.2 (64-bit)"\n' > /usr/local/bin/vivado \
