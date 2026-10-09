@@ -17,6 +17,7 @@ import json
 import re
 import statistics
 import sys
+import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -27,7 +28,7 @@ from chia.aws.manager import AWSWorker, worker_resources
 from chia.aws.s3 import S3Node
 from chia.base.ChiaFunction import ChiaFunction, get
 from chia.chipyard.state_def import FireMarshalArtifact
-from chia.firesim.bitstream_build_node import BitstreamBuildNode
+from chia.firesim.bitstream_build_node import BUILD_LOGS_NAME, BitstreamBuildNode
 from chia.firesim.fs_bitstream import FSBitstream
 from chia.firesim.manager_node import FireSimManagerNode
 from chia.firesim.specs import F2_SIM, F2_VIVADO
@@ -63,7 +64,8 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
               cores: int = 1, upload_to: str | None = None,
               max_fpgas: int = 12, small_images: bool = False,
               build_worker: AWSWorker | None = F2_VIVADO,
-              build_resource: str | None = None) -> SpecEvalResult:
+              build_resource: str | None = None,
+              log_dir: str | None = None) -> SpecEvalResult:
     """Run ``spec`` on ``recipe`` with ``diffs``, and score it. The SPEC build and the
     bitstream build run at the same time.
 
@@ -91,6 +93,8 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         build_resource: The resource that the bitstream build asks for; by default,
             ``build_worker``'s resources, or the build node's ``VIVADO`` when
             ``build_worker`` is ``None``.
+        log_dir: A folder on the head where it writes the bitstream build's logs and
+            reports as a ``.tar.gz``, also when the build fails; ``None`` writes none.
 
     Raises:
         ValueError: ``build_worker`` does not have ``build_resource``.
@@ -119,8 +123,13 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         finally:
             if ecad:
                 ecad.teardown()
+        if log_dir:
+            logs = Path(log_dir) / f"{recipe.name}-{time.strftime('%Y%m%d-%H%M%S')}-{BUILD_LOGS_NAME}"
+            logs.parent.mkdir(parents=True, exist_ok=True)
+            logs.write_bytes(build.logs)
         if not build.success:
-            raise RuntimeError(f"bitstream build failed:\n{build.log[-4000:]}")
+            raise RuntimeError(f"bitstream build failed:\n{build.log[-4000:]}"
+                               + (f"\nAll its logs: {logs}" if log_dir else ""))
         bitstream, built_bitstream = build.bitstream, True
     elif workload_ref:
         workload = _checked(get(workload_ref))
