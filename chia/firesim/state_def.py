@@ -155,9 +155,11 @@ class EcadBuildResult:
     """Result of an :meth:`~chia.firesim.bitstream_build_node.BitstreamBuildNode.build_bitstream`.
 
     ``bitstream`` is the artifact to hand to a run, and is ``None`` unless the
-    build succeeded; ``log`` carries the reason when it did not.
+    build succeeded; ``log`` carries the reason when it did not. ``logs`` is a
+    ``.tar.gz`` of the build's logs and reports, whether or not it succeeded.
     """
     recipe_name: str
     success: bool
     bitstream: "FSBitstream | None" = None
     log: str = ""
+    logs: bytes = b""

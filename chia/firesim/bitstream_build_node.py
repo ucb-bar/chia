@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import glob
+import io
 import logging
 import os
 import subprocess
+import tarfile
 import threading
 
 import yaml
@@ -36,7 +39,7 @@ class BitstreamBuildNode:
         """Builds ``recipe`` with ``diffs`` applied to chipyard, in order, on a machine with
         the ``VIVADO`` resource. To build on other machines, call it with their resource,
         for example ``build_bitstream.options(resources={"F2_VIVADO": 1})``."""
-        log = []
+        log, outputs = [], []
         out = f"{FIRESIM}/sim/output/{recipe.platform}/{recipe.quintuplet()}"
         bundle = f"{out}/{DRIVER_TAR_NAME}"
         steps = [
@@ -58,12 +61,15 @@ class BitstreamBuildNode:
                               f"cd bundle && tar -czf {bundle} *", ""),
         ]
         self._write_configs(recipe)
+        old_logs = self._firesim_logs(recipe)
         for name, cmd, stdin in steps:
             print(f"[build] {name}", flush=True)
             rc, out = self._sh(cmd, stdin)
             log.append(f"=== {name} (rc={rc}) ===\n{out[-4000:]}")
+            outputs.append(f"=== {name} (rc={rc}) ===\n{out}")
             if rc != 0:
-                return EcadBuildResult(recipe.name, success=False, log="\n".join(log))
+                return EcadBuildResult(recipe.name, success=False, log="\n".join(log),
+                                       logs=self._pack_logs(recipe, old_logs, outputs))
 
         with open(f"{DEPLOY}/built-hwdb-entries/{recipe.name}") as f:
             entry = yaml.safe_load(f)[recipe.name]
@@ -77,7 +83,35 @@ class BitstreamBuildNode:
         return EcadBuildResult(
             recipe.name, success=True, log="\n".join(log),
             bitstream=FSBitstream(recipe.quintuplet(), agfi=entry.get("agfi"),
-                                  bitstream_bytes=tar, driver_bytes=driver))
+                                  bitstream_bytes=tar, driver_bytes=driver),
+            logs=self._pack_logs(recipe, old_logs, outputs))
+
+    @staticmethod
+    def _firesim_logs(recipe: BuildRecipe) -> set[str]:
+        """FireSim's results folders for ``recipe``, and FireSim's own build logs."""
+        return set(glob.glob(f"{DEPLOY}/results-build/*-{recipe.name}")
+                   + glob.glob(f"{DEPLOY}/logs/*-buildbitstream-*.log"))
+
+    @staticmethod
+    def _pack_logs(recipe: BuildRecipe, old_logs: set[str], outputs: list[str]) -> bytes:
+        """A .tar.gz of what this build logged: each step's output, FireSim's log, and
+        the logs and reports in FireSim's results folder, not its checkpoints or
+        bitstreams."""
+        buf = io.BytesIO()
+        with tarfile.open(fileobj=buf, mode="w:gz", dereference=True) as tar:
+            steps = "\n".join(outputs).encode()
+            info = tarfile.TarInfo("steps.log")
+            info.size = len(steps)
+            tar.addfile(info, io.BytesIO(steps))
+            for path in sorted(BitstreamBuildNode._firesim_logs(recipe) - old_logs):
+                if os.path.isfile(path):
+                    tar.add(path, arcname=f"firesim/{os.path.basename(path)}")
+                    continue
+                for f in sorted(glob.glob(f"{path}/**/*", recursive=True)):
+                    if os.path.isfile(f) and (f.endswith((".log", ".rpt")) or
+                                              os.path.basename(f) in ("AGFI_INFO", "metadata")):
+                        tar.add(f, arcname=os.path.relpath(f, os.path.dirname(path)))
+        return buf.getvalue()
 
     @staticmethod
     def _write_configs(recipe: BuildRecipe) -> None:
