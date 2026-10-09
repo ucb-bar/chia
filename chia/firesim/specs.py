@@ -12,6 +12,9 @@ from chia.cluster.config import DockerConfig, NodeTypeConfig
 
 FPGA_RESOURCE = "firesim_fpga"
 
+# For a private image, add a docker login (as the SSH user, with a token read from the
+# environment) to the AWSNodeConfig's setup_commands, which run before chia pulls the image.
+
 
 def _root_volume(gb: int) -> dict:
     return {"BlockDeviceMappings": [{"DeviceName": "/dev/sda1",

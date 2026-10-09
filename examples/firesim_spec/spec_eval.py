@@ -68,21 +68,29 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
     bitstream build run at the same time.
 
     Args:
-        aws: The AWS manager that launches the F2 machines.
-        spec: e.g. ``"spec17-intspeed-test"``.
-        recipe, diffs: The design, and the chipyard changes to build it with (diffs
-            from the chipyard root, applied in order).
-        run_config: FireSim runtime settings.
-        bitstream, workload: Earlier results, so that they are not built.
-        spec_flags, cores, small_images: As in ``spec_sw_build_loop.start_workload``.
-        upload_to: ``s3://bucket/prefix`` for the bitstream and workload that it builds.
-        max_fpgas: F2 machines at most.
-        build_worker: The machine to launch for the bitstream build. ``None`` launches
-            none: the build runs on a machine that the cluster already has.
-        build_resource: The resource that the bitstream build asks for. Without it, the
-            build asks for ``build_worker``'s resources, or with no ``build_worker``, for
-            the build node's default, ``VIVADO``. A cluster can name its own, for example
-            for a machine that builds every platform.
+        aws: The AWS manager that launches the build machine and the F2 simulation machines.
+        spec: The SPEC suite to build and run, for example ``"spec17-intspeed-test"``.
+        recipe: The FireSim build recipe of the design that the bitstream build makes.
+        run_config: FireSim runtime settings for the simulations; ``None`` keeps the
+            image's FireSim settings.
+        diffs: Chipyard changes, as diffs from the chipyard root, that the bitstream build
+            applies in order.
+        bitstream: An earlier bitstream to simulate; with it, no bitstream build runs.
+        workload: An earlier SPEC workload to run; with it, no SPEC build runs.
+        spec_flags: Flags added to each RISC-V compile and link of SPEC, for example
+            ``"-march=rv64gc_zba"``.
+        cores: The threads of a SPEC speed run, or the copies of a rate run.
+        upload_to: The S3 location, ``s3://bucket/prefix``, for the workload and the
+            bitstream that it builds; ``None`` uploads nothing.
+        max_fpgas: The most F2 machines that it launches for the simulations, one for each
+            SPEC job.
+        small_images: With ``True``, each job's disk image holds only its own benchmark,
+            as spec26 needs.
+        build_worker: The machine that it launches for the bitstream build and terminates
+            after it; ``None`` uses a machine that the cluster already has.
+        build_resource: The resource that the bitstream build asks for; by default,
+            ``build_worker``'s resources, or the build node's ``VIVADO`` when
+            ``build_worker`` is ``None``.
 
     Raises:
         ValueError: ``build_worker`` does not have ``build_resource``.
