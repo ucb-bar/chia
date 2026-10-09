@@ -82,8 +82,8 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         spec_flags: Flags added to each RISC-V compile and link of SPEC, for example
             ``"-march=rv64gc_zba"``.
         cores: The threads of a SPEC speed run, or the copies of a rate run.
-        upload_to: The S3 location, ``s3://bucket/prefix``, for the workload and the
-            bitstream that it builds; ``None`` uploads nothing.
+        upload_to: The S3 location, ``s3://bucket/prefix``, for the workload, and for the
+            bitstream that it builds with its build logs; ``None`` uploads nothing.
         max_fpgas: The most F2 machines that it launches for the simulations, one for each
             SPEC job.
         small_images: With ``True``, each job's disk image holds only its own benchmark,
@@ -140,6 +140,7 @@ def spec_eval(aws, spec: str, recipe: BuildRecipe, run_config: RunConfig | None 
         # F2 names its bitstream with an AGFI; the other platforms have only the bytes.
         name = bitstream.agfi or hashlib.sha256(bitstream.bitstream_bytes).hexdigest()[:16]
         stored_bitstream = get(bitstream.publish.chia_remote(bitstream, bucket, f"{prefix}/{name}"))
+        S3Node(bucket).put_bytes(f"{prefix}/{name}/{BUILD_LOGS_NAME}", build.logs)
 
     # F2 machines have no AWS credentials, so a driver in S3 travels by value.
     if bitstream.driver_uri and not bitstream.driver_bytes:
