@@ -394,9 +394,9 @@ def _launch_one_instance(
 
 
 def vpc_settings(raw: dict) -> tuple[str | None, str | None]:
-    # The cluster file's aws.vpc_id, and the head's private IP when aws.connection is "vpc".
-    aws = raw.get("aws") or {}
-    return aws.get("vpc_id"), (raw["provider"]["head_ip"] if aws.get("connection") == "vpc" else None)
+    # The cluster file's aws.vpc_id, and the head's private IP when connection is "vpc".
+    return ((raw.get("aws") or {}).get("vpc_id"),
+            raw["provider"]["head_ip"] if raw.get("connection") == "vpc" else None)
 
 
 def provision_aws_nodes(

@@ -192,8 +192,7 @@ class AWSClusterConfig:
     use_public_ip: bool = False
     s3_bucket: str = "firesim-chia-builds"
     workers: dict[str, dict] = field(default_factory=dict)
-    # "tunnel": SSH tunnels to the machines' public IPs. "vpc": direct, over private IPs in the head's VPC.
-    connection: str = "tunnel"
+    # The VPC of chia's AWS machines with connection "tunnel"; None means the account's default VPC.
     vpc_id: str | None = None
 
 
@@ -230,6 +229,9 @@ class ClusterConfig:
     ssh_proxy_command: str | None = None
     tailnet_config: TailnetConfig | None = None
     scoped_teardown: bool = True
+    # How chia reaches its workers: "tunnel" (SSH tunnels), "vpc" (directly, over private IPs
+    # in the head's VPC; AWS only) or "ts_user" (userspace Tailscale). "ts_kernel" is not supported yet.
+    connection: str = "tunnel"
 
     def get_ssh_auth(self, ip: str) -> SSHAuthConfig:
         """Return SSH auth for *ip*, falling back to the global config."""
@@ -524,6 +526,23 @@ def _parse_tunnel_defaults(raw: dict) -> dict | bool:
 _parse_aws_tunnel_defaults = _parse_tunnel_defaults
 
 
+def _resolve_connection(raw: dict) -> str:
+    # The connection setting alone decides; without it, a tailnet: section means "ts_user".
+    connection = raw.get("connection") or ("ts_user" if raw.get("tailnet") is not None else "tunnel")
+    if connection not in ("tunnel", "vpc", "ts_user", "ts_kernel"):
+        raise ConfigError(f"connection must be tunnel, vpc, ts_user or ts_kernel, not {connection!r}")
+    if connection == "ts_kernel":
+        raise ConfigError("connection: ts_kernel is not supported yet")
+    if connection == "ts_user" and raw.get("tailnet") is None:
+        raise ConfigError("connection: ts_user needs a tailnet: section")
+    if connection == "vpc" and raw.get("gcp_nodes"):
+        raise ConfigError("connection: vpc works only for AWS machines, not for gcp_nodes")
+    if connection != "ts_user" and raw.get("tailnet") is not None:
+        logger.warning(f"connection is {connection}, so the tailnet: section is ignored")
+        raw.pop("tailnet")
+    return connection
+
+
 def _parse_tailnet_section(raw: dict) -> TailnetConfig | None:
     """Parse the top-level ``tailnet`` block into a :class:`TailnetConfig`.
 
@@ -652,9 +671,9 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
                              require_auth_key=True, logger=None):
     """Route each provisioned/discovered cloud machine type to its network mode.
 
-    When the config has a top-level ``tailnet:`` section, cloud types
-    default to joining the tailnet (no SSH tunnels); a per-type
-    ``join_tailnet`` overrides the default either way. Injects the
+    With ``connection: ts_user``, cloud types default to joining the
+    tailnet (no SSH tunnels); a per-type ``join_tailnet`` overrides the
+    default either way. Injects the
     matching auth overrides for every IP in the maps (mutating *raw*)
     and returns ``{type_name: node_config}`` for the joining types.
 
@@ -662,9 +681,10 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
     (with discovered IPs — pass ``require_auth_key=False`` there, since
     teardown never joins anything).
     """
-    has_tailnet = raw.get("tailnet") is not None
-    # AWS machines with aws.connection "vpc" reach the head directly, without SSH tunnels.
-    aws_tunnel = (raw.get("aws") or {}).get("connection") != "vpc"
+    connection = _resolve_connection(raw)
+    has_tailnet = connection == "ts_user"
+    # With connection "vpc", AWS machines reach the head directly, without SSH tunnels.
+    aws_tunnel = connection != "vpc"
 
     joining_types = {}
     for result, ip_map, tunnel in ((aws_result, aws_ip_map, aws_tunnel),
@@ -679,8 +699,8 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
             joins = explicit if explicit is not None else has_tailnet
             if joins and not has_tailnet:
                 raise ConfigError(
-                    f"cloud machine type '{name}': join_tailnet requires a "
-                    f"top-level 'tailnet:' section")
+                    f"cloud machine type '{name}': join_tailnet requires "
+                    f"connection: ts_user")
             (join_map if joins else tunnel_map)[name] = ips
         if tunnel_map:
             _inject_cloud_tunnel_overrides(raw, tunnel_map, node_configs, tunnel)
@@ -714,6 +734,8 @@ def load_raw_config(yaml_path: str) -> dict:
         raw = yaml.safe_load(f)
 
     raw = _expand_env_vars(raw)
+    # Checks the connection before anything launches, and drops a tailnet: section it ignores.
+    _resolve_connection(raw)
     logger.debug(f"Loaded raw config from {yaml_path}")
     return raw
 
@@ -732,6 +754,7 @@ def build_config(raw: dict) -> ClusterConfig:
 
     auth = raw.get("auth", {})
     global_proxy_command = auth.get("ssh_proxy_command")
+    connection = _resolve_connection(raw)
     tailnet_config = _parse_tailnet_section(raw)
 
     # Parse auth overrides
@@ -835,7 +858,6 @@ def build_config(raw: dict) -> ClusterConfig:
             use_public_ip=aws_raw.get("use_public_ip", False),
             s3_bucket=aws_raw.get("s3_bucket", "firesim-chia-builds"),
             workers=aws_raw.get("workers", {}),
-            connection=aws_raw.get("connection", "tunnel"),
             vpc_id=aws_raw.get("vpc_id"),
         )
         logger.debug(f"  AWS config: region={aws_config.region}, key={aws_config.key_name}")
@@ -933,6 +955,7 @@ def build_config(raw: dict) -> ClusterConfig:
         ssh_proxy_command=global_proxy_command,
         tailnet_config=tailnet_config,
         scoped_teardown=raw.get("scoped_teardown", True),
+        connection=connection,
     )
 
     if tailnet_config is not None:

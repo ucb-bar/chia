@@ -29,8 +29,8 @@ from chia.aws.config import AWSConfig
 from chia.aws.ec2 import get_default_ami, terminate_ec2_instances
 from chia.base.ChiaFunction import chia_actor
 from chia.cluster.aws_nodes import AWSNodeConfig, provision_aws_nodes, run_aws_setup
-from chia.cluster.config import (AWSClusterConfig, ClusterConfig, NodeTypeConfig,
-                                 SSHAuthConfig, TunnelConfig, assign_nodes)
+from chia.cluster.config import (ClusterConfig, NodeTypeConfig, SSHAuthConfig,
+                                 TunnelConfig, assign_nodes)
 from chia.cluster.log import get_logger, setup_logging
 from chia.cluster.node_setup import add_nodes_to_cluster
 
@@ -66,10 +66,9 @@ class AWSManager:
         self.cluster_config = cluster_config
         self.aws_config = aws_config
         self._tunnels = {}     # farm ips -> the TunnelManager carrying their Ray traffic
-        aws_cluster = cluster_config.aws_config or AWSClusterConfig()
-        self._vpc_id = aws_cluster.vpc_id
-        # The head's private IP with aws.connection "vpc"; None means SSH tunnels.
-        self._vpc_head_ip = cluster_config.head_ip if aws_cluster.connection == "vpc" else None
+        self._vpc_id = cluster_config.aws_config.vpc_id if cluster_config.aws_config else None
+        # The head's private IP with connection "vpc"; None means SSH tunnels.
+        self._vpc_head_ip = cluster_config.head_ip if cluster_config.connection == "vpc" else None
 
     def launch(self, worker: AWSWorker, count: int = 1) -> Farm:
         """Bring up ``count`` instances of ``worker`` and join them to the cluster."""
@@ -129,7 +128,7 @@ class AWSManager:
         if farm.ips:
             import boto3
 
-            # With aws.connection "vpc", the farm's IPs are private ones.
+            # With connection "vpc", the farm's IPs are private ones.
             address = "private-ip-address" if self._vpc_head_ip else "ip-address"
             reservations = boto3.client("ec2", region_name=farm.region).describe_instances(
                 Filters=[{"Name": address, "Values": farm.ips}])["Reservations"]
