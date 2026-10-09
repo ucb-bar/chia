@@ -66,6 +66,8 @@ class AWSManager:
         self.cluster_config = cluster_config
         self.aws_config = aws_config
         self._tunnels = {}     # farm ips -> the TunnelManager carrying their Ray traffic
+        if cluster_config.connection not in ("tunnel", "vpc"):
+            raise ValueError(f"AWSManager supports connection tunnel or vpc, not {cluster_config.connection}")
         self._vpc_id = cluster_config.aws_config.vpc_id if cluster_config.aws_config else None
         # The head's private IP with connection "vpc"; None means SSH tunnels.
         self._vpc_head_ip = cluster_config.head_ip if cluster_config.connection == "vpc" else None
