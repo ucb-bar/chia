@@ -320,6 +320,14 @@ def cleanup_security_group(cluster_name: str, region: str) -> None:
 
     sg_id = existing[0]["GroupId"]
     try:
+        # A connection: vpc head is still a member, and AWS deletes no group in use.
+        for nic in client.describe_network_interfaces(
+            Filters=[{"Name": "group-id", "Values": [sg_id]}],
+        )["NetworkInterfaces"]:
+            client.modify_network_interface_attribute(
+                NetworkInterfaceId=nic["NetworkInterfaceId"],
+                Groups=[g["GroupId"] for g in nic["Groups"] if g["GroupId"] != sg_id],
+            )
         client.delete_security_group(GroupId=sg_id)
         logger.info(f"Deleted security group {sg_name} ({sg_id})")
     except client.exceptions.ClientError as exc:
