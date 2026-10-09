@@ -9,6 +9,7 @@ import os
 import subprocess
 import tarfile
 import threading
+import time
 
 import yaml
 
@@ -20,17 +21,23 @@ CHIPYARD = "/home/ray/chipyard"
 FIRESIM = f"{CHIPYARD}/sims/firesim"
 DEPLOY = f"{FIRESIM}/deploy"
 BUILD_DIR = "/home/ray/firesim-build"
+# Each build's logs and reports in a log_dir: <recipe>-<time>-build-logs.tar.gz.
+BUILD_LOGS_NAME = "build-logs.tar.gz"
 
 
 class BitstreamBuildNode:
     """Applies a chipyard diff and runs ``firesim buildbitstream``."""
 
-    def __init__(self, timeout_seconds: int = 86400):
+    def __init__(self, timeout_seconds: int = 86400, log_dir: str | None = None):
         """
         Args:
             timeout_seconds: Wall-clock limit for the whole build, AGFI included.
+            log_dir: A folder, on the machine that runs the build, for each build's logs
+                and reports. Useful only on a machine that stays up, such as an
+                on-premises one. ``None`` keeps none; the result has them either way.
         """
         self.timeout_seconds = timeout_seconds
+        self.log_dir = log_dir
         self.logger = logging.getLogger("BitstreamBuildNode")
 
     @ChiaFunction(resources={"VIVADO": 1})
@@ -69,7 +76,7 @@ class BitstreamBuildNode:
             outputs.append(f"=== {name} (rc={rc}) ===\n{out}")
             if rc != 0:
                 return EcadBuildResult(recipe.name, success=False, log="\n".join(log),
-                                       logs=self._pack_logs(recipe, old_logs, outputs))
+                                       logs=self._logs(recipe, old_logs, outputs))
 
         with open(f"{DEPLOY}/built-hwdb-entries/{recipe.name}") as f:
             entry = yaml.safe_load(f)[recipe.name]
@@ -84,7 +91,17 @@ class BitstreamBuildNode:
             recipe.name, success=True, log="\n".join(log),
             bitstream=FSBitstream(recipe.quintuplet(), agfi=entry.get("agfi"),
                                   bitstream_bytes=tar, driver_bytes=driver),
-            logs=self._pack_logs(recipe, old_logs, outputs))
+            logs=self._logs(recipe, old_logs, outputs))
+
+    def _logs(self, recipe: BuildRecipe, old_logs: set[str], outputs: list[str]) -> bytes:
+        """This build's logs, also written to ``log_dir`` when it is set."""
+        logs = self._pack_logs(recipe, old_logs, outputs)
+        if self.log_dir:
+            os.makedirs(self.log_dir, exist_ok=True)
+            name = f"{recipe.name}-{time.strftime('%Y%m%d-%H%M%S')}-{BUILD_LOGS_NAME}"
+            with open(os.path.join(self.log_dir, name), "wb") as f:
+                f.write(logs)
+        return logs
 
     @staticmethod
     def _firesim_logs(recipe: BuildRecipe) -> set[str]:
