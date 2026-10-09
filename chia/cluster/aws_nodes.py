@@ -215,19 +215,6 @@ def _reconcile_ssh_ingress(client, sg_id: str, desired: list[tuple[str, str]]) -
         logger.info(f"Authorized SSH ingress on {sg_id} for {[c for c, _ in to_add]}")
 
 
-def _vpc_cidrs(client, vpc_id: str) -> list[str]:
-    """Return the VPC's associated IPv4 CIDR block(s)."""
-    vpc = client.describe_vpcs(VpcIds=[vpc_id])["Vpcs"][0]
-    cidrs = [
-        a["CidrBlock"]
-        for a in vpc.get("CidrBlockAssociationSet", [])
-        if a.get("CidrBlockState", {}).get("State") == "associated"
-    ]
-    if not cidrs and vpc.get("CidrBlock"):
-        cidrs = [vpc["CidrBlock"]]
-    return cidrs
-
-
 def _intra_vpc_enabled(default: bool) -> bool:
     """Resolve the intra-VPC switch, letting ``CHIA_ALLOW_INTRA_VPC`` override."""
     import os
@@ -238,45 +225,14 @@ def _intra_vpc_enabled(default: bool) -> bool:
     return default
 
 
-def _reconcile_intra_vpc_ingress(client, sg_id: str, vpc_cidrs: list[str]) -> None:
-    """Allow all traffic from the VPC's own CIDR(s) so same-VPC machines can connect.
-
-    Idempotent: only authorizes CIDRs not already present as an all-protocol
-    (``-1``) ingress rule.
-    """
-    sg = client.describe_security_groups(GroupIds=[sg_id])["SecurityGroups"][0]
-    present: set[str] = set()
-    for perm in sg.get("IpPermissions", []):
-        if perm.get("IpProtocol") == "-1":
-            for r in perm.get("IpRanges", []):
-                present.add(r.get("CidrIp"))
-
-    to_add = [c for c in vpc_cidrs if c not in present]
-    if to_add:
-        client.authorize_security_group_ingress(
-            GroupId=sg_id,
-            IpPermissions=[{
-                "IpProtocol": "-1",
-                "IpRanges": [{"CidrIp": c, "Description": "chia intra-VPC"} for c in to_add],
-            }],
-        )
-        logger.info(f"Authorized intra-VPC ingress on {sg_id} for {to_add}")
-
-
 def ensure_ssh_security_group(
     cluster_name: str,
     region: str,
-    allow_intra_vpc: bool = True,
 ) -> tuple[dict[str, str], str]:
     """Create or find the SSH security group in the default VPC.
 
     Inbound SSH (22) is locked to the head's public IP (see
     :func:`_resolve_head_ssh_cidrs`); egress is left at the AWS default.
-
-    When *allow_intra_vpc* is True (the default; overridable via the
-    ``CHIA_ALLOW_INTRA_VPC`` env var), an all-traffic ingress rule from the
-    VPC's own CIDR is added so other machines in the same VPC can reach the
-    nodes on any port.
 
     Returns ({availability_zone: subnet_id}, sg_id).
     """
@@ -285,8 +241,6 @@ def ensure_ssh_security_group(
 
     sg_name = f"chia-{cluster_name}-ssh"
     desired_cidrs = _resolve_head_ssh_cidrs()
-    intra_vpc = _intra_vpc_enabled(allow_intra_vpc)
-    vpc_cidrs = _vpc_cidrs(client, vpc_id) if intra_vpc else []
 
     # Check if SG already exists
     existing = client.describe_security_groups(
@@ -301,8 +255,6 @@ def ensure_ssh_security_group(
         logger.info(f"Security group {sg_name} already exists: {sg_id}")
         # Reconcile in case the head IP changed or the SG predates the lockdown.
         _reconcile_ssh_ingress(client, sg_id, desired_cidrs)
-        if intra_vpc:
-            _reconcile_intra_vpc_ingress(client, sg_id, vpc_cidrs)
         return subnets_by_az, sg_id
 
     # Create new SG
@@ -324,12 +276,9 @@ def ensure_ssh_security_group(
             },
         ],
     )
-    if intra_vpc:
-        _reconcile_intra_vpc_ingress(client, sg_id, vpc_cidrs)
     logger.info(
         f"Created security group {sg_name}: {sg_id} "
-        f"(SSH allowed from {[c for c, _ in desired_cidrs]}"
-        f"{f'; intra-VPC from {vpc_cidrs}' if intra_vpc else ''})"
+        f"(SSH allowed from {[c for c, _ in desired_cidrs]})"
     )
     return subnets_by_az, sg_id
 
