@@ -29,8 +29,8 @@ from chia.aws.config import AWSConfig
 from chia.aws.ec2 import get_default_ami, terminate_ec2_instances
 from chia.base.ChiaFunction import chia_actor
 from chia.cluster.aws_nodes import AWSNodeConfig, provision_aws_nodes, run_aws_setup
-from chia.cluster.config import (ClusterConfig, NodeTypeConfig, SSHAuthConfig,
-                                 TunnelConfig, assign_nodes)
+from chia.cluster.config import (AWSClusterConfig, ClusterConfig, NodeTypeConfig,
+                                 SSHAuthConfig, TunnelConfig, assign_nodes)
 from chia.cluster.log import get_logger, setup_logging
 from chia.cluster.node_setup import add_nodes_to_cluster
 
@@ -66,6 +66,10 @@ class AWSManager:
         self.cluster_config = cluster_config
         self.aws_config = aws_config
         self._tunnels = {}     # farm ips -> the TunnelManager carrying their Ray traffic
+        aws_cluster = cluster_config.aws_config or AWSClusterConfig()
+        self._vpc_id = aws_cluster.vpc_id
+        # The head's private IP with aws.connection "vpc"; None means SSH tunnels.
+        self._vpc_head_ip = cluster_config.head_ip if aws_cluster.connection == "vpc" else None
 
     def launch(self, worker: AWSWorker, count: int = 1) -> Farm:
         """Bring up ``count`` instances of ``worker`` and join them to the cluster."""
@@ -76,13 +80,13 @@ class AWSManager:
                           ImageId=machine.ImageId or get_default_ami(aws.region))
         nodes = {node_type.name: machine}
 
-        ips = provision_aws_nodes(self.cluster_config.cluster_name, nodes,
-                                  aws.region)[node_type.name]
+        ips = provision_aws_nodes(self.cluster_config.cluster_name, nodes, aws.region,
+                                  self._vpc_id, self._vpc_head_ip)[node_type.name]
         farm = Farm(node_type.name, aws.region, ips, ray.get_runtime_context().current_actor)
         try:
             # A copy: this launch's machines stay out of the manager's config.
             config = copy.deepcopy(self.cluster_config)
-            tunnel = self._head_tunnel_config()
+            tunnel = None if self._vpc_head_ip else self._head_tunnel_config()
             for ip in ips:
                 config.auth_overrides[ip] = SSHAuthConfig(
                     ssh_user=aws.ssh_user, ssh_private_key=aws.ssh_private_key,
@@ -125,8 +129,10 @@ class AWSManager:
         if farm.ips:
             import boto3
 
+            # With aws.connection "vpc", the farm's IPs are private ones.
+            address = "private-ip-address" if self._vpc_head_ip else "ip-address"
             reservations = boto3.client("ec2", region_name=farm.region).describe_instances(
-                Filters=[{"Name": "ip-address", "Values": farm.ips}])["Reservations"]
+                Filters=[{"Name": address, "Values": farm.ips}])["Reservations"]
             ids = [i["InstanceId"] for r in reservations for i in r["Instances"]]
             if ids:
                 logger.info(f"Terminating {len(ids)} '{farm.name}' instance(s)")
