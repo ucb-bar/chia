@@ -39,6 +39,11 @@ logger = get_logger("aws.manager")
 AWSWorker = tuple[NodeTypeConfig, AWSNodeConfig]
 
 
+def worker_resources(worker: AWSWorker) -> dict[str, float]:
+    # The resources that a machine of this definition advertises when it joins the cluster.
+    return dict(worker[0].resources)
+
+
 @dataclass
 class Farm:
     """The instances one :meth:`AWSManager.launch` brought up, and that manager."""
@@ -93,7 +98,7 @@ class AWSManager:
             # by assign_nodes' worker indexes, so the node joins the copy first
             # and its assignments come from assign_nodes.
             config.worker_ips = config.worker_ips + ips
-            # The container's AWS calls (F2_ECAD's aws_create_afi) need a region.
+            # The container's AWS calls (F2_VIVADO's aws_create_afi) need a region.
             docker = node_type.docker and replace(node_type.docker, run_options=[
                 *node_type.docker.run_options, "-e", f"AWS_DEFAULT_REGION={aws.region}"])
             config.node_types[node_type.name] = replace(
