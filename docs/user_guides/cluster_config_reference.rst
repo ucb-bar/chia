@@ -111,9 +111,11 @@ Top-level keys
        ``ray start --head ...``).
    * - ``worker_start_ray_commands``
      - ``[]``
-     - Commands that start Ray on each worker. CHIA injects ``--resources``
-       automatically (plus, for tailnet or tunneled workers, the pinned
-       ports and any proxy env).
+     - Commands that start Ray on each worker. Connect to the head with
+       ``--address=$RAY_HEAD_IP:$RAY_HEAD_PORT``: CHIA sets both for each
+       worker, and tunnel and Tailscale workers need them. CHIA injects
+       ``--resources`` automatically (plus, for tailnet or tunneled workers,
+       the pinned ports and any proxy env).
    * - ``file_mounts``
      - ``{}``
      - ``{remote_path: local_path}`` directories rsync'd to each node before the
@@ -854,7 +856,7 @@ To run purely on-prem, delete the ``aws_nodes`` section and the
 
    worker_start_ray_commands:
        - ray stop
-       - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+       - ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT --dashboard-agent-listen-port=0
 
 Multiple heads on a single physical machine
 -------------------------------------------
@@ -864,8 +866,8 @@ Ray *head* on the same host. A head binds several fixed TCP ports, so the
 second cluster must move every one of them off the defaults or ``ray start``
 (or the first cluster) will fail. Four ports matter — the GCS port (default
 6379), the dashboard (8265), the Ray client server (10001), and the head's
-dashboard agent (52365) — and the worker join address must follow the new GCS
-port. Pick replacements that are free on the host, and note that an
+dashboard agent (52365) — and workers that join with ``$RAY_HEAD_PORT`` follow
+the new GCS port by themselves. Pick replacements that are free on the host, and note that an
 explicitly assigned port must **not** fall inside Ray's worker-port range
 (10002–19999 by default): ``ray start`` rejects the overlap, which is why the
 client-server port below jumps to 20101 rather than 10101.
@@ -880,7 +882,7 @@ client-server port below jumps to 20101 rather than 10101.
 
    worker_start_ray_commands:
        - ray stop
-       - ray start --address=$RAY_HEAD_IP:6479 --dashboard-agent-listen-port=0
+       - ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT --dashboard-agent-listen-port=0
 
 Nothing else needs to move: worker nodes already use
 ``--dashboard-agent-listen-port=0`` (OS-assigned) in the examples above, and
@@ -940,7 +942,7 @@ Without a container, everything runs on the host:
       │ <type>.worker_env_commands                          │  per node type
       │ setup_commands                                      │  global
       │ <type>.worker_setup_commands                        │  per node type
-      │ export RAY_HEAD_IP=...                              │
+      │ export RAY_HEAD_IP=... RAY_HEAD_PORT=...            │
       │ worker_start_ray_commands  (--resources injected)   │
       └─────────────────────────────────────────────────────┘
 
@@ -956,7 +958,7 @@ script runs **inside** it:
       │ <type>.worker_env_commands                            │
       │ setup_commands                                        │
       │ <type>.worker_setup_commands                          │
-      │ export RAY_HEAD_IP=...                                │
+      │ export RAY_HEAD_IP=... RAY_HEAD_PORT=...              │
       │ worker_start_ray_commands  (--resources injected)     │
       └───────────────────────────────────────────────────────┘
 
