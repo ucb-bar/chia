@@ -50,7 +50,7 @@ def _make_raw():
             },
         },
         "head_start_ray_commands": ["ray start --head --port=6379"],
-        "worker_start_ray_commands": ["ray start --address=$RAY_HEAD_IP:6379"],
+        "worker_start_ray_commands": ["ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT"],
     }
 
 
@@ -373,7 +373,7 @@ def _cloud_raw():
                    "compatible_ips": ["@ec2_worker:0", "@ec2_worker:1"]},
         },
         "head_start_ray_commands": ["ray start --head --port=6379"],
-        "worker_start_ray_commands": ["ray start --address=$RAY_HEAD_IP:6379"],
+        "worker_start_ray_commands": ["ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT"],
     }
 
 
