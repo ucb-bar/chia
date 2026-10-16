@@ -65,7 +65,8 @@ def cmd_down(args):
     if gcp_result is not None:
         gcp_nodes, gcp_project, _zone, _net, _sub = gcp_result
         from chia.cluster.gcp_nodes import discover_gcp_nodes
-        gcp_ip_map = discover_gcp_nodes(cluster_name, gcp_project)
+        gcp_ip_map = discover_gcp_nodes(cluster_name, gcp_project,
+                                        private=raw.get("connection") == "vpc")
 
     ip_map = {**aws_ip_map, **gcp_ip_map}
     cloud_instance_count = sum(len(ips) for ips in ip_map.values())

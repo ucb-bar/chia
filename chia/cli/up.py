@@ -202,10 +202,12 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     # --- GCP: discover + provision anything missing ---
     if gcp_result is not None:
         gcp_nodes, project, zone, network, subnetwork = gcp_result
+        from chia.cluster.aws_nodes import vpc_settings
         from chia.cluster.gcp_nodes import (
             discover_gcp_nodes, provision_missing_gcp_nodes,
         )
-        existing = discover_gcp_nodes(cluster_name, project)
+        vpc_head_ip = vpc_settings(raw)[1]
+        existing = discover_gcp_nodes(cluster_name, project, private=vpc_head_ip is not None)
         missing = {name: cfg.count - len(existing.get(name, []))
                    for name, cfg in gcp_nodes.items()
                    if cfg.count - len(existing.get(name, [])) > 0}
@@ -233,7 +235,8 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
                 gcp_ip_map, gcp_new_ip_map = provision_missing_gcp_nodes(
                     cluster_name, gcp_nodes, project, zone,
                     network=network, subnetwork=subnetwork,
-                    default_ssh_user=du, default_ssh_private_key=dk)
+                    default_ssh_user=du, default_ssh_private_key=dk,
+                    vpc_head_ip=vpc_head_ip)
                 if gcp_new_ip_map:
                     logger.info(f"New GCP nodes provisioned: {gcp_new_ip_map}")
             except Exception as e:
@@ -385,6 +388,14 @@ def cmd_up(args):
     except ConfigError as e:
         logger.error(f"Cloud node config error: {e}")
         sys.exit(1)
+    if gcp_result is not None:
+        # Stop before anything launches if a GCP name would be too long.
+        from chia.cluster.gcp_nodes import check_names
+        try:
+            check_names(raw.get("cluster_name", "default"), gcp_result[0])
+        except ValueError as e:
+            logger.error(f"Cloud node config error: gcp_nodes: {e}")
+            sys.exit(1)
 
     # --add mode has its own flow: discover instead of provision
     if args.add:
@@ -433,12 +444,14 @@ def cmd_up(args):
                 print("Aborted.")
                 return
             du, dk = _gcp_default_auth(raw)
+            from chia.cluster.aws_nodes import vpc_settings
             from chia.cluster.gcp_nodes import provision_gcp_nodes
             try:
                 gcp_ip_map = provision_gcp_nodes(
                     raw.get("cluster_name", "default"), gcp_nodes, project, zone,
                     network=network, subnetwork=subnetwork,
-                    default_ssh_user=du, default_ssh_private_key=dk)
+                    default_ssh_user=du, default_ssh_private_key=dk,
+                    vpc_head_ip=vpc_settings(raw)[1])
                 provisioned = True
                 logger.info(f"GCP nodes provisioned: {gcp_ip_map}")
             except Exception as e:

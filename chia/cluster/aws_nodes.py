@@ -230,16 +230,6 @@ def _reconcile_ssh_ingress(client, sg_id: str, desired: list[tuple[str, str]]) -
         logger.info(f"Authorized SSH ingress on {sg_id} for {[c for c, _ in to_add]}")
 
 
-def _intra_vpc_enabled(default: bool) -> bool:
-    """Resolve the intra-VPC switch, letting ``CHIA_ALLOW_INTRA_VPC`` override."""
-    import os
-
-    env = os.environ.get("CHIA_ALLOW_INTRA_VPC")
-    if env is not None:
-        return env.strip().lower() not in ("0", "false", "no", "off", "")
-    return default
-
-
 def ensure_ssh_security_group(
     cluster_name: str,
     region: str,

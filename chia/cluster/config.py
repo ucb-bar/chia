@@ -230,7 +230,7 @@ class ClusterConfig:
     tailnet_config: TailnetConfig | None = None
     scoped_teardown: bool = True
     # How chia reaches its workers: "tunnel" (SSH tunnels), "vpc" (directly, over private IPs
-    # in the head's VPC; AWS only) or "ts_user" (userspace Tailscale). "ts_kernel" is not supported yet.
+    # in the head's AWS VPC or GCP network) or "ts_user" (userspace Tailscale). "ts_kernel" is not supported yet.
     connection: str = "vpc"
 
     def get_ssh_auth(self, ip: str) -> SSHAuthConfig:
@@ -535,9 +535,10 @@ def _resolve_connection(raw: dict) -> str:
         raise ConfigError("connection: ts_kernel is not supported yet")
     if connection == "ts_user" and raw.get("tailnet") is None:
         raise ConfigError("connection: ts_user needs a tailnet: section")
-    if connection == "vpc" and raw.get("gcp_nodes"):
-        raise ConfigError("connection: vpc, the default, works only for AWS machines; "
-                          "gcp_nodes need connection: tunnel or ts_user")
+    if connection == "vpc" and raw.get("aws_nodes") and raw.get("gcp_nodes"):
+        raise ConfigError("connection: vpc, the default, puts the machines in the head's network, "
+                          "so one cluster cannot have both aws_nodes and gcp_nodes; use "
+                          "connection: tunnel or ts_user")
     if connection != "ts_user" and raw.get("tailnet") is not None:
         logger.warning(f"connection is {connection}, so the tailnet: section is ignored")
         raw.pop("tailnet")
@@ -685,12 +686,11 @@ def apply_cloud_network_mode(raw, aws_result, aws_ip_map,
     """
     connection = _resolve_connection(raw)
     has_tailnet = connection == "ts_user"
-    # With connection "vpc", AWS machines reach the head directly, without SSH tunnels.
-    aws_tunnel = connection != "vpc"
+    # With connection "vpc", cloud machines reach the head directly, without SSH tunnels.
+    tunnel = connection != "vpc"
 
     joining_types = {}
-    for result, ip_map, tunnel in ((aws_result, aws_ip_map, aws_tunnel),
-                                   (gcp_result, gcp_ip_map, True)):
+    for result, ip_map in ((aws_result, aws_ip_map), (gcp_result, gcp_ip_map)):
         if result is None or not ip_map:
             continue
         node_configs = result[0]

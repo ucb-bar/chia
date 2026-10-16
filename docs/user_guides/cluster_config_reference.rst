@@ -353,6 +353,14 @@ CHIA can provision public-cloud machines and join them to the cluster.
 Declare them under ``aws_nodes`` (EC2) and/or ``gcp_nodes`` (Compute
 Engine); everything downstream of provisioning is provider-agnostic.
 
+.. warning::
+
+   Ray has no login: anyone who can reach a Ray port can run jobs on your
+   cluster. Never run a CHIA cluster on machines that open other ports to the
+   internet. On AWS and on GCP, CHIA opens only SSH (port 22) and never a Ray
+   port. You are responsible for not opening other ports in other ways, for
+   example with your own security groups or firewall rules.
+
 **How cloud workers connect.** The top-level ``connection`` setting decides:
 
 .. list-table::
@@ -362,9 +370,10 @@ Engine); everything downstream of provisioning is provider-agnostic.
    * - ``connection``
      - Cloud workers reach the head
    * - ``vpc`` (default)
-     - Directly, over private IPs. The head must be an EC2 machine in the same
-       region, and ``provider.head_ip`` its private IP. CHIA launches the
-       workers in the head's VPC. AWS only.
+     - Directly, over private IPs. The head runs in the workers' cloud (an EC2
+       machine for ``aws_nodes``, a GCP VM for ``gcp_nodes``), and
+       ``provider.head_ip`` is its private IP. CHIA launches the workers in the
+       head's network.
    * - ``tunnel``
      - Over SSH tunnels from the head, so the head can be anywhere (a laptop,
        an on-prem server). Traffic between workers goes through the head.
@@ -373,14 +382,14 @@ Engine); everything downstream of provisioning is provider-agnostic.
        it is the default when the config has one. See `Tailnet (tailscale)
        clusters`_.
 
-* A head on EC2 uses ``vpc``. A head outside AWS uses ``ts_user``
+* Head on EC2 or GCP: use ``vpc``. Head anywhere else: use ``ts_user``
   (recommended) or ``tunnel``.
-* ``gcp_nodes`` need ``tunnel`` or ``ts_user``.
+* With ``vpc``, a cluster uses one cloud: ``aws_nodes`` or ``gcp_nodes``.
 * Machines that a job launches at runtime with ``AWSManager`` follow the same
   setting (``vpc`` or ``tunnel``).
-* CHIA creates one security group for the cluster's AWS machines, and
-  ``chia down`` deletes it. With ``vpc``, it admits only the cluster's machines,
-  the head included.
+* CHIA closes the cluster's cloud machines to all traffic except the cluster's
+  own and SSH from the head: with a security group on AWS, with firewall rules
+  on GCP. ``chia down`` deletes them.
 * With ``tunnel``, ``aws: vpc_id`` chooses the workers' VPC (default: the
   account's default VPC).
 
@@ -481,9 +490,11 @@ gcp_nodes
            spot: true
            disk_size_gb: 100
 
-``project`` (required), ``zone`` (default ``us-central1-a``), and ``network`` /
-``subnetwork`` (default to the project's ``default`` VPC) are section-level keys.
-Every other key lives under a named node type:
+``project`` (required), ``zone`` (default ``us-central1-a``), ``network`` and
+``subnetwork`` are section-level keys. With ``vpc``, the workers go in the
+head's network; otherwise in ``network`` (default ``default``). Set
+``subnetwork`` only when a region has several subnets. Every other key lives
+under a named node type:
 
 .. list-table::
    :header-rows: 1
