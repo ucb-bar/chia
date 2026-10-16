@@ -159,7 +159,7 @@ cluster's ``worker_start_ray_commands``:
 
    worker_start_ray_commands:
        - ray stop
-       - ray start --address=$RAY_HEAD_IP:6379
+       - ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT
 
 A few practical notes on the ``docker:`` block (full reference:
 :doc:`/user_guides/cluster_config_reference`):

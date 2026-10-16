@@ -541,6 +541,12 @@ def _resolve_connection(raw: dict) -> str:
     if connection != "ts_user" and raw.get("tailnet") is not None:
         logger.warning(f"connection is {connection}, so the tailnet: section is ignored")
         raw.pop("tailnet")
+    # Their workers reach the head on another port than the head's own, so a fixed
+    # port fails; stop before anything launches.
+    if connection in ("tunnel", "ts_user") and any(
+            re.search(r"\$\{?RAY_HEAD_IP\}?:\d", c) for c in raw.get("worker_start_ray_commands") or []):
+        raise ConfigError(f"connection: {connection} workers must start Ray with "
+                          f"--address=$RAY_HEAD_IP:$RAY_HEAD_PORT, not a fixed port")
     raw["connection"] = connection   # so later reads of raw see the default too
     return connection
 
