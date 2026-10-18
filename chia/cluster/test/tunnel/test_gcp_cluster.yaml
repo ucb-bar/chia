@@ -80,4 +80,4 @@ head_start_ray_commands:
     - ulimit -c unlimited && ray start --head --port=6379
 worker_start_ray_commands:
     - ray stop
-    - ray start --address=$RAY_HEAD_IP:6379
+    - ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT

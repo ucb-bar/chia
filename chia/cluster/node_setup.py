@@ -665,9 +665,8 @@ def build_worker_script(
 
     When *tunnel_config* is provided the worker is behind an SSH tunnel:
 
-    - ``RAY_HEAD_IP`` is set to the tunnel IP so Ray connects via the
-      reverse-tunnelled GCS port.
-    - ``ray start --address`` is rewritten to ``<tunnel_ip>:<gcs_tunnel_port>``.
+    - ``RAY_HEAD_IP`` and ``RAY_HEAD_PORT`` are set to the tunnel IP and
+      ``gcs_tunnel_port``, so Ray connects via the reverse-tunnelled GCS port.
     - ``--node-ip-address`` is set to the tunnel IP.
     - Ray ports and tool ports are pinned to match the SSH tunnel forwards.
 
@@ -703,6 +702,7 @@ def build_worker_script(
         tn = config.tailnet_config
         adv_ip = tailnet_alloc.advertise_ip
         script.append(f"export RAY_HEAD_IP={tn.head_advertise_ip}")
+        script.append(f"export RAY_HEAD_PORT={tn.gcs_port}")
         script.append(f"export CHIA_TOOL_BASE_PORT={tailnet_alloc.tool_port_min}")
         script.append(f"export CHIA_TOOL_MAX_PORT={tailnet_alloc.tool_port_max}")
         # Tools on this worker advertise its loopback IP — reachable from
@@ -716,6 +716,7 @@ def build_worker_script(
     elif tunnel_config is not None:
         tun_ip = tunnel_config.tunnel_ip
         script.append(f"export RAY_HEAD_IP={tun_ip}")
+        script.append(f"export RAY_HEAD_PORT={tunnel_config.gcs_tunnel_port}")
         script.append(f"export CHIA_TOOL_BASE_PORT={tunnel_config.tool_port_min}")
         script.append(f"export CHIA_TOOL_MAX_PORT={tunnel_config.tool_port_max}")
         if head_ip:
@@ -723,17 +724,20 @@ def build_worker_script(
             script.append(f"export CHIA_TOOL_RELAY_HOST={_RELAY_IP}")
     else:
         script.append(f"export RAY_HEAD_IP={config.head_ip}")
+        script.append(f"export RAY_HEAD_PORT={config.head_gcs_port}")
 
     for cmd in config.worker_start_ray_commands:
         if "ray stop" in cmd and (is_head_ip or skip_ray_stop):
             continue
         if "ray start" in cmd and "--address" in cmd:
             cmd = f"{cmd} --resources='{resources_json}'"
+            # These workers reach the head on another port than the head's own.
+            if ((tailnet_alloc is not None or tunnel_config is not None)
+                    and re.search(r"\$\{?RAY_HEAD_IP\}?:\d", cmd)):
+                raise ValueError(
+                    f"{ip}: a tunnel or Tailscale worker must start Ray with "
+                    f"--address=$RAY_HEAD_IP:$RAY_HEAD_PORT, not a fixed port")
             if tailnet_alloc is not None:
-                cmd = cmd.replace(
-                    "--address=$RAY_HEAD_IP:6379",
-                    f"--address={tn.head_advertise_ip}:{tn.gcs_port}",
-                )
                 cmd += (
                     f" --node-ip-address={adv_ip}"
                     f" --node-manager-port={tailnet_alloc.node_manager_port}"
@@ -742,10 +746,6 @@ def build_worker_script(
                     f" --max-worker-port={tailnet_alloc.worker_port_max}"
                 )
             elif tunnel_config is not None:
-                cmd = cmd.replace(
-                    "--address=$RAY_HEAD_IP:6379",
-                    f"--address={tun_ip}:{tunnel_config.gcs_tunnel_port}",
-                )
                 cmd += f" --node-ip-address={tun_ip}"
                 cmd += (
                     f" --node-manager-port={tunnel_config.ray_node_manager_port}"

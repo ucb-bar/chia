@@ -9,9 +9,8 @@
 #   chia up chia/cluster/test/vpc/test_vpc_cluster.yaml
 #   python -m pytest chia/cluster/test/vpc/test_vpc_cluster.py -s
 #   chia down chia/cluster/test/vpc/test_vpc_cluster.yaml
-# To test SSH tunnels, do the same with a copy that adds "connection: tunnel" and
-# "tunnel_defaults: {gcs_tunnel_port: 6395}" (chia up rewrites only port 6379 for tunnels),
-# and set CHIA_TEST_CLUSTER to the copy for pytest.
+# To test SSH tunnels, do the same with a copy that adds "connection: tunnel", and set
+# CHIA_TEST_CLUSTER to the copy for pytest.
 cluster_name: vpc_test
 
 # For the machine that the test launches with AWSManager.
@@ -57,4 +56,4 @@ head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
 head_start_ray_commands:
     - ray start --head --port=6395 --include-dashboard=True --dashboard-port=8295 --ray-client-server-port=20035 --dashboard-agent-listen-port=0 --min-worker-port=21500 --max-worker-port=21549
 worker_start_ray_commands:
-    - ray start --address=$RAY_HEAD_IP:6395 --dashboard-agent-listen-port=0
+    - ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT --dashboard-agent-listen-port=0
