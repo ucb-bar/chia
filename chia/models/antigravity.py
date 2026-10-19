@@ -281,9 +281,6 @@ class AntigravityLLM(LLMCallBase):
         self._session_transcript: bytes | None = None
         self._session_transcript_path: str | None = None
 
-        self.logger.warning(
-            "AntigravityLLM is experimental and has not been production-validated."
-        )
         if self.model is None:
             self.logger.info(
                 "AntigravityLLM model is unset; agy will use its configured default model."
