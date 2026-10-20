@@ -78,6 +78,26 @@ def _dispatch_ray(ray_argv, cluster, *, apply_overrides):
     cmd_ray_passthrough(ray_argv, cluster=cluster)
 
 
+def _ray_completer(ray_command):
+    """Tab completer for ``chia <command> ...``, which chia forwards to
+    ``ray <ray_command> ...``: it asks Ray's own (click) completion."""
+    def complete(prefix, parsed_args, **kwargs):
+        import os
+        import shlex
+        import subprocess
+
+        words = list(parsed_args.ray_args)
+        if words and words[-1] == "--chia-cluster":
+            return []           # its value is a file, which the shell completes
+        _, words = _extract_cluster_opt(words)      # chia's option, not Ray's
+        words = ["ray", *ray_command, *words, prefix]
+        env = dict(os.environ, _RAY_COMPLETE="bash_complete", COMP_CWORD=str(len(words) - 1),
+                   COMP_WORDS=" ".join(shlex.quote(w) for w in words))
+        out = subprocess.run(["ray"], env=env, capture_output=True, text=True).stdout
+        return [line.split(",", 1)[1] for line in out.splitlines() if line.startswith("plain,")]
+    return complete
+
+
 def main():
     argv = sys.argv[1:]
 
@@ -198,7 +218,12 @@ def main():
     for name, help_text in _RAY_BACKED_HELP.items():
         help_text += "; supports --chia-cluster PATH" if name != "ray" \
             else ", optionally pinned with --chia-cluster PATH"
-        subparsers.add_parser(name, add_help=False, help=help_text)
+        # These commands take only Ray's words, options included, so no prefix character
+        # marks an option of chia's here. Only Tab completion parses them: chia forwards
+        # them to Ray before argparse sees them.
+        ray_parser = subparsers.add_parser(name, add_help=False, help=help_text, prefix_chars="\0")
+        ray_parser.add_argument("ray_args", nargs=argparse.REMAINDER).completer = \
+            _ray_completer([] if name == "ray" else [name])
 
     # chia viz-profile
     viz_profile_parser = subparsers.add_parser(
