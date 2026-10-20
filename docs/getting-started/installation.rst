@@ -77,6 +77,16 @@ Optional extras
    # From a development clone
    pip install -e "/path/to/chia[metrics,postgres]"
 
+Shell completion
+----------------
+
+To complete ``chia`` commands with the Tab key in bash or zsh, add this line to ``~/.bashrc`` or
+``~/.zshrc``:
+
+.. code-block:: bash
+
+   eval "$(register-python-argcomplete chia)"
+
 Core dependencies
 -----------------
 

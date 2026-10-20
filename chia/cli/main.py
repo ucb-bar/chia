@@ -1,3 +1,4 @@
+# PYTHON_ARGCOMPLETE_OK
 import argparse
 import sys
 
@@ -79,20 +80,6 @@ def _dispatch_ray(ray_argv, cluster, *, apply_overrides):
 
 def main():
     argv = sys.argv[1:]
-
-    # `chia ray ...` — raw ray gateway: forward everything after `ray` to the
-    # ray CLI verbatim, no chia overrides.
-    if argv and argv[0] == "ray":
-        cluster, ray_argv = _extract_cluster_opt(argv[1:])
-        _dispatch_ray(ray_argv, cluster, apply_overrides=False)
-        return
-
-    # Promoted ray commands (`chia status/list/job ...`): proxy to ray, but let
-    # chia override specific paths like `job stop`
-    if argv and argv[0] in PROMOTED_RAY_COMMANDS:
-        cluster, ray_argv = _extract_cluster_opt(argv)
-        _dispatch_ray(ray_argv, cluster, apply_overrides=True)
-        return
 
     parser = argparse.ArgumentParser(
         prog="chia",
@@ -244,6 +231,27 @@ def main():
     viz_profile_parser.add_argument(
         "--x-scale", type=float, default=0.5,
         help="Horizontal inches per second of wall-clock time (default: 0.5)")
+
+    # Shell completion: when the shell asks, this prints the completions and exits.
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
+
+    # `chia ray ...` — raw ray gateway: forward everything after `ray` to the
+    # ray CLI verbatim, no chia overrides.
+    if argv and argv[0] == "ray":
+        cluster, ray_argv = _extract_cluster_opt(argv[1:])
+        _dispatch_ray(ray_argv, cluster, apply_overrides=False)
+        return
+
+    # Promoted ray commands (`chia status/list/job ...`): proxy to ray, but let
+    # chia override specific paths like `job stop`
+    if argv and argv[0] in PROMOTED_RAY_COMMANDS:
+        cluster, ray_argv = _extract_cluster_opt(argv)
+        _dispatch_ray(ray_argv, cluster, apply_overrides=True)
+        return
 
     args = parser.parse_args(argv)
 
