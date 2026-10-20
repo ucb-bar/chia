@@ -89,7 +89,13 @@ def _ray_completer(ray_command):
         words = list(parsed_args.ray_args)
         if words and words[-1] == "--chia-cluster":
             return []           # its value is a file, which the shell completes
-        _, words = _extract_cluster_opt(words)      # chia's option, not Ray's
+        cluster, words = _extract_cluster_opt(words)      # chia's option, not Ray's
+        if ray_command == ["status"] and cluster is None:
+            # chia status [NAME]: a first word that is not an option names a chia cluster.
+            if not words and not prefix.startswith("-"):
+                from chia.cluster import records
+                return [r["name"] for r in records.load_all()]
+            words = words[1:] if words and not words[0].startswith("-") else words
         words = ["ray", *ray_command, *words, prefix]
         env = dict(os.environ, _RAY_COMPLETE="bash_complete", COMP_CWORD=str(len(words) - 1),
                    COMP_WORDS=" ".join(shlex.quote(w) for w in words))
