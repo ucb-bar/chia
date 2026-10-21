@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import os
 import socket
 import sys
 
+from chia.cluster import records
 from chia.cluster.config import (
     ClusterConfig, ConfigError, NodeAssignment,
     apply_cloud_network_mode, assign_nodes, build_config, load_raw_config,
@@ -401,6 +403,14 @@ def cmd_up(args):
     if args.add:
         return _cmd_up_add(args, raw, aws_result, gcp_result, logger)
 
+    # Two clusters with one name would share chia's record, cloud tags and groups.
+    record = records.load(raw.get("cluster_name", "default"))
+    if (record and record["cluster_file"] != os.path.abspath(args.config_file)
+            and records.is_up(record["head_address"])):
+        logger.error(f"Cluster '{record['name']}' is already up, from {record['cluster_file']}; "
+                     f"give this cluster another cluster_name")
+        sys.exit(1)
+
     # --- Normal chia up flow ---
     aws_ip_map: dict[str, list[str]] = {}
     gcp_ip_map: dict[str, list[str]] = {}
@@ -519,3 +529,4 @@ def cmd_up(args):
         logger.error(f"Cluster bring-up failed: {e}")
         _warn_running()
         sys.exit(1)
+    records.save(config.cluster_name, args.config_file, config.head_ray_address)

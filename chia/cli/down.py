@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+from chia.cluster import records
 from chia.cluster.config import (
     ClusterConfig, ConfigError, NodeAssignment,
     apply_cloud_network_mode, assign_nodes, build_config, load_raw_config,
@@ -9,7 +10,7 @@ from chia.cluster.config import (
     _expand_node_placeholders,
 )
 from chia.cluster.log import setup_logging
-from chia.cluster.node_setup import tear_down_cluster
+from chia.cluster.node_setup import head_ray_is_up, tear_down_cluster
 
 
 def _print_teardown_plan(config: ClusterConfig, assignments: list[NodeAssignment],
@@ -92,28 +93,33 @@ def cmd_down(args):
     if getattr(args, "scoped", None) is False:
         config.scoped_teardown = False
 
-    try:
-        assignments = assign_nodes(config)
-    except ConfigError as e:
-        logger.error(f"Node assignment error: {e}")
-        sys.exit(1)
-
-    _print_teardown_plan(config, assignments,
-                         cloud_instance_count=cloud_instance_count)
-
-    if not args.yes:
-        if input("Tear down this cluster? [y/N] ").lower() != "y":
-            print("Aborted.")
-            return
-
-    # Ray teardown first (graceful stop on workers, kill tunnels)
-    try:
-        tear_down_cluster(config)
-    except Exception as e:
-        logger.error(f"Cluster teardown failed: {e}")
-        if aws_result is None and gcp_result is None and "aws" not in raw:
+    # No running cloud machine and no Ray head: the cluster is already down. The
+    # cloud cleanup below still removes what an earlier run may have left.
+    if not ip_map and head_ray_is_up(config) is False:
+        logger.warning(f"Cluster '{config.cluster_name}' is not up.")
+    else:
+        try:
+            assignments = assign_nodes(config)
+        except ConfigError as e:
+            logger.error(f"Node assignment error: {e}")
             sys.exit(1)
-        logger.warning("Proceeding with cloud instance termination anyway.")
+
+        _print_teardown_plan(config, assignments,
+                             cloud_instance_count=cloud_instance_count)
+
+        if not args.yes:
+            if input("Tear down this cluster? [y/N] ").lower() != "y":
+                print("Aborted.")
+                return
+
+        # Ray teardown first (graceful stop on workers, kill tunnels)
+        try:
+            tear_down_cluster(config)
+        except Exception as e:
+            logger.error(f"Cluster teardown failed: {e}")
+            if aws_result is None and gcp_result is None and "aws" not in raw:
+                sys.exit(1)
+            logger.warning("Proceeding with cloud instance termination anyway.")
 
     # Terminate AWS instances and clean up the security group
     if aws_result is not None:
@@ -155,3 +161,5 @@ def cmd_down(args):
             cleanup_firewall(cluster_name, gcp_project)
         except Exception as e:
             logger.error(f"Firewall cleanup failed: {e}")
+
+    records.remove(cluster_name)

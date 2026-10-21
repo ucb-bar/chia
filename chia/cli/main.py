@@ -1,3 +1,4 @@
+# PYTHON_ARGCOMPLETE_OK
 import argparse
 import sys
 
@@ -48,9 +49,11 @@ def _find_override(ray_argv):
     can be chia-native while ``job submit`` falls through to ray.
     """
     from chia.cli.job import run_job_stop
+    from chia.cli.status import run_status
 
     overrides = {
         ("job", "stop"): run_job_stop,
+        ("status",): run_status,
     }
     for depth in (2, 1):
         handler = overrides.get(tuple(ray_argv[:depth]))
@@ -75,22 +78,63 @@ def _dispatch_ray(ray_argv, cluster, *, apply_overrides):
     cmd_ray_passthrough(ray_argv, cluster=cluster)
 
 
+def _ray_completer(ray_command):
+    """Tab completer for ``chia <command> ...``, which chia forwards to
+    ``ray <ray_command> ...``: it asks Ray's own (click) completion."""
+    def complete(prefix, parsed_args, **kwargs):
+        import os
+        import shlex
+        import subprocess
+
+        words = list(parsed_args.ray_args)
+        if words and words[-1] == "--chia-cluster":
+            # Its value: the name of a cluster that chia brought up, or a cluster file.
+            from argcomplete.completers import FilesCompleter
+            from chia.cluster import records
+            return [r["name"] for r in records.load_all()] + list(FilesCompleter()(prefix))
+        _, words = _extract_cluster_opt(words)      # chia's option, not Ray's
+        words = ["ray", *ray_command, *words, prefix]
+        env = dict(os.environ, _RAY_COMPLETE="bash_complete", COMP_CWORD=str(len(words) - 1),
+                   COMP_WORDS=" ".join(shlex.quote(w) for w in words))
+        out = subprocess.run(["ray"], env=env, capture_output=True, text=True).stdout
+        return [line.split(",", 1)[1] for line in out.splitlines() if line.startswith("plain,")]
+    return complete
+
+
+# `conda activate` runs this script: it turns on Tab completion for chia in interactive bash,
+# and in zsh once zsh's completion system is loaded.
+_CONDA_COMPLETION_SCRIPT = """\
+# Written by chia: Tab completion for chia in this conda environment.
+case $- in
+    *i*) if [ -x "$CONDA_PREFIX/bin/chia" ] && [ -x "$CONDA_PREFIX/bin/register-python-argcomplete" ] &&
+            { [ -n "${BASH_VERSION:-}" ] || type compdef >/dev/null 2>&1; }; then
+             eval "$("$CONDA_PREFIX/bin/register-python-argcomplete" chia)"
+         fi ;;
+esac
+"""
+
+
+def _turn_on_conda_completion():
+    """In a conda environment, write the script that ``conda activate`` runs to turn on Tab
+    completion, once. Outside conda, or when chia cannot write there, do nothing."""
+    import os
+
+    if not os.path.isdir(os.path.join(sys.prefix, "conda-meta")):
+        return
+    path = os.path.join(sys.prefix, "etc", "conda", "activate.d", "chia-completion.sh")
+    if os.path.exists(path):
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(_CONDA_COMPLETION_SCRIPT)
+    except OSError:
+        return
+    print(f"chia: Tab completion starts at the next 'conda activate' (script: {path})", file=sys.stderr)
+
+
 def main():
     argv = sys.argv[1:]
-
-    # `chia ray ...` — raw ray gateway: forward everything after `ray` to the
-    # ray CLI verbatim, no chia overrides.
-    if argv and argv[0] == "ray":
-        cluster, ray_argv = _extract_cluster_opt(argv[1:])
-        _dispatch_ray(ray_argv, cluster, apply_overrides=False)
-        return
-
-    # Promoted ray commands (`chia status/list/job ...`): proxy to ray, but let
-    # chia override specific paths like `job stop`
-    if argv and argv[0] in PROMOTED_RAY_COMMANDS:
-        cluster, ray_argv = _extract_cluster_opt(argv)
-        _dispatch_ray(ray_argv, cluster, apply_overrides=True)
-        return
 
     parser = argparse.ArgumentParser(
         prog="chia",
@@ -122,6 +166,8 @@ def main():
                              help="Use a host-global 'ray stop' instead of "
                                   "stopping only this cluster's Ray processes "
                                   "(overrides scoped_teardown in the config)")
+
+    subparsers.add_parser("clusters", help="List the clusters that chia brought up on this machine")
 
     # chia viz
     viz_parser = subparsers.add_parser("viz", help="Visualize a Chia loop graph")
@@ -199,15 +245,20 @@ def main():
                            help="Enable verbose (DEBUG) logging")
 
     _RAY_BACKED_HELP = {
-        "status": "Show cluster status (proxies to `ray status`)",
+        "status": "Show a chia cluster's status: chia status [NAME] (proxies to `ray status`)",
         "list": "List cluster resources (proxies to `ray list`)",
         "job": "Ray job commands (`stop` is chia-augmented; others proxy to `ray job`)",
         "ray": "Run any ray command (e.g. `chia ray status`)",
     }
     for name, help_text in _RAY_BACKED_HELP.items():
-        help_text += "; supports --chia-cluster PATH" if name != "ray" \
-            else ", optionally pinned with --chia-cluster PATH"
-        subparsers.add_parser(name, add_help=False, help=help_text)
+        help_text += "; supports --chia-cluster FILE|NAME" if name != "ray" \
+            else ", optionally pinned with --chia-cluster FILE|NAME"
+        # These commands take only Ray's words, options included, so no prefix character
+        # marks an option of chia's here. Only Tab completion parses them: chia forwards
+        # them to Ray before argparse sees them.
+        ray_parser = subparsers.add_parser(name, add_help=False, help=help_text, prefix_chars="\0")
+        ray_parser.add_argument("ray_args", nargs=argparse.REMAINDER).completer = \
+            _ray_completer([] if name == "ray" else [name])
 
     # chia viz-profile
     viz_profile_parser = subparsers.add_parser(
@@ -241,6 +292,28 @@ def main():
         "--x-scale", type=float, default=0.5,
         help="Horizontal inches per second of wall-clock time (default: 0.5)")
 
+    # Shell completion: when the shell asks, this prints the completions and exits.
+    try:
+        import argcomplete
+        argcomplete.autocomplete(parser)
+        _turn_on_conda_completion()
+    except ImportError:
+        pass
+
+    # `chia ray ...` — raw ray gateway: forward everything after `ray` to the
+    # ray CLI verbatim, no chia overrides.
+    if argv and argv[0] == "ray":
+        cluster, ray_argv = _extract_cluster_opt(argv[1:])
+        _dispatch_ray(ray_argv, cluster, apply_overrides=False)
+        return
+
+    # Promoted ray commands (`chia status/list/job ...`): proxy to ray, but let
+    # chia override specific paths like `job stop`
+    if argv and argv[0] in PROMOTED_RAY_COMMANDS:
+        cluster, ray_argv = _extract_cluster_opt(argv)
+        _dispatch_ray(ray_argv, cluster, apply_overrides=True)
+        return
+
     args = parser.parse_args(argv)
 
     if args.command == "up":
@@ -249,6 +322,9 @@ def main():
     elif args.command == "down":
         from chia.cli.down import cmd_down
         cmd_down(args)
+    elif args.command == "clusters":
+        from chia.cli.clusters import cmd_clusters
+        cmd_clusters(args)
     elif args.command == "viz":
         from chia.cli.viz_cmd import cmd_viz
         cmd_viz(args)
