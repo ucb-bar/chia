@@ -88,14 +88,11 @@ def _ray_completer(ray_command):
 
         words = list(parsed_args.ray_args)
         if words and words[-1] == "--chia-cluster":
-            return []           # its value is a file, which the shell completes
-        cluster, words = _extract_cluster_opt(words)      # chia's option, not Ray's
-        if ray_command == ["status"] and cluster is None:
-            # chia status [NAME]: a first word that is not an option names a chia cluster.
-            if not words and not prefix.startswith("-"):
-                from chia.cluster import records
-                return [r["name"] for r in records.load_all()]
-            words = words[1:] if words and not words[0].startswith("-") else words
+            # Its value: the name of a cluster that chia brought up, or a cluster file.
+            from argcomplete.completers import FilesCompleter
+            from chia.cluster import records
+            return [r["name"] for r in records.load_all()] + list(FilesCompleter()(prefix))
+        _, words = _extract_cluster_opt(words)      # chia's option, not Ray's
         words = ["ray", *ray_command, *words, prefix]
         env = dict(os.environ, _RAY_COMPLETE="bash_complete", COMP_CWORD=str(len(words) - 1),
                    COMP_WORDS=" ".join(shlex.quote(w) for w in words))
@@ -254,8 +251,8 @@ def main():
         "ray": "Run any ray command (e.g. `chia ray status`)",
     }
     for name, help_text in _RAY_BACKED_HELP.items():
-        help_text += "; supports --chia-cluster PATH" if name != "ray" \
-            else ", optionally pinned with --chia-cluster PATH"
+        help_text += "; supports --chia-cluster FILE|NAME" if name != "ray" \
+            else ", optionally pinned with --chia-cluster FILE|NAME"
         # These commands take only Ray's words, options included, so no prefix character
         # marks an option of chia's here. Only Tab completion parses them: chia forwards
         # them to Ray before argparse sees them.
