@@ -104,6 +104,38 @@ def _ray_completer(ray_command):
     return complete
 
 
+# `conda activate` runs this script: it turns on Tab completion for chia in interactive bash,
+# and in zsh once zsh's completion system is loaded.
+_CONDA_COMPLETION_SCRIPT = """\
+# Written by chia: Tab completion for chia in this conda environment.
+case $- in
+    *i*) if [ -x "$CONDA_PREFIX/bin/chia" ] && [ -x "$CONDA_PREFIX/bin/register-python-argcomplete" ] &&
+            { [ -n "${BASH_VERSION:-}" ] || type compdef >/dev/null 2>&1; }; then
+             eval "$("$CONDA_PREFIX/bin/register-python-argcomplete" chia)"
+         fi ;;
+esac
+"""
+
+
+def _turn_on_conda_completion():
+    """In a conda environment, write the script that ``conda activate`` runs to turn on Tab
+    completion, once. Outside conda, or when chia cannot write there, do nothing."""
+    import os
+
+    if not os.path.isdir(os.path.join(sys.prefix, "conda-meta")):
+        return
+    path = os.path.join(sys.prefix, "etc", "conda", "activate.d", "chia-completion.sh")
+    if os.path.exists(path):
+        return
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(_CONDA_COMPLETION_SCRIPT)
+    except OSError:
+        return
+    print(f"chia: Tab completion starts at the next 'conda activate' (script: {path})", file=sys.stderr)
+
+
 def main():
     argv = sys.argv[1:]
 
@@ -267,6 +299,7 @@ def main():
     try:
         import argcomplete
         argcomplete.autocomplete(parser)
+        _turn_on_conda_completion()
     except ImportError:
         pass
 

@@ -80,8 +80,12 @@ Optional extras
 Shell completion
 ----------------
 
-To complete ``chia`` commands with the Tab key in bash or zsh, add this line to ``~/.bashrc`` or
-``~/.zshrc``:
+In a conda environment, the Tab key completes ``chia`` commands in bash and zsh with no setup. The
+first time ``chia`` runs, it writes ``etc/conda/activate.d/chia-completion.sh`` into the environment,
+and completion starts at the next ``conda activate``. zsh also needs its completion system
+(``compinit``), which most zsh setups load.
+
+Outside conda, add this line to ``~/.bashrc`` or ``~/.zshrc``:
 
 .. code-block:: bash
 
