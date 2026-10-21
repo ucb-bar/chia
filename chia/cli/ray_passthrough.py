@@ -6,9 +6,9 @@ enumerated here.  Using an explicit ``ray`` gateway — rather than an implicit
 fallback on unknown commands — keeps chia's own ``up``/``down`` from shadowing
 ``ray up``/``ray down``, and keeps ``ray``'s full help reachable.
 
-An optional chia-level ``--chia-cluster path/to/cluster.yaml`` — accepted
-either before or after the ray command — pins ``RAY_ADDRESS`` to that cluster's
-head GCS address (``head_ip:port``, parsed from the YAML).  On a host running
+An optional chia-level ``--chia-cluster`` — a cluster file, or the name of a
+cluster that chia brought up, accepted either before or after the ray command —
+pins ``RAY_ADDRESS`` to that cluster's head GCS address (``head_ip:port``).  On a host running
 more than one cluster this is what lets ``chia ray status --chia-cluster
 b.yaml`` target cluster *b* instead of whichever Ray instance ``ray``'s own
 auto-discovery would pick.
@@ -21,12 +21,25 @@ import subprocess
 import sys
 
 
-def resolve_cluster_address(cluster_path: str) -> str:
-    """Parse *cluster_path* and return its head GCS address (``head_ip:port``)."""
-    from chia.cluster.config import build_config, load_raw_config
+def resolve_cluster(cluster: str) -> tuple[str, str]:
+    """The name and head GCS address (``head_ip:port``) of *cluster*: a cluster file, or
+    the name of a cluster that chia brought up (see chia/cluster/records.py)."""
+    if os.path.isfile(cluster):
+        from chia.cluster.config import build_config, load_raw_config
 
-    config = build_config(load_raw_config(cluster_path))
-    return config.head_ray_address
+        config = build_config(load_raw_config(cluster))
+        return config.cluster_name, config.head_ray_address
+    from chia.cluster import records
+
+    record = records.load(cluster)
+    if record is None:
+        raise ValueError(f"no cluster file or chia cluster named '{cluster}'")
+    return record["name"], record["head_address"]
+
+
+def resolve_cluster_address(cluster: str) -> str:
+    """The head GCS address (``head_ip:port``) of *cluster*, a cluster file or name."""
+    return resolve_cluster(cluster)[1]
 
 
 def cmd_ray_passthrough(ray_argv: list[str], cluster: str | None = None) -> None:
@@ -48,7 +61,7 @@ def cmd_ray_passthrough(ray_argv: list[str], cluster: str | None = None) -> None
     # stderr so it never contaminates the forwarded command's stdout (pipes/JSON).
     print(f"Chia: forwarding to Ray's CLI\n", file=sys.stderr)
     if ("--help" in ray_argv) or ("-h" in ray_argv):
-        print(f"Chia Ray passthrough options:\n  --chia-cluster  None   Path to a chia cluster yaml file\n")
+        print(f"Chia Ray passthrough options:\n  --chia-cluster  None   A chia cluster yaml file, or a cluster name from `chia clusters`\n")
     try:
         result = subprocess.run(["ray", *ray_argv], env=env)
     except FileNotFoundError:

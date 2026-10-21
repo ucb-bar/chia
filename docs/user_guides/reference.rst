@@ -35,6 +35,13 @@ Bring up a Chia/Ray cluster from a YAML config.
 
 Tear down the cluster. Flags: ``-y/--yes``, ``-v/--verbose``.
 
+``chia clusters``
+~~~~~~~~~~~~~~~~~~
+
+List the clusters that ``chia up`` brought up on this machine: name, status (``up`` or ``not up``),
+head address and cluster file. chia keeps one record per cluster in ``~/.local/state/chia/clusters``
+(``$XDG_STATE_HOME/chia/clusters`` if set), and ``chia down`` deletes it.
+
 Visualization
 -------------
 
@@ -89,15 +96,18 @@ Cluster Status
 ``chia status [...]``
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Print cluster status. Proxies to ``ray status``.
+Print the status of a chia cluster: the one that ``--chia-cluster`` gives, or else the only chia
+cluster that is up. Proxies to ``ray status``. If the cluster is not up, it says so in one line.
+``chia ray status`` keeps Ray's own behavior.
 
 .. list-table::
    :header-rows: 1
 
    * - Flag
      - Meaning
-   * - ``--chia-cluster {path/to/cluster.yaml}``
-     - Specify the Chia cluster YAML file to target.
+   * - ``--chia-cluster {path/to/cluster.yaml|NAME}``
+     - Specify the Chia cluster to target: its YAML file, or its name from ``chia clusters``
+       (a file with that name wins).
    * - ``...``
      - all other args (including ``--help``) go to Ray.
 
@@ -112,8 +122,9 @@ List all states of a given resource. Proxies to ``ray list`` (e.g. ``chia list n
 
    * - Flag
      - Meaning
-   * - ``--chia-cluster {path/to/cluster.yaml}``
-     - Specify the Chia cluster YAML file to target.
+   * - ``--chia-cluster {path/to/cluster.yaml|NAME}``
+     - Specify the Chia cluster to target: its YAML file, or its name from ``chia clusters``
+       (a file with that name wins).
    * - ``...``
      - all other args (including ``--help``) go to Ray.
 
@@ -136,8 +147,9 @@ Ray's unmodified behavior.
 
    * - Flag
      - Meaning
-   * - ``--chia-cluster {path/to/cluster.yaml}``
-     - Specify the Chia cluster YAML file to target.
+   * - ``--chia-cluster {path/to/cluster.yaml|NAME}``
+     - Specify the Chia cluster to target: its YAML file, or its name from ``chia clusters``
+       (a file with that name wins).
    * - ``stop {job_id}``
      - Stop a job by its ID.
    * - ``...``

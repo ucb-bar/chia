@@ -16,7 +16,7 @@ def _extract_cluster_opt(ray_argv):
     To specify chia cluster in the above case, use chia ray job submit --chia-cluster foo
      -- python app.py
 
-    Returns ``(cluster_path_or_None, remaining_ray_argv)``.
+    Returns ``(cluster_or_None, remaining_ray_argv)``, the cluster a file or a name.
     """
     cluster = None
     rest = []
@@ -28,7 +28,7 @@ def _extract_cluster_opt(ray_argv):
             break
         if a == "--chia-cluster":
             if i + 1 >= len(ray_argv):
-                sys.exit("chia: --chia-cluster requires a path argument")
+                sys.exit("chia: --chia-cluster requires a cluster file or a cluster name")
             cluster = ray_argv[i + 1]
             i += 2
         elif a.startswith("--chia-cluster="):
@@ -48,9 +48,11 @@ def _find_override(ray_argv):
     can be chia-native while ``job submit`` falls through to ray.
     """
     from chia.cli.job import run_job_stop
+    from chia.cli.status import run_status
 
     overrides = {
         ("job", "stop"): run_job_stop,
+        ("status",): run_status,
     }
     for depth in (2, 1):
         handler = overrides.get(tuple(ray_argv[:depth]))
@@ -122,6 +124,8 @@ def main():
                              help="Use a host-global 'ray stop' instead of "
                                   "stopping only this cluster's Ray processes "
                                   "(overrides scoped_teardown in the config)")
+
+    subparsers.add_parser("clusters", help="List the clusters that chia brought up on this machine")
 
     # chia viz
     viz_parser = subparsers.add_parser("viz", help="Visualize a Chia loop graph")
@@ -199,7 +203,7 @@ def main():
                            help="Enable verbose (DEBUG) logging")
 
     _RAY_BACKED_HELP = {
-        "status": "Show cluster status (proxies to `ray status`)",
+        "status": "Show a chia cluster's status (proxies to `ray status`)",
         "list": "List cluster resources (proxies to `ray list`)",
         "job": "Ray job commands (`stop` is chia-augmented; others proxy to `ray job`)",
         "ray": "Run any ray command (e.g. `chia ray status`)",
@@ -249,6 +253,9 @@ def main():
     elif args.command == "down":
         from chia.cli.down import cmd_down
         cmd_down(args)
+    elif args.command == "clusters":
+        from chia.cli.clusters import cmd_clusters
+        cmd_clusters(args)
     elif args.command == "viz":
         from chia.cli.viz_cmd import cmd_viz
         cmd_viz(args)

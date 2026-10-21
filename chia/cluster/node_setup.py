@@ -128,6 +128,21 @@ def query_ray_cluster_nodes(config: ClusterConfig) -> list[dict] | None:
         return None
 
 
+def head_ray_is_up(config: ClusterConfig) -> bool | None:
+    """Whether something answers at the cluster's GCS port, checked on the head over
+    SSH: at 127.0.0.1, then at the GCS address. None if chia cannot run the check."""
+    host, _, port = _head_gcs_address(config).rpartition(":")
+    connect = "timeout 5 bash -c 'exec 3<>/dev/tcp/{}/{}'"
+    try:
+        ssh = _make_ssh(config, config.head_ip)
+        ssh.wait_for_ssh(timeout=15)
+        result = ssh.run(f"{connect.format('127.0.0.1', port)} || "
+                         f"{connect.format(host.strip('[]'), port)}", timeout=60, check=False)
+    except Exception:
+        return None
+    return result.returncode == 0
+
+
 def compute_new_assignments(
     desired: list[NodeAssignment],
     existing_nodes: list[dict],
