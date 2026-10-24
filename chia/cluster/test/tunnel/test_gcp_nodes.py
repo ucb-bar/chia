@@ -8,7 +8,7 @@ The GCP analog of ``test_aws_nodes.py``.  Two layers:
     need neither google-cloud-compute nor any credentials.
 
   * Mapping tests (``_build_instance`` / ``provision_gcp_nodes`` /
-    ``discover_gcp_nodes`` / ``ensure_ssh_firewall``) — these build/inspect real
+    ``discover_gcp_nodes`` / ``ensure_firewall``) — these build/inspect real
     ``compute_v1`` protos but mock the network clients, so they run with the
     library installed and never touch GCP.
 
@@ -262,20 +262,19 @@ class TestHelpers(unittest.TestCase):
 compute_v1 = pytest.importorskip("google.cloud.compute_v1")
 
 
-def _make_fake_cv(instances_client=None, firewalls_client=None, subnets_client=None):
+def _make_fake_cv(instances_client=None, firewalls_client=None):
     """A stand-in for compute_v1: real proto classes, fake network clients."""
     from google.cloud import compute_v1 as real
     fake = types.SimpleNamespace()
     for attr in (
         "Instance", "AttachedDisk", "AttachedDiskInitializeParams",
         "NetworkInterface", "AccessConfig", "Tags", "Metadata", "Items",
-        "Scheduling", "Allowed", "Firewall",
-        "AggregatedListInstancesRequest", "AggregatedListSubnetworksRequest",
+        "Scheduling", "Allowed", "Denied", "Firewall",
+        "AggregatedListInstancesRequest",
     ):
         setattr(fake, attr, getattr(real, attr))
     fake.InstancesClient = lambda *a, **k: instances_client
     fake.FirewallsClient = lambda *a, **k: firewalls_client
-    fake.SubnetworksClient = lambda *a, **k: subnets_client
     return fake
 
 
@@ -375,7 +374,8 @@ class TestProvisionAndDiscover:
             "chia-c-gcp-worker-1": "34.0.0.2",
         })
         monkeypatch.setattr(g, "_compute", lambda: _make_fake_cv(instances_client=ic))
-        monkeypatch.setattr(g, "ensure_ssh_firewall", lambda *a, **k: "tag")
+        monkeypatch.setattr(g, "_prepare_network", lambda *a, **k: (
+            "projects/proj/global/networks/default", {"us-central1-a": None}))
 
         cfg = g.GCPNodeConfig(machine_type="n1-standard-4", count=2,
                               ssh_public_key=pubkey)
@@ -446,46 +446,35 @@ class _FakeFirewallsClient:
         return _Op()
 
 
-class _FakeSubnetsClient:
-    def __init__(self, cidrs):
-        self._cidrs = cidrs
-
-    def aggregated_list(self, request=None):
-        from google.cloud import compute_v1 as real
-        subs = [real.Subnetwork(network="x/networks/default", ip_cidr_range=c)
-                for c in self._cidrs]
-        scoped = types.SimpleNamespace(subnetworks=subs)
-        return iter([("regions/us-central1", scoped)])
-
-
 class TestFirewall:
 
-    def test_ssh_and_intra_vpc_rules(self, monkeypatch):
+    def test_members_ssh_and_deny_rules(self, monkeypatch):
         from chia.cluster import gcp_nodes as g
         monkeypatch.setenv("CHIA_SSH_ALLOWED_CIDRS", "9.9.9.9/32")
-        monkeypatch.setenv("CHIA_ALLOW_INTRA_VPC", "true")
         fc = _FakeFirewallsClient()
-        sc = _FakeSubnetsClient(["10.128.0.0/20"])
-        monkeypatch.setattr(
-            g, "_compute",
-            lambda: _make_fake_cv(firewalls_client=fc, subnets_client=sc))
-        # avoid touching default-allow-ssh
-        monkeypatch.setattr(g, "_maybe_lockdown_default_ssh", lambda *a, **k: None)
+        monkeypatch.setattr(g, "_compute", lambda: _make_fake_cv(firewalls_client=fc))
 
-        tag = g.ensure_ssh_firewall("gcp_test", "proj", network="default")
-        assert tag == "chia-gcp-test"
-        names = {fw.name for fw in fc.inserted}
-        assert "chia-gcp-test-ssh" in names
-        assert "chia-gcp-test-internal" in names
+        g.ensure_firewall("gcp_test", "proj", "projects/proj/global/networks/default",
+                          ssh_from_head=True)
+        rules = {fw.name: fw for fw in fc.inserted}
+        assert set(rules) == {"chia-gcp-test-members", "chia-gcp-test-ssh", "chia-gcp-test-deny"}
 
-        ssh_rule = next(fw for fw in fc.inserted if fw.name == "chia-gcp-test-ssh")
+        members = rules["chia-gcp-test-members"]
+        assert list(members.source_tags) == ["chia-gcp-test", "chia-gcp-test-head"]
+        assert list(members.target_tags) == ["chia-gcp-test", "chia-gcp-test-head"]
+        assert members.allowed[0].I_p_protocol == "all"
+
+        ssh_rule = rules["chia-gcp-test-ssh"]
         assert list(ssh_rule.source_ranges) == ["9.9.9.9/32"]
         assert list(ssh_rule.target_tags) == ["chia-gcp-test"]
         assert ssh_rule.allowed[0].I_p_protocol == "tcp"
         assert list(ssh_rule.allowed[0].ports) == ["22"]
 
-        internal = next(fw for fw in fc.inserted if fw.name == "chia-gcp-test-internal")
-        assert list(internal.source_ranges) == ["10.128.0.0/20"]
+        deny = rules["chia-gcp-test-deny"]
+        assert list(deny.source_ranges) == ["0.0.0.0/0"]
+        assert list(deny.target_tags) == ["chia-gcp-test"]
+        assert deny.denied[0].I_p_protocol == "all"
+        assert members.priority < deny.priority < 65534
 
 
 if __name__ == "__main__":

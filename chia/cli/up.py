@@ -14,7 +14,7 @@ from chia.cluster.log import get_logger, setup_logging
 from chia.cluster.node_setup import (
     add_nodes_to_cluster, allocate_worker_tunnels, bring_up_cluster,
     build_head_script, build_worker_script,
-    compute_new_assignments, query_ray_cluster_nodes,
+    compute_new_assignments, plan_tailnet_add, query_ray_cluster_nodes,
 )
 
 
@@ -120,7 +120,8 @@ def _print_plan(config: ClusterConfig, assignments: list[NodeAssignment],
 
 def _print_add_plan(config: ClusterConfig,
                     all_assignments: list[NodeAssignment],
-                    new_assignments: list[NodeAssignment]):
+                    new_assignments: list[NodeAssignment],
+                    tailnet_plan=None):
     new_ids = set(id(a) for a in new_assignments)
     print(f"Cluster: {config.cluster_name} (--add mode)")
     print(f"Head:    {config.head_ip} (already running)")
@@ -131,6 +132,17 @@ def _print_add_plan(config: ClusterConfig,
                       if a.node_type.docker else "")
         print(f"  [{status}] {a.ip} -> {a.node_type.name} "
               f"(resources: {a.resources}){docker_str}")
+    if tailnet_plan is not None and tailnet_plan.new:
+        tn = config.tailnet_config
+        print(f"\nTailnet (via SOCKS5 {tn.socks_proxy}), new workers:")
+        for (ip, nt_name, idx), ta in tailnet_plan.new.items():
+            print(f"  {ip} {nt_name}-{idx} advertises {ta.advertise_ip} "
+                  f"(node-mgr={ta.node_manager_port}, "
+                  f"workers={ta.worker_port_min}-{ta.worker_port_max}, "
+                  f"tools={ta.tool_port_min}-{ta.tool_port_max})")
+        live_hosts = {ip for ip, _ in tailnet_plan.live} - {config.head_ip}
+        print(f"  relays on the head and {len(live_hosts)} other machine(s) "
+              f"with live workers are hot-reloaded with the new routes")
     print(f"\nWill add {len(new_assignments)} new worker(s), "
           f"skip {len(all_assignments) - len(new_assignments)} existing worker(s)")
     print()
@@ -152,9 +164,10 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     if aws_result is not None:
         aws_nodes, region = aws_result
         from chia.cluster.aws_nodes import (
-            discover_aws_nodes, provision_missing_aws_nodes,
+            discover_aws_nodes, provision_missing_aws_nodes, vpc_settings,
         )
-        existing = discover_aws_nodes(cluster_name, region)
+        vpc_id, vpc_head_ip = vpc_settings(raw)
+        existing = discover_aws_nodes(cluster_name, region, private=vpc_head_ip is not None)
         missing = {name: cfg.count - len(existing.get(name, []))
                    for name, cfg in aws_nodes.items()
                    if cfg.count - len(existing.get(name, [])) > 0}
@@ -179,7 +192,7 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
                     return
             try:
                 aws_ip_map, aws_new_ip_map = provision_missing_aws_nodes(
-                    cluster_name, aws_nodes, region)
+                    cluster_name, aws_nodes, region, vpc_id, vpc_head_ip)
                 if aws_new_ip_map:
                     logger.info(f"New AWS nodes provisioned: {aws_new_ip_map}")
             except Exception as e:
@@ -189,10 +202,12 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     # --- GCP: discover + provision anything missing ---
     if gcp_result is not None:
         gcp_nodes, project, zone, network, subnetwork = gcp_result
+        from chia.cluster.aws_nodes import vpc_settings
         from chia.cluster.gcp_nodes import (
             discover_gcp_nodes, provision_missing_gcp_nodes,
         )
-        existing = discover_gcp_nodes(cluster_name, project)
+        vpc_head_ip = vpc_settings(raw)[1]
+        existing = discover_gcp_nodes(cluster_name, project, private=vpc_head_ip is not None)
         missing = {name: cfg.count - len(existing.get(name, []))
                    for name, cfg in gcp_nodes.items()
                    if cfg.count - len(existing.get(name, [])) > 0}
@@ -220,7 +235,8 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
                 gcp_ip_map, gcp_new_ip_map = provision_missing_gcp_nodes(
                     cluster_name, gcp_nodes, project, zone,
                     network=network, subnetwork=subnetwork,
-                    default_ssh_user=du, default_ssh_private_key=dk)
+                    default_ssh_user=du, default_ssh_private_key=dk,
+                    vpc_head_ip=vpc_head_ip)
                 if gcp_new_ip_map:
                     logger.info(f"New GCP nodes provisioned: {gcp_new_ip_map}")
             except Exception as e:
@@ -228,6 +244,7 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
                 sys.exit(1)
 
     ip_map = {**aws_ip_map, **gcp_ip_map}
+    joining_types = {}
     if (aws_result is not None or gcp_result is not None) and not ip_map:
         logger.error(
             "No cloud instances exist for this cluster. "
@@ -237,7 +254,7 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     if ip_map:
         raw = _expand_node_placeholders(raw, ip_map)
         try:
-            apply_cloud_network_mode(
+            joining_types = apply_cloud_network_mode(
                 raw, aws_result, aws_ip_map, gcp_result, gcp_ip_map,
                 require_auth_key=not args.dry_run, logger=logger)
         except ConfigError as e:
@@ -258,6 +275,8 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
         sys.exit(1)
 
     # --- Run setup on newly provisioned instances only ---
+    if not args.dry_run:
+        _append_tailscale_install(joining_types, config.tailnet_config)
     _run_cloud_setup(aws_result, aws_new_ip_map, gcp_result, gcp_new_ip_map,
                      config, logger)
 
@@ -272,12 +291,23 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
     alive_count = sum(1 for n in existing_nodes if n.get("Alive"))
     logger.info(f"Found running cluster with {alive_count} alive node(s)")
 
-    # Compute tunnel configs so tunneled workers are matched by their
-    # tunnel IP (127.0.0.x) rather than their real public IP.
-    tunnel_configs = allocate_worker_tunnels(config, assignments)
-    new_assignments = compute_new_assignments(
-        assignments, existing_nodes, tunnel_configs=tunnel_configs)
-    _print_add_plan(config, assignments, new_assignments)
+    tailnet_plan = None
+    if config.tailnet_config is not None:
+        # Tailnet workers register under loopback advertise IPs: map
+        # them back to their machines, and allocate around them.
+        try:
+            new_assignments, tailnet_plan = plan_tailnet_add(
+                config, assignments, existing_nodes)
+        except (ConfigError, RuntimeError) as e:
+            logger.error(f"Tailnet add planning failed: {e}")
+            sys.exit(1)
+    else:
+        # Compute tunnel configs so tunneled workers are matched by their
+        # tunnel IP (127.0.0.x) rather than their real public IP.
+        tunnel_configs = allocate_worker_tunnels(config, assignments)
+        new_assignments = compute_new_assignments(
+            assignments, existing_nodes, tunnel_configs=tunnel_configs)
+    _print_add_plan(config, assignments, new_assignments, tailnet_plan)
 
     if args.dry_run:
         logger.info("Dry run complete. No changes made.")
@@ -293,7 +323,7 @@ def _cmd_up_add(args, raw, aws_result, gcp_result, logger):
             return
 
     try:
-        add_nodes_to_cluster(config, new_assignments)
+        add_nodes_to_cluster(config, new_assignments, tailnet_plan=tailnet_plan)
     except Exception as e:
         logger.error(f"Add nodes failed: {e}")
         sys.exit(1)
@@ -358,6 +388,14 @@ def cmd_up(args):
     except ConfigError as e:
         logger.error(f"Cloud node config error: {e}")
         sys.exit(1)
+    if gcp_result is not None:
+        # Stop before anything launches if a GCP name would be too long.
+        from chia.cluster.gcp_nodes import check_names
+        try:
+            check_names(raw.get("cluster_name", "default"), gcp_result[0])
+        except ValueError as e:
+            logger.error(f"Cloud node config error: gcp_nodes: {e}")
+            sys.exit(1)
 
     # --add mode has its own flow: discover instead of provision
     if args.add:
@@ -382,10 +420,10 @@ def cmd_up(args):
             if not args.yes and input("Provision AWS instances? [y/N] ").lower() != "y":
                 print("Aborted.")
                 return
-            from chia.cluster.aws_nodes import provision_aws_nodes
+            from chia.cluster.aws_nodes import provision_aws_nodes, vpc_settings
             try:
                 aws_ip_map = provision_aws_nodes(
-                    raw.get("cluster_name", "default"), aws_nodes, region)
+                    raw.get("cluster_name", "default"), aws_nodes, region, *vpc_settings(raw))
                 provisioned = True
                 logger.info(f"AWS nodes provisioned: {aws_ip_map}")
             except Exception as e:
@@ -406,12 +444,14 @@ def cmd_up(args):
                 print("Aborted.")
                 return
             du, dk = _gcp_default_auth(raw)
+            from chia.cluster.aws_nodes import vpc_settings
             from chia.cluster.gcp_nodes import provision_gcp_nodes
             try:
                 gcp_ip_map = provision_gcp_nodes(
                     raw.get("cluster_name", "default"), gcp_nodes, project, zone,
                     network=network, subnetwork=subnetwork,
-                    default_ssh_user=du, default_ssh_private_key=dk)
+                    default_ssh_user=du, default_ssh_private_key=dk,
+                    vpc_head_ip=vpc_settings(raw)[1])
                 provisioned = True
                 logger.info(f"GCP nodes provisioned: {gcp_ip_map}")
             except Exception as e:

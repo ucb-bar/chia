@@ -1,0 +1,60 @@
+# Cluster for test_vpc_cluster.py. It sets no connection, so it uses "vpc", the
+# default: the head must be an EC2 machine, and HEAD_IP its private IP.
+#
+# On the head:
+#   export HEAD_IP=<the head's private IP> HEAD_SSH_KEY=<a key that logs in to the head>
+#   export EC2_KEYNAME=<EC2 key pair> EC2_SSH_KEY=<its private key>
+#   export UBUNTU_AMI=$(aws ssm get-parameter --region us-east-1 --query Parameter.Value --output text \
+#       --name /aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id)
+#   chia up chia/cluster/test/vpc/test_vpc_cluster.yaml
+#   python -m pytest chia/cluster/test/vpc/test_vpc_cluster.py -s
+#   chia down chia/cluster/test/vpc/test_vpc_cluster.yaml
+# To test SSH tunnels, do the same with a copy that adds "connection: tunnel" and
+# "tunnel_defaults: {gcs_tunnel_port: 6395}" (chia up rewrites only port 6379 for tunnels),
+# and set CHIA_TEST_CLUSTER to the copy for pytest.
+cluster_name: vpc_test
+
+# For the machine that the test launches with AWSManager.
+aws:
+    region: us-east-1
+    key_name: ${EC2_KEYNAME}
+    ssh_user: ubuntu
+    ssh_private_key: ${EC2_SSH_KEY}
+
+aws_nodes:
+    region: us-east-1
+    vpc_worker:
+        KeyName: ${EC2_KEYNAME}
+        InstanceType: t3.medium
+        count: 2
+        ImageId: ${UBUNTU_AMI}
+        ssh_user: ubuntu
+        ssh_private_key: ${EC2_SSH_KEY}
+        BlockDeviceMappings:
+            - DeviceName: /dev/sda1
+              Ebs:
+                  VolumeSize: 30
+                  VolumeType: gp3
+
+available_node_types:
+    vpc_worker:
+        resources: {"vpc_worker": 1}
+        num_workers: 2
+        docker:
+            image: "ghcr.io/ucb-bar/chia:latest"
+            container_name: "chia-vpc-test"
+        compatible_ips: ["@vpc_worker:0", "@vpc_worker:1"]
+
+provider:
+    head_ip: ${HEAD_IP}
+
+auth:
+    ssh_user: ubuntu
+    ssh_private_key: ${HEAD_SSH_KEY}
+
+head_env_commands: ["source ~/.bashrc && conda activate chia_env"]
+# Its own ports, so it runs next to any other Ray cluster on the head.
+head_start_ray_commands:
+    - ray start --head --port=6395 --include-dashboard=True --dashboard-port=8295 --ray-client-server-port=20035 --dashboard-agent-listen-port=0 --min-worker-port=21500 --max-worker-port=21549
+worker_start_ray_commands:
+    - ray start --address=$RAY_HEAD_IP:6395 --dashboard-agent-listen-port=0

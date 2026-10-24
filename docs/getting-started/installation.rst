@@ -10,19 +10,28 @@ The easiest way to get that is a dedicated conda environment. We recommend namin
    conda create -n chia_env python=3.10.19
    conda activate chia_env
 
-Clone the CHIA repository onto any machines you plan on using
+Then install CHIA from PyPI:
+
+.. code-block:: bash
+
+   pip install chialoops
+
+This installs the ``chia`` package and its dependencies. Repeat these steps on every machine you plan on using CHIA on.
+
+Installing for CHIA development
+-------------------------------
+
+If you are actively developing CHIA itself, install it from a clone of the repository in editable mode instead, so your changes take effect without reinstalling. Clone the CHIA repository onto any machines you plan on using:
 
 .. code-block:: bash
 
    git clone https://github.com/ucb-bar/chia.git
 
-Then install the package in editable mode from your clone:
+Then install the package in editable mode from your clone (inside ``chia_env``):
 
 .. code-block:: bash
 
    pip install -e /path/to/chia
-
-This installs the ``chia`` package and it's dependencies. We plan on releasing a PyPI CHIA release in the future.
 
 .. note::
    Users in the ``ucb-bar`` organization should also clone the internal node library ``ucb-bar/chia-internal-nodes``. 
@@ -60,9 +69,12 @@ Optional extras
 .. code-block:: bash
 
    # For one extra
-   pip install -e "/path/to/chia[metrics]"
-   
+   pip install "chialoops[metrics]"
+
    # For multiple extras
+   pip install "chialoops[metrics,postgres]"
+
+   # From a development clone
    pip install -e "/path/to/chia[metrics,postgres]"
 
 Core dependencies

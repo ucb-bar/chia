@@ -30,6 +30,7 @@ import gzip
 import io
 import json
 import os
+import statistics
 import sys
 import tarfile
 import threading
@@ -46,9 +47,13 @@ import ray
 from ray.util.placement_group import placement_group, remove_placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from chia.aws.config import AWSConfig
+from chia.aws.manager import start_aws_manager
 from chia.base.ChiaFunction import get
+from chia.cluster.config import load_config
 from chia.models.claude import ClaudeCodeLLM
 from chia.base.tools.BashTool import BashTool
+from chia.firesim.state_def import BuildRecipe, RunConfig
 from chia.trace.profiler import get_profiler, start_collector
 
 from common.helper_nodes import (
@@ -58,10 +63,12 @@ from common.helper_nodes import (
     parse_area_from_reports,
     run_cacti_macrocompiler_prep,
 )
+from firesim_spec.spec_eval import spec_eval
 from riscv_extensions.synth_node import run_boom_tile_synthesis
 from timing_opt.db import parse_worst_slack
 from riscv_extensions.constants import (
     ASM_TESTS,
+    CONFIG_PACKAGE,
     SYNTH_CONFIG,
     BOOM_SRC_REL,
     CACTI_PATH,
@@ -595,13 +602,63 @@ def _log_ppa(run_id, base, comp):
 
 
 # ---------------------------------------------------------------------------
+# SPEC CPU on F2 FPGAs: the stock design vs the converged design
+# ---------------------------------------------------------------------------
+
+SPEC = "spec06-int-ref"
+# The synthesis config as a FireSim target (as firesim_spec's megaboom_fcfs16).
+SPEC_RECIPE = BuildRecipe(
+    "vext_megaboom",
+    target_config=f"WithDefaultFireSimBridges_WithFireSimConfigTweaks_{CONFIG_PACKAGE}.{SYNTH_CONFIG}",
+    platform_config="FCFS16GBQuadRank_DefaultF2Config", fpga_frequency=50)
+SPEC_RUN_CONFIG = os.path.join(_REPO_ROOT, "examples", "firesim_spec", "config_runtime.yaml")
+CLOCK_NS = 10.0                        # the synthesis clock period (sky130_vlsi/design.yml)
+
+
+def start_spec(aws, diff: str = "", spec_flags: str = "") -> ray.ObjectRef:
+    """Start a SPEC run of the synthesis config with ``diff``; return its ref at once."""
+    return spec_eval.chia_remote(aws, SPEC, SPEC_RECIPE, RunConfig.from_yaml(SPEC_RUN_CONFIG),
+                                 diffs=[diff] if diff else None, spec_flags=spec_flags)
+
+
+def _spec_report(baseline: ray.ObjectRef, impl: ray.ObjectRef, base_slack, impl_slack) -> str:
+    """Wait for both SPEC runs and compare them. Both run at the same simulated clock,
+    so a time ratio is a cycle ratio; the Iron Law speedup multiplies it by
+    f_impl / f_base, with f = 1 / (CLOCK_NS - worst slack)."""
+    runs = {}
+    for label, run in (("baseline", baseline), ("implemented", impl)):
+        try:
+            runs[label] = get(run)
+        except Exception as e:
+            return f"# SPEC CPU: {SPEC}\n\n{label} run failed: {type(e).__name__}: {e}\n"
+    base, new = runs["baseline"], runs["implemented"]
+    num = lambda x, f=".3f": "N/A" if x is None else format(x, f)
+    speedups = {b: base.seconds[b] / new.seconds[b] for b in base.seconds if b in new.seconds}
+    lines = [f"# SPEC CPU: {SPEC}", "", "| benchmark | baseline s | implemented s | speedup |",
+             "|---|---:|---:|---:|"]
+    lines += [f"| {b} | {num(base.seconds.get(b), '.0f')} | {num(new.seconds.get(b), '.0f')} "
+              f"| {num(speedups.get(b))} |" for b in sorted(base.seconds.keys() | new.seconds.keys())]
+    cycles = statistics.geometric_mean(speedups.values()) if speedups else None
+    clock = (None if base_slack is None or impl_slack is None
+             else (CLOCK_NS - base_slack) / (CLOCK_NS - impl_slack))
+    lines += ["", f"- SPEC score: baseline {num(base.score, '.2f')}, implemented {num(new.score, '.2f')}",
+              f"- cycle speedup (geometric mean of {len(speedups)} benchmarks): {num(cycles)}",
+              f"- clock f_impl / f_base: {num(clock)} (slack {num(base_slack)} -> {num(impl_slack)} ns)",
+              f"- Iron Law speedup (cycle speedup x clock): {num(cycles * clock if cycles and clock else None)}"]
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
 # The loop
 # ---------------------------------------------------------------------------
 
 def run_vext_loop(extension: Extension, run_id: str, work_root: str,
                   seed_diff: str | None = None, archive_dir: str | None = None,
-                  synth: bool = True, prebuilt: bool = False) -> VextResult:
+                  synth: bool = True, prebuilt: bool = False,
+                  aws=None, spec_baseline: ray.ObjectRef | None = None) -> VextResult:
     """One end-to-end loop implementing + proving `extension` on MegaBOOM.
+    With `aws`, SPEC runs on F2 FPGAs for the stock design (unless `spec_baseline`
+    is given) and for the converged design, and the loop reports the speedup.
     `seed_diff` (a prior run's probe diff) is applied after the reset so the
     pipeline can resume from a known implementation; if it already passes
     everything, the implement loop is skipped and we go straight to the stress_test.
@@ -659,8 +716,11 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
     gen_refs: list = []
     baseline_syn_ref = comp_syn_ref = None   # async sky130 PPA synths
     ppa = (None, None, None, None)           # (baseline_area, impl_area, baseline_slack, impl_slack)
+    spec_impl = own_baseline = None          # the SPEC runs that this run starts
     try:
         _event("run_start", extension=extension.name, run_id=run_id)
+        if aws and spec_baseline is None:    # SPEC of the stock design, in the background
+            spec_baseline = own_baseline = start_spec(aws)
         # Start generating the stress_test batch NOW, in parallel with everything else:
         # the xcelium seats pace the tasks; each registers itself in the pool
         # (scratch under DB_ROOT/tmp/, finalized+deleted by the caller).
@@ -774,7 +834,10 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
                     print(f"[{run_id}] CONVERGED — full batch passed ({n_cosims} cosims)")
                     # the final, complete chipyard+BOOM diff that implements the
                     # extension — surfaced as one durable file (not just a probe).
-                    _mirror("implementation.diff", get(collect_diff.options(**pg_opts).chia_remote(extension=getattr(_ctx, "extension", ""))))
+                    diff = get(collect_diff.options(**pg_opts).chia_remote(extension=getattr(_ctx, "extension", "")))
+                    _mirror("implementation.diff", diff)
+                    if aws:                  # SPEC of the converged design, compiled for it
+                        spec_impl = start_spec(aws, diff, f"-march=rv64gc{extension.isa_suffix}")
                 else:
                     print(f"[{run_id}] FATAL: stress_test ended with {n_cosims} cosims and an "
                           "incomplete batch (generation broken or deadline) — not converged")
@@ -830,6 +893,12 @@ def run_vext_loop(extension: Extension, run_id: str, work_root: str,
 
     _event("run_end", extension=extension.name, converged=converged, iterations=iters)
     ba, ca, bs, cs = ppa
+    if spec_impl:                               # waits on both SPEC runs
+        report = _spec_report(spec_baseline, spec_impl, bs, cs)
+        print(f"[{run_id}] {report}", flush=True)
+        _mirror("spec_cpu.md", report)
+    elif own_baseline:
+        ray.wait([own_baseline], timeout=None)  # a run killed with the job leaves its F2 machines up
     return VextResult(extension.name, converged, iters,
                       n_tests if converged else len(ext_tests), n_tests,
                       baseline_area=ba, impl_area=ca, baseline_slack=bs, impl_slack=cs)
@@ -874,6 +943,9 @@ def _parse_args():
     p.add_argument("--prebuilt-stress", action="store_true",
                    help="seed the stress pool from committed prebuilt binaries instead of "
                         "generating with riscv-dv (run on a cluster with no Xcelium license)")
+    p.add_argument("--cluster", default=None,
+                   help="the running cluster's file: also run SPEC on F2 FPGAs, and report "
+                        "the speedup")
     return p.parse_args()
 
 
@@ -886,6 +958,12 @@ def main() -> int:
 
     ray.init(address="auto", runtime_env=sky130_vlsi_runtime_env())
     start_collector(log_dir=os.path.join(work_root, "profiler"))
+    aws = None
+    if args.cluster:
+        cluster = load_config(args.cluster)
+        aws = start_aws_manager(cluster, AWSConfig(
+            region=cluster.aws_config.region, key_name=cluster.aws_config.key_name,
+            ssh_user=cluster.aws_config.ssh_user, ssh_private_key=cluster.aws_config.ssh_private_key))
 
     seed = open(args.seed_diff).read() if args.seed_diff else None
     # Durable DB sweep: claim it + snapshot src, then run with archive_dir set so the
@@ -895,7 +973,7 @@ def main() -> int:
     get(db_node.archive_dir.chia_remote(sweep_path, "src", _tar_dir(_VEXT_DIR), extension=args.extension))
     result = run_vext_loop(EXTENSIONS[args.extension], run_id, work_root,
                            seed_diff=seed, archive_dir=sweep_path, synth=not args.no_synth,
-                           prebuilt=args.prebuilt_stress)
+                           prebuilt=args.prebuilt_stress, aws=aws)
     get(db_node.pool_finalize.chia_remote(db_node.pool_path(run_id), extension=args.extension))   # .S already in the sweep
     get(db_node.archive_dir.chia_remote(sweep_path, "profiler", _tar_dir(os.path.join(work_root, "profiler")), extension=args.extension))
     get(db_node.write_text.chia_remote(sweep_path, "summary.md", _render_summary(result, sweep_n), extension=args.extension))

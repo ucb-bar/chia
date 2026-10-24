@@ -13,6 +13,7 @@ stored credentials (``opencode auth login``) or provider env vars.
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import math
@@ -31,6 +32,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Union
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction, ObjectRefCallback
+from chia.base.chia_log import chia_log
 from chia.base.llm_call import QueryResult, LLMCallBase
 
 if TYPE_CHECKING:
@@ -419,6 +421,7 @@ class OpenCodeLLM(LLMCallBase):
         logging_name: str = "opencode",
         logging_level: int = logging.DEBUG,
         log_dir: Optional[str] = None,
+        logging_resource: Optional[str] = None,
         opencode_bin: str = "opencode",
         agent_name: str = "chia",
         work_dir: Optional[str] = None,
@@ -468,8 +471,8 @@ class OpenCodeLLM(LLMCallBase):
             )
 
         self._log_dir = log_dir
+        self._logging_resource = logging_resource
         if log_dir is not None:
-            os.makedirs(log_dir, exist_ok=True)
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._log_prefix = os.path.join(log_dir, f"{logging_name}_{run_id}")
         else:
@@ -935,20 +938,18 @@ class OpenCodeLLM(LLMCallBase):
         self._last_export_error = export_error or run_error
 
         if self._log_prefix is not None:
-            # Best-effort only: prompt() may run on a remote worker whose
-            # filesystem lacks the (driver-side) log_dir — a logging hiccup must
-            # never fail an otherwise-successful call. The transcript is always
-            # returned in stream_result regardless.
+            # Best-effort only: a logging hiccup must never fail an otherwise-successful
+            # call. The transcript is always returned in stream_result regardless.
             try:
-                os.makedirs(os.path.dirname(self._log_prefix), exist_ok=True)
                 truncated = user_message[:500] + ("..." if len(user_message) > 500 else "")
-                with open(f"{self._log_prefix}.log", "a") as f:
+                with io.StringIO() as f:
                     f.write("=" * 80 + "\n")
                     f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] session {session_id}\n")
                     f.write("=" * 80 + "\n\n")
                     f.write(f"[User Message]\n{truncated}\n\n")
                     f.write(stream)
                     f.write("-" * 80 + "\n\n")
+                    chia_log(f.getvalue(), f"{self._log_prefix}.log", self._logging_resource)
             except OSError as exc:
                 self.logger.warning(
                     "Could not write opencode log %s.log: %s", self._log_prefix, exc

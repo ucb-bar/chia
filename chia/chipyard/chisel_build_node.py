@@ -4,10 +4,13 @@ import re
 import shlex
 import subprocess
 import logging
+import uuid
+from datetime import datetime
 from chia.chipyard.state_def import BuildArtifact, BuildTarget, SpikeBuildArtifact
 from chia.chipyard.spike_build_node import STATIC_ARCHIVES, stage_golden_model
 from chia.trace.profiler import get_profiler
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.chia_log import chia_log
 
 # Maximum number of WF_SCOPES paths supported by the Makefile and TestDriver.v
 # (the .v file has WF_SCOPE_1 ... WF_SCOPE_8 ifdef branches).
@@ -51,6 +54,8 @@ class ChiselBuildNode:
         wf_scopes: list[str] | tuple[str, ...] = (),
         clean_wf_stamp: bool = True,
         logging_level: int = logging.DEBUG,
+        log_dir: str | None = None,
+        logging_resource: str | None = None,
         name: str = "chipyard",
     ):
         """Configure a single Chipyard Verilator build.
@@ -122,6 +127,10 @@ class ChiselBuildNode:
                 re-applies the scope filter even when it would otherwise
                 consider nothing changed (mirrors ``run_wave.sh``).
             logging_level: Python logging level for this node's logger.
+            log_dir: A folder, or an ``s3://`` prefix, for this node's build
+                logs. ``None`` keeps none; the result has them either way.
+            logging_resource: The resource of the machine that writes into
+                ``log_dir``; ``None`` means the head.
             name: Label copied into the resulting ``BuildArtifact.name``;
                 purely for downstream identification/traceability.
         """
@@ -143,6 +152,8 @@ class ChiselBuildNode:
         self.wf_scopes = list(wf_scopes)
         self.clean_wf_stamp = clean_wf_stamp
         self.logging_level = logging_level
+        self.log_dir = log_dir
+        self.logging_resource = logging_resource
         self.name = name
         self.logger = logging.getLogger(self.logging_name)
         self.logger.setLevel(self.logging_level)
@@ -300,6 +311,24 @@ class ChiselBuildNode:
             needed.append((name, path if path and path != "not found" else None))
         return needed
 
+    def _log(self, cmd: str, sims_dir: str, returncode: int,
+             stdout: str, stderr: str) -> None:
+        """Write this build's output to its own file in ``log_dir``, when
+        ``log_dir`` is set. One file per call, so parallel builds never share
+        a file."""
+        if not self.log_dir:
+            return
+        name = f"{self.config}_{datetime.now().strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:8]}.log"
+        chia_log(
+            "=" * 80 + "\n"
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {self.config} "
+            f"returncode={returncode}\n"
+            + "=" * 80 + "\n\n"
+            f"[Command] {cmd} (in {sims_dir})\n\n"
+            f"[stdout]\n{stdout}\n\n"
+            f"[stderr]\n{stderr}\n",
+            f"{self.log_dir}/{name}", self.logging_resource)
+
     @ChiaFunction(resources={"chipyard": 1})
     def build(self) -> BuildArtifact:
         """Run the Chipyard Make flow and return the compiled simulator.
@@ -437,6 +466,7 @@ class ChiselBuildNode:
             self.logger.info(f"Build timed out after {self.timeout_seconds} seconds")
             stdout = e.stdout.decode(errors="replace") if e.stdout else ""
             stderr = e.stderr.decode(errors="replace") if e.stderr else ""
+            self._log(cmd, sims_dir, -1, stdout, stderr + "\nBuild timed out")
             return BuildArtifact(
                 name=self.name,
                 simulator_binary_content=b"",
@@ -453,6 +483,7 @@ class ChiselBuildNode:
         if result.returncode != 0:
             self.logger.info(f"Build failed stderr: {result.stderr[-500:]}")
             self.logger.info(f"Build failed stdout: {result.stdout[-500:]}")
+            self._log(cmd, sims_dir, result.returncode, result.stdout, result.stderr)
             return BuildArtifact(
                 name=self.name,
                 simulator_binary_content=b"",
@@ -476,6 +507,7 @@ class ChiselBuildNode:
         runtime_libs = (self._collect_runtime_libs(binary_path)
                         if self.bundle_runtime_libs else [])
 
+        self._log(cmd, sims_dir, result.returncode, result.stdout, result.stderr)
         return BuildArtifact(
             name=self.name,
             simulator_binary_content=binary_content,

@@ -26,8 +26,10 @@ USER root
 # libs the conda riscv64-unknown-elf-ar depends on (libfl.so.2). cmake/make
 # are here so build_program can drive arbitrary build systems (make, cmake,
 # or a bash script) — not just the harness Makefile that build() uses.
+# gfortran is for speckle's host build of SPEC's Fortran benchmarks.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
+        gfortran \
         make \
         cmake \
         git \

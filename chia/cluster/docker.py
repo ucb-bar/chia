@@ -53,10 +53,13 @@ class DockerManager:
             self.ssh.run(f"{engine} rm -f {shlex.quote(name)}", check=False)
 
         run_opts = " ".join(self.config.run_options)
+        # An init process cleans up the container's exited processes, such as the Ray
+        # processes that chia down stops; sleep, the container's command, never does.
+        init = "" if "--init" in self.config.run_options else "--init "
 
         docker_run = (
             f"{engine} run -d --name {shlex.quote(name)} "
-            f"--net=host --shm-size=8g --pull=never {run_opts} "
+            f"--net=host --shm-size=8g --pull=never {init}{run_opts} "
             f"{shlex.quote(self.config.image)} sleep infinity"
         )
 

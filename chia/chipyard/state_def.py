@@ -1,5 +1,12 @@
-from dataclasses import dataclass, field
+import json
+import os
+import subprocess
+import tempfile
+from dataclasses import dataclass, field, replace
 from enum import Enum
+
+from chia.aws import AWS_CREDS_RESOURCE
+from chia.base.ChiaFunction import ChiaFunction
 
 
 class BuildTarget(str, Enum):
@@ -128,12 +135,14 @@ class ProgramBuildArtifact:
         stdout: Captured stdout of the build command.
         stderr: Captured stderr (includes a timeout note on expiry).
         returncode: Exit code of the build command; ``-1`` on timeout.
+        modes: Permission bits of ``files``, same keys.
     """
     files: dict[str, bytes]
     success: bool
     stdout: str
     stderr: str
     returncode: int
+    modes: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -399,34 +408,93 @@ class TortureResult:
 
 @dataclass
 class FireMarshalArtifact:
-    """Result of a :meth:`FireMarshalNode.build_image`: a bootable workload
-    packaged as one portable archive.
+    """A FireSim workload: a sparse gzip tar of its descriptor (``.json``) and
+    the rootfs and boot binary the descriptor names.
 
-    The rootfs, boot binary, and FireSim workload descriptor are packed into a
-    single sparse-aware gzip tar (``archive``) and carried by value, so they move
-    between nodes over Ray with no shared filesystem and no S3. For very large
-    rootfs images, prefer chia's worker-pinned chunked streaming (as
-    ``verilator_run_node`` uses for VCDs) over inlining here.
+    The archive travels by value (``archive``) or by reference (``archive_uri``,
+    an ``s3://`` URI or a local path). A multi-job workload is :meth:`split`
+    into one single-job workload per FPGA; :meth:`publish` stores the archive
+    in S3. For very large rootfs images, prefer chia's worker-pinned chunked
+    streaming (as ``verilator_run_node`` uses for VCDs) over inlining here.
 
     Attributes:
-        archive: ``tar --sparse -czf`` of the ``.img`` + ``-bin`` + ``.json``;
-            ``b""`` on failure. Unpack with ``tar -xzf``.
+        archive: The archive bytes; ``b""`` on failure or when ``archive_uri``
+            carries it.
         img_name: rootfs member filename (``<name>.img``).
         bin_name: boot-binary member filename (``<name>-bin``).
-        json_name: FireSim workload-descriptor member filename (``<name>.json``).
+        json_name: Descriptor member filename (``<name>.json``); found in the
+            archive when empty.
         success: True iff the archive was produced.
         stdout: Captured stdout of the compose/package.
         stderr: Captured stderr (includes a timeout note on expiry).
         returncode: Exit code; ``-1`` on timeout.
+        archive_uri: Where the archive is, when it is not carried by value.
     """
-    archive: bytes
-    img_name: str
-    bin_name: str
-    json_name: str
-    success: bool
-    stdout: str
-    stderr: str
-    returncode: int
+    archive: bytes = b""
+    img_name: str = ""
+    bin_name: str = ""
+    json_name: str = ""
+    success: bool = True
+    stdout: str = ""
+    stderr: str = ""
+    returncode: int = 0
+    archive_uri: "str | None" = None
+
+    def unpack(self, dest: str) -> dict:
+        """Extract the archive into ``dest`` and return its descriptor."""
+        data = self.archive or _read(self.archive_uri)
+        subprocess.run(["tar", "-xzf", "-", "-C", dest], input=data, check=True)
+        json_name = self.json_name or next(f for f in os.listdir(dest) if f.endswith(".json"))
+        with open(os.path.join(dest, json_name)) as f:
+            return json.load(f)
+
+    def split(self) -> "list[FireMarshalArtifact]":
+        """One single-job workload per job; a single-job workload is returned as is."""
+        with tempfile.TemporaryDirectory() as work:
+            descriptor = self.unpack(work)
+            if "workloads" not in descriptor:
+                return [self]
+            jobs = []
+            for job in descriptor["workloads"]:
+                json_name = f"{job['name']}.json"
+                with open(os.path.join(work, json_name), "w") as f:
+                    json.dump({
+                        "benchmark_name": job["name"],
+                        "common_rootfs": job["rootfs"],
+                        "common_bootbinary": job["bootbinary"],
+                        "common_outputs": job.get("outputs", descriptor.get("common_outputs", [])),
+                        "common_simulation_outputs": descriptor.get(
+                            "common_simulation_outputs", ["uartlog"]),
+                    }, f, indent=2)
+                archive = subprocess.run(
+                    ["tar", "--sparse", "-czf", "-", "-C", work,
+                     json_name, job["rootfs"], job["bootbinary"]],
+                    capture_output=True, check=True).stdout
+                jobs.append(FireMarshalArtifact(archive, job["rootfs"], job["bootbinary"], json_name))
+            return jobs
+
+    @ChiaFunction(resources={AWS_CREDS_RESOURCE: 0.01})
+    def publish(self, bucket: str, prefix: str) -> "FireMarshalArtifact":
+        """Upload the archive to ``s3://<bucket>/<prefix>/<name>.tar.gz`` and
+        return a copy that references it."""
+        if not self.archive:
+            return self
+        from chia.aws.s3 import S3Node
+
+        key = f"{prefix.strip('/')}/{os.path.splitext(self.json_name)[0]}.tar.gz"
+        S3Node(bucket).put_bytes(key, self.archive)
+        return replace(self, archive=b"", archive_uri=f"s3://{bucket}/{key}")
+
+
+def _read(uri: str) -> bytes:
+    """Bytes of an ``s3://`` URI or a local path."""
+    if uri.startswith("s3://"):
+        from chia.aws.s3 import S3Node
+
+        bucket, key = uri[len("s3://"):].split("/", 1)
+        return S3Node(bucket).get_bytes(key)
+    with open(uri, "rb") as f:
+        return f.read()
 
 
 @dataclass

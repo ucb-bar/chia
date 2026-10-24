@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Callable, List, Optional
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.chia_log import chia_log
 from chia.base.llm_call import QueryResult, LLMCallBase, UNSET
 
 if TYPE_CHECKING:
@@ -274,6 +275,7 @@ class OpenAICompatLLM(LLMCallBase):
         logging_name: str = "openai_compat_llm",
         logging_level: int = logging.DEBUG,
         log_dir: Optional[str] = None,
+        logging_resource: Optional[str] = None,
         base_url: Optional[str] = None,
         api_key: Optional[str] = None,
         token_provider: Optional[Callable[[], str]] = None,
@@ -308,8 +310,8 @@ class OpenAICompatLLM(LLMCallBase):
         )
 
         self._log_dir = log_dir
+        self._logging_resource = logging_resource
         if log_dir is not None:
-            os.makedirs(log_dir, exist_ok=True)
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._log_prefix = os.path.join(log_dir, f"{logging_name}_{run_id}")
         else:
@@ -621,8 +623,7 @@ class OpenAICompatLLM(LLMCallBase):
 
         stream_parts.append("-" * 80 + "\n\n")
         if self._log_prefix is not None:
-            with open(f"{self._log_prefix}.log", "a") as f:
-                f.write("".join(stream_parts))
+            chia_log("".join(stream_parts), f"{self._log_prefix}.log", self._logging_resource)
 
         return QueryResult(
             result=final_text,

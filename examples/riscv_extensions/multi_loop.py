@@ -20,7 +20,10 @@ sys.path.insert(0, os.path.abspath(os.path.join(_VEXT_DIR, "..")))          # ex
 
 import ray
 
+from chia.aws.config import AWSConfig
+from chia.aws.manager import start_aws_manager
 from chia.base.ChiaFunction import get
+from chia.cluster.config import load_config
 from chia.trace.profiler import start_collector
 
 import riscv_extensions.db_node as db_node
@@ -31,7 +34,7 @@ from riscv_extensions.constants import (
     VEXT_LOG_ROOT,
     sky130_vlsi_runtime_env,
 )
-from riscv_extensions.single_loop import VextResult, run_vext_loop
+from riscv_extensions.single_loop import VextResult, run_vext_loop, start_spec
 
 MAX_PARALLEL_PIPELINES = 4
 
@@ -79,7 +82,7 @@ def _render_ppa(results) -> str:
 
 
 def _run_one(ext_name: str, ts: str, seed_diff: str | None = None, synth: bool = True,
-             prebuilt: bool = False):
+             prebuilt: bool = False, aws=None, spec_baseline=None):
     """One extension: claim a sweep, snapshot src, run the inner loop, then archive
     whatever exists. Best-effort and self-contained: a crash — or nodes that never
     produced anything (missing/empty work_root, DB down) — yields (None, sweep_path)
@@ -95,7 +98,7 @@ def _run_one(ext_name: str, ts: str, seed_diff: str | None = None, synth: bool =
         get(db_node.archive_dir.chia_remote(sweep_path, "src", _tar_dir(_VEXT_DIR), extension=ext_name))
         result = run_vext_loop(ext, run_id, work_root,
                                seed_diff=seed_diff, archive_dir=sweep_path, synth=synth,
-                               prebuilt=prebuilt)
+                               prebuilt=prebuilt, aws=aws, spec_baseline=spec_baseline)
     except Exception:
         import traceback
         print(f"[{ext_name}] pipeline FAILED:\n{traceback.format_exc()}", flush=True)
@@ -124,6 +127,9 @@ def _parse_args():
     p.add_argument("--prebuilt-stress", action="store_true",
                    help="seed the stress pool from committed prebuilt binaries instead of "
                         "generating with riscv-dv (run on a cluster with no Xcelium license)")
+    p.add_argument("--cluster", default=None,
+                   help="the running cluster's file: also run SPEC on F2 FPGAs, and report "
+                        "the speedups")
     return p.parse_args()
 
 
@@ -133,6 +139,13 @@ def main() -> int:
     os.makedirs(VEXT_LOG_ROOT, exist_ok=True)
 
     ray.init(address="auto", runtime_env=sky130_vlsi_runtime_env())
+    aws = None
+    if args.cluster:
+        cluster = load_config(args.cluster)
+        aws = start_aws_manager(cluster, AWSConfig(
+            region=cluster.aws_config.region, key_name=cluster.aws_config.key_name,
+            ssh_user=cluster.aws_config.ssh_user, ssh_private_key=cluster.aws_config.ssh_private_key))
+    spec_baseline = start_spec(aws) if aws else None   # one stock-design run for all extensions
     os.chdir(VEXT_LOG_ROOT)                          # one process-wide chdir (§9)
     profiler_dir = os.path.join(VEXT_LOG_ROOT, f"profiler_{ts}")
     start_collector(log_dir=profiler_dir)            # no namespace (§10)
@@ -140,7 +153,8 @@ def main() -> int:
     seed = open(args.seed_diff).read() if args.seed_diff else None
     n = min(MAX_PARALLEL_PIPELINES, len(args.extensions))
     with ThreadPoolExecutor(max_workers=n) as ex:
-        futures = [ex.submit(_run_one, e, ts, seed, not args.no_synth, args.prebuilt_stress)
+        futures = [ex.submit(_run_one, e, ts, seed, not args.no_synth, args.prebuilt_stress,
+                             aws, spec_baseline)
                    for e in args.extensions]
         outcomes = [f.result() for f in futures]   # _run_one never raises; (None, sweep_path) on failure
 
@@ -165,6 +179,8 @@ def main() -> int:
     if ppa_summary:
         print(ppa_summary)
 
+    if spec_baseline is not None:      # a run killed with the job leaves its F2 machines up
+        ray.wait([spec_baseline], timeout=None)
     from chia.trace.profiler import stop_collector
     stop_collector()
     return 0 if converged == len(results) else 1

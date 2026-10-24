@@ -10,6 +10,7 @@ raise on build failure — callers branch on the artifact's ``success``.
 import logging
 import os
 import shutil
+import stat
 import subprocess
 import uuid
 from pathlib import Path
@@ -77,7 +78,7 @@ class RiscvBuildNode:
         task_dir = self._setup(input_files, work_dir)
         self.logger.info(f"Running: {command!r} (cwd={task_dir})")
         stdout, stderr, returncode = self._run(command, cwd=task_dir)
-        files = self._collect(task_dir, outputs or [])
+        files, modes = self._collect(task_dir, outputs or [])
         if returncode != 0:
             self.logger.warning(
                 f"build_program failed (rc={returncode}); stderr tail: {stderr[-500:]}"
@@ -85,7 +86,7 @@ class RiscvBuildNode:
         if cleanup_task_dir:
             shutil.rmtree(task_dir, ignore_errors=True)
         return ProgramBuildArtifact(
-            files=files, success=returncode == 0,
+            files=files, modes=modes, success=returncode == 0,
             stdout=stdout, stderr=stderr, returncode=returncode,
         )
 
@@ -186,16 +187,20 @@ class RiscvBuildNode:
             return stdout, stderr, -1
 
     @staticmethod
-    def _collect(task_dir: str, outputs: list[str]) -> dict[str, bytes]:
-        """Read files matching ``outputs`` (globs relative to task_dir; dirs walked)."""
+    def _collect(task_dir: str, outputs: list[str]) -> "tuple[dict[str, bytes], dict[str, int]]":
+        """Read files matching ``outputs`` (globs relative to task_dir; dirs walked),
+        and their permission bits."""
         base = Path(task_dir)
         collected: dict[str, bytes] = {}
+        modes: dict[str, int] = {}
         for pattern in outputs:
             for match in base.glob(pattern):
                 for p in (match.rglob("*") if match.is_dir() else [match]):
                     if p.is_file():
-                        collected[str(p.relative_to(base))] = p.read_bytes()
-        return collected
+                        key = str(p.relative_to(base))
+                        collected[key] = p.read_bytes()
+                        modes[key] = stat.S_IMODE(p.stat().st_mode)
+        return collected, modes
 
     @staticmethod
     def _to_text(value: "str | bytes | None") -> str:

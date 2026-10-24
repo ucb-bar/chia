@@ -21,6 +21,7 @@ drop down to the raw boto3 client via ``node._client``.
 
 from __future__ import annotations
 
+import io
 import logging
 import time
 from dataclasses import dataclass
@@ -206,7 +207,13 @@ class S3Node:
         )
 
     def put_bytes(self, key: str, data: bytes, content_type: str | None = None) -> None:
-        """Write ``data`` to ``key``."""
+        """Write ``data`` to ``key``, in parts above 1 GiB (one PUT takes 5 GB at most)."""
+        if len(data) > 2**30:
+            extra = {"ContentType": content_type} if content_type is not None else {}
+            self._call(f"upload_fileobj s3://{self.bucket}/{key}",
+                       lambda: self._client.upload_fileobj(io.BytesIO(data), self.bucket, key,
+                                                           ExtraArgs=extra))
+            return
         kwargs: dict[str, Any] = {"Bucket": self.bucket, "Key": key, "Body": data}
         if content_type is not None:
             kwargs["ContentType"] = content_type

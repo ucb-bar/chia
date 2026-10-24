@@ -228,7 +228,7 @@ class SSHClient:
                     return
                 if result.stderr.strip():
                     last_error = result.stderr.strip().splitlines()[-1]
-            except subprocess.TimeoutExpired:
+            except (subprocess.TimeoutExpired, SSHError):
                 last_error = "connection attempt timed out"
             if time.monotonic() >= deadline:
                 raise SSHError(

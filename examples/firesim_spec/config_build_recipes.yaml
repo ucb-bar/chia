@@ -1,0 +1,17 @@
+# FireSim build recipes (FireSim's format), for BuildRecipe.from_yaml.
+
+# MegaBoom V3 with FireSim's default bridges, on a 16 GB FCFS DDR3 model.
+megaboom_fcfs16:
+    PLATFORM: f2
+    TARGET_PROJECT: firesim
+    TARGET_PROJECT_MAKEFRAG: ../../../generators/firechip/chip/src/main/makefrag/firesim
+    DESIGN: FireSim
+    TARGET_CONFIG: WithDefaultFireSimBridges_WithFireSimConfigTweaks_chipyard.MegaBoomV3Config
+    PLATFORM_CONFIG: FCFS16GBQuadRank_DefaultF2Config
+    deploy_quintuplet: null
+    platform_config_args:
+        fpga_frequency: 50
+        build_strategy: TIMING
+    post_build_hook: null
+    metasim_customruntimeconfig: null
+    bit_builder_recipe: bit-builder-recipes/f2.yaml

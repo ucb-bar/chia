@@ -150,6 +150,37 @@ def cond_first_arg_even(tag, data_path, *args, **kwargs):
     """Bypass only when the first positional call arg is even."""
     return args[0] % 2 == 0
 
+# Two node classes that both define a ChiaFunction called "build" — the name
+# collision the qualified key exists to resolve.
+class BuilderA:
+    @ChiaFunction()
+    def build(self):
+        return "A real"
+
+
+class BuilderB:
+    @ChiaFunction()
+    def build(self):
+        return "B real"
+
+
+def provider_a_bypassed(tag, data_path, *args, **kwargs):
+    return "A bypassed"
+
+
+YAML_QUALNAME = """
+bypass:
+  BuilderA.build:
+    bypass: true
+"""
+
+YAML_BARE_NAME = """
+bypass:
+  build:
+    bypass: true
+"""
+
+
 def assert_eq(name, actual, expected):
     if actual == expected:
         print(f"  PASS: {name} = {actual}")
@@ -436,6 +467,30 @@ def test_16_cond_survives_state_roundtrip():
               restored.is_bypassed("simple_add", None), False)
 
 
+def test_17_qualname_disambiguates_same_method_name():
+    """Two classes both define build(); the YAML names one by qualified name.
+    Only that one is bypassed."""
+    print("\n=== Test 17: qualified name disambiguates ===")
+    bypass = Bypass(yaml_path=write_yaml(YAML_QUALNAME))
+    bypass.set_provider("BuilderA.build", provider_a_bypassed)
+
+    a, b = BuilderA(), BuilderB()
+    assert_eq("BuilderA.build bypassed", ray.get(BuilderA.build.chia_remote(a)), "A bypassed")
+    assert_eq("BuilderB.build runs for real", ray.get(BuilderB.build.chia_remote(b)), "B real")
+
+
+def test_18_bare_name_still_matches():
+    """A YAML written before qualified keys existed names the bare function.
+    It still matches, for every class that defines it."""
+    print("\n=== Test 18: bare name still matches (backward compatible) ===")
+    bypass = Bypass(yaml_path=write_yaml(YAML_BARE_NAME))
+    bypass.set_provider("build", provider_a_bypassed)
+
+    a, b = BuilderA(), BuilderB()
+    assert_eq("BuilderA.build bypassed", ray.get(BuilderA.build.chia_remote(a)), "A bypassed")
+    assert_eq("BuilderB.build bypassed", ray.get(BuilderB.build.chia_remote(b)), "A bypassed")
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -469,6 +524,10 @@ if __name__ == "__main__":
     test_14_no_cond_defaults_true()
     test_15_cond_receives_call_args()
     test_16_cond_survives_state_roundtrip()
+
+    # Tests 17-18: qualified function keys
+    test_17_qualname_disambiguates_same_method_name()
+    test_18_bare_name_still_matches()
 
     # Test 8: real YAML file (only if --bypass-yaml provided)
     if args.bypass_yaml:

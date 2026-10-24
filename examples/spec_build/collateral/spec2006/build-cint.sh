@@ -19,5 +19,8 @@ if [ ! -d speckle ]; then
     git -C speckle submodule update --init --recursive
 fi
 
+# Add SPEC_FLAGS to the RISC-V compilers in speckle's config.
+[ -z "$SPEC_FLAGS" ] || sed -i -E "s#^([[:space:]]*(CC|CXX|FC)[[:space:]]*=.*)\$#\1 $SPEC_FLAGS#" speckle/riscv-cpu2006.cfg
+
 echo "Building SPEC CPU2006 CINT2006 with $1 inputs"
 make spec06-cint2006 INPUT=$1

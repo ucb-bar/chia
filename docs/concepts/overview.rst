@@ -79,12 +79,12 @@ Cloud integration
 
 Public-cloud machines can be folded directly into a cluster to add compute on
 demand. Spanning owned (on-prem) and borrowed (cloud) resources makes for
-cost-effective, efficient clusters. When machines can't reach each other
-directly (the usual case across firewalls), CHIA connects them over a
-`tailscale <https://tailscale.com>`_ network by default — the recommended path
-for cloud workers, and fully unprivileged (userspace networking, no root or VPN
-setup). SSH reverse tunneling remains available as a fallback, with some small
-limitations on orchestration.
+cost-effective, efficient clusters. When the head is an EC2 machine, AWS
+workers reach it directly over the VPC's private IPs (the default). When machines
+can't reach each other directly (the usual case across firewalls), CHIA connects
+them over a `tailscale <https://tailscale.com>`_ network — the recommended path,
+fully unprivileged (userspace networking, no root or VPN setup) — or over SSH
+tunnels. The ``connection`` setting chooses.
 
 The cluster config and CLI
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~

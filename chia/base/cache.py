@@ -421,6 +421,9 @@ def is_cached(func_name: str, tag: Optional[str] = None) -> bool:
     config = get(cache.get_config.remote())
 
     spec = config.get(func_name)
+    if spec is None:
+        # ChiaFunction passes __qualname__; a YAML may name the bare function.
+        spec = config.get(func_name.rsplit(".", 1)[-1])
     if not spec:
         return False
     if isinstance(spec, list):

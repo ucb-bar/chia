@@ -28,8 +28,17 @@ CHIA requires **Python 3.10.19** (matching the Python in the Docker images). Wit
 ```bash
 conda create -n chia_env python=3.10.19
 conda activate chia_env
-pip install -e /path/to/chia
+pip install chialoops
 ```
+
+If you are actively developing CHIA, install from a clone in editable mode instead:
+
+```bash
+git clone https://github.com/ucb-bar/chia.git
+pip install -e ./chia
+```
+
+See the [installation guide](https://docs.chialoops.ai/en/latest/getting-started/installation.html) for optional extras.
 
 ## Learn more about CHIA
 

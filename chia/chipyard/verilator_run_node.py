@@ -8,11 +8,13 @@ import subprocess
 import threading
 import logging
 import uuid
+from datetime import datetime
 from urllib.parse import urlparse
 from chia.chipyard.state_def import BuildArtifact, RunResult, WaveWindow
 from chia.trace.profiler import get_profiler
 from chia.chipyard.numa_prefix import get_numa_prefix
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.chia_log import chia_log
 
 
 # Maximum number of wave windows supported (matches the binder's compile-time
@@ -30,7 +32,9 @@ class VerilatorRunNode:
 
     logging_name = "VerilatorRunNode"
 
-    def __init__(self, logging_level: int = logging.DEBUG):
+    def __init__(self, logging_level: int = logging.DEBUG,
+                 log_dir: str | None = None,
+                 logging_resource: str | None = None):
         """Construct a run node.
 
         Args:
@@ -38,8 +42,14 @@ class VerilatorRunNode:
                 node is otherwise stateless at construction time; per-run state
                 (task dir, binary path) is created in ``_setup`` when ``run``
                 is invoked.
+            log_dir: A folder, or an ``s3://`` prefix, for this node's run
+                logs. ``None`` keeps none; the result has them either way.
+            logging_resource: The resource of the machine that writes into
+                ``log_dir``; ``None`` means the head.
         """
         self._binary_path = None
+        self.log_dir = log_dir
+        self.logging_resource = logging_resource
         self.logger = logging.getLogger(self.logging_name)
         self.logger.setLevel(logging_level)
 
@@ -228,6 +238,24 @@ class VerilatorRunNode:
             self.logger.warning(f"S3 upload of {filename} failed: {e}; s3_path will be empty")
             return "", size
 
+    def _log(self, argv: list[str], result: RunResult) -> None:
+        """Write this run's output to its own file in ``log_dir``, when
+        ``log_dir`` is set. One file per call, so parallel runs never share a
+        file."""
+        if not self.log_dir:
+            return
+        stem = os.path.splitext(result.test_binary_name)[0]
+        name = f"{stem}_{datetime.now().strftime('%Y%m%d-%H%M%S')}_{uuid.uuid4().hex[:8]}.log"
+        chia_log(
+            "=" * 80 + "\n"
+            f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"{result.test_binary_name} returncode={result.returncode}\n"
+            + "=" * 80 + "\n\n"
+            f"[Command] {' '.join(str(a) for a in argv)}\n\n"
+            f"[log]\n{result.log}\n\n"
+            f"[out]\n{result.out}\n",
+            f"{self.log_dir}/{name}", self.logging_resource)
+
     @_cleans_task_dir
     def _execute(
         self,
@@ -371,6 +399,7 @@ class VerilatorRunNode:
                 "vcd_s3_path": vcd_s3_path,
             })
 
+        self._log(argv, result)
         return result
 
     @ChiaFunction(resources={"verilator_run": 1})

@@ -4,6 +4,7 @@
 # passes in parallel) plus each LLM's optional sub-block synth experiments
 # via TimingExperimentTool.
 cluster_name: timing_cluster
+connection: tunnel   # SSH tunnels, so the head can be outside AWS
 
 available_node_types:
     verilator_run:

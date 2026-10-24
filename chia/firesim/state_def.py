@@ -5,6 +5,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import yaml
+
+from chia.firesim.config import load_build_recipes
+
 
 @dataclass
 class BitstreamBuildResult:
@@ -79,3 +83,83 @@ class SuiteRunResult:
     total_duration_seconds: float = 0.0
     scores: dict[str, dict[str, float]] = field(default_factory=dict)
     # scores maps workload_name -> {RealTime, UserTime, KernelTime, score}
+
+
+@dataclass
+class SimJobResult:
+    """Result of running one single-job workload on one FPGA.
+
+    ``success`` is true only if infrasetup and runworkload both exited 0, which
+    means FireSim ran the job, not that the benchmark passed (see ``uartlog``);
+    ``log`` holds the manager output tail, which carries the reason on failure.
+    ``outputs`` maps each file of the run's results directory to its bytes.
+    ``node_id`` and ``ip`` name the machine that ran it: its Ray node and its
+    public IP.
+    """
+    benchmark_name: str
+    success: bool
+    uartlog: str = ""
+    outputs: dict[str, bytes] = field(default_factory=dict)
+    duration_seconds: float = 0.0
+    log: str = ""
+    node_id: str = ""
+    ip: str = ""
+
+
+@dataclass
+class BuildRecipe:
+    """What to build: the FireSim quintuplet plus the Vivado knobs.
+
+    Mirrors one stanza of ``config_build_recipes.yaml``.
+    """
+    name: str
+    design: str = "FireSim"
+    target_config: str = "FireSimRocketConfig"
+    platform_config: str = "BaseF2Config"
+    platform: str = "f2"
+    target_project: str = "firesim"
+    fpga_frequency: int = 75
+    build_strategy: str = "TIMING"
+    java_heap_size: str = "16G"
+
+    def quintuplet(self) -> str:
+        return "-".join([self.platform, self.target_project, self.design,
+                         self.target_config, self.platform_config])
+
+    @classmethod
+    def from_yaml(cls, path: str, name: str) -> BuildRecipe:
+        """Recipe ``name`` of a FireSim ``config_build_recipes.yaml``."""
+        recipe = load_build_recipes(path)[name]
+        return cls(name, design=recipe.design, target_config=recipe.target_config,
+                   platform_config=recipe.platform_config, platform=recipe.platform,
+                   target_project=recipe.target_project,
+                   fpga_frequency=recipe.fpga_frequency, build_strategy=recipe.build_strategy)
+
+
+@dataclass
+class RunConfig:
+    """FireSim runtime settings: sections of ``config_runtime.yaml``,
+    ``{section: {key: value}}``. The run farm, the workload and the hardware
+    config are chia's, and it writes them over these."""
+    sections: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_yaml(cls, path: str) -> RunConfig:
+        """The sections of a FireSim ``config_runtime.yaml``."""
+        with open(path) as f:
+            return cls(yaml.safe_load(f))
+
+
+@dataclass
+class EcadBuildResult:
+    """Result of an :meth:`~chia.firesim.bitstream_build_node.BitstreamBuildNode.build_bitstream`.
+
+    ``bitstream`` is the artifact to hand to a run, and is ``None`` unless the
+    build succeeded; ``log`` carries the reason when it did not. ``logs`` is a
+    ``.tar.gz`` of the build's logs and reports, whether or not it succeeded.
+    """
+    recipe_name: str
+    success: bool
+    bitstream: "FSBitstream | None" = None
+    log: str = ""
+    logs: bytes = b""

@@ -144,6 +144,7 @@ class FireMarshalNode:
         work_dir: str = "/tmp/fm",
         config: "dict | None" = None,
         rootfs_size_mib: int = 0,
+        overlay_modes: "dict[str, int] | None" = None,
     ) -> FireMarshalArtifact:
         """Compose ``overlay_files`` onto the stored base ``base_name`` and return
         the workload image(s) + FireSim descriptor as sparse-tar bytes.
@@ -161,10 +162,13 @@ class FireMarshalNode:
             config: Workload options as a dict (the marshal-config run knobs):
                 ``command`` (str, baked as the boot run-script), ``jobs`` (list of
                 ``{"name","command","outputs"}`` — one image per job, emitted as the
-                FireSim descriptor's ``workloads``), ``outputs`` (default guest
+                FireSim descriptor's ``workloads``; a job's ``files``, keys of
+                ``overlay_files``, limit its image to them), ``outputs`` (default guest
                 paths), ``post_run_hook`` (str), ``simulation_outputs`` (default
                 ``["uartlog"]``).
             rootfs_size_mib: Grow the rootfs before composing (``0`` keeps base size).
+            overlay_modes: Permission bits of ``overlay_files``, same keys (e.g.
+                ``0o755`` for an executable). A file without one gets the default.
         """
         config = config or {}
         json_path = os.path.join(self._dir(name), f"{name}.json")
@@ -175,7 +179,8 @@ class FireMarshalNode:
                     b"", "", "", f"{name}.json", success=False, stdout="",
                     stderr=f"base '{base_name}' not found in {self.image_store}", returncode=1)
             returncode, stdout, stderr = self._compose_workload(
-                base_name, name, overlay_files, config, rootfs_size_mib, work_dir)
+                base_name, name, overlay_files, overlay_modes or {}, config,
+                rootfs_size_mib, work_dir)
 
         archive = b""
         if returncode == 0 and os.path.isfile(json_path):
@@ -259,12 +264,11 @@ class FireMarshalNode:
 
     # ---- compose internals --------------------------------------------------
 
-    def _compose_workload(self, base_name, name, overlay_files, config,
+    def _compose_workload(self, base_name, name, overlay_files, overlay_modes, config,
                           rootfs_size_mib, work_dir) -> "tuple[int, str, str]":
         os.makedirs(work_dir, exist_ok=True)
         work = os.path.join(work_dir, f".fm-{uuid.uuid4().hex[:8]}")
         overlay_dir = os.path.join(work, "overlay")
-        self._write_overlay(overlay_files, overlay_dir)
         dst = self._dir(name)
         os.makedirs(dst, exist_ok=True)
         base_img = os.path.join(self._dir(base_name), f"{base_name}.img")
@@ -277,7 +281,13 @@ class FireMarshalNode:
                    else [(name, config.get("command"), config.get("outputs", []))])
 
         stdout, stderr = "", ""
-        for target, command, _outs in targets:
+        written = None                     # the overlay files now in overlay_dir
+        for (target, command, _outs), job in zip(targets, jobs or [{}]):
+            files = job.get("files", list(overlay_files))
+            if files != written:
+                shutil.rmtree(overlay_dir, ignore_errors=True)
+                self._write_overlay({p: overlay_files[p] for p in files}, overlay_modes, overlay_dir)
+                written = files
             self._set_run_script(overlay_dir, command)
             self.logger.info(f"Composing {target} from base {base_name}")
             out, err, rc = self._run(
@@ -308,14 +318,18 @@ class FireMarshalNode:
             os.remove(path)
 
     @staticmethod
-    def _write_overlay(overlay_files: dict[str, bytes], overlay_dir: str) -> None:
-        """Materialize overlay_files into overlay_dir, mirroring the rootfs layout."""
+    def _write_overlay(overlay_files: dict[str, bytes], overlay_modes: dict[str, int],
+                       overlay_dir: str) -> None:
+        """Materialize overlay_files into overlay_dir, mirroring the rootfs layout,
+        with the permission bits in overlay_modes."""
         os.makedirs(overlay_dir, exist_ok=True)
         for rel_path, content in overlay_files.items():
             dest = os.path.join(overlay_dir, rel_path)
             os.makedirs(os.path.dirname(dest) or overlay_dir, exist_ok=True)
             with open(dest, "wb") as f:
                 f.write(content)
+            if rel_path in overlay_modes:
+                os.chmod(dest, overlay_modes[rel_path])
 
     @staticmethod
     def _write_descriptor(path: str, name: str, config: dict, targets: list) -> None:

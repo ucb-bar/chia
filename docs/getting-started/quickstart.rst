@@ -38,7 +38,7 @@ If you have not yet set up the ``chia_env`` environment, create it and install C
 
     conda create -n chia_env python=3.10.19
     conda activate chia_env
-    pip install -e /path/to/chia
+    pip install chialoops
 
 Then create a directory for the project and activate the environment:
 
@@ -103,7 +103,7 @@ Now, we will specify our logical workers to map onto our physical machines. As d
         hello_chipyard:
             resources: {"chipyard": 1}
             num_workers: 1
-            compatible_ips: [${THIS_MACHINE}] # Or [Another_host]
+            compatible_ips: ["${THIS_MACHINE}"] # Or [Another_host]
             worker_setup_commands: ["source /home/ray/chipyard/env.sh"]
             docker:
                 image: "ghcr.io/ucb-bar/chia-chisel-build:latest"
@@ -126,7 +126,7 @@ Let's also add a Verilator node.
         hello_verilator:
             resources: {"verilator_run": 1}
             num_workers: 1
-            compatible_ips: [${THIS_MACHINE}] # Or [Another_host]
+            compatible_ips: ["${THIS_MACHINE}"] # Or [Another_host]
             docker:
                 image: "ghcr.io/ucb-bar/chia-verilator-run:latest"
                 container_name: "chia-verilator-${USER}"
@@ -342,7 +342,7 @@ First, we will add a new ``hello_opencode`` worker type to our cluster.yaml conf
             resources: {"opencode_creds": 1}
             worker_setup_commands: ["source ~/.bashrc"]
             num_workers: 1
-            compatible_ips: [${THIS_MACHINE}]
+            compatible_ips: ["${THIS_MACHINE}"]
             docker:
                 image: ghcr.io/ucb-bar/chia-opencode:latest
                 container_name: "chia-opencode-${USER}"

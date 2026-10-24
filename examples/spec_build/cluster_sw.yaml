@@ -20,14 +20,18 @@ available_node_types:
             pull_before_run: True
             run_options:
                 - --ulimit nofile=65536:65536
-                # SPEC install at its original path (writable; runspec builds in-tree).
+                # Each SPEC install at its original path (writable; SPEC builds in-tree).
                 - -v /path/to/spec-cpu2006:/path/to/spec-cpu2006   # FILL
-                - -e SPEC_DIR=/path/to/spec-cpu2006                # FILL (match the mount)
+                - -v /path/to/spec-cpu2017:/path/to/spec-cpu2017   # FILL
+                - -v /path/to/spec-cpu2026:/path/to/spec-cpu2026   # FILL
+                - -e SPEC_DIR_2006=/path/to/spec-cpu2006           # FILL (match the mounts)
+                - -e SPEC_DIR_2017=/path/to/spec-cpu2017           # FILL
+                - -e SPEC_DIR_2026=/path/to/spec-cpu2026           # FILL
         compatible_ips: #FILL
 
     # Builds the FireMarshal base and composes workload images.
     firemarshal:
-        resources: {"chipyard": 1}
+        resources: {"firemarshal": 1}
         num_workers: 1
         docker:
             image: "ghcr.io/ucb-bar/chia-firemarshal:latest"   # Buildroot-capable (dockerfiles/FireMarshalDockerfile)

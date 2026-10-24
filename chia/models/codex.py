@@ -13,6 +13,7 @@ session files open across retries.
 from __future__ import annotations
 
 import fcntl
+import io
 import json
 import logging
 import os
@@ -40,6 +41,7 @@ from uuid import uuid4
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction, ObjectRefCallback
+from chia.base.chia_log import chia_log
 from chia.base.llm_call import QueryResult, LLMCallBase, UNSET
 
 if TYPE_CHECKING:
@@ -389,6 +391,7 @@ class CodexLLM(LLMCallBase):
         logging_name: str = "codex",
         logging_level: int = logging.DEBUG,
         log_dir: str | None = None,
+        logging_resource: str | None = None,
         codex_bin: str = "codex",
         work_dir: str | None = None,
         extra_cli_args: list[str] | None = None,
@@ -484,8 +487,8 @@ class CodexLLM(LLMCallBase):
         self.logger.warning("CodexLLM is experimental and has not been production-validated.")
         if self.model is None:
             self.logger.info("CodexLLM model is unset; codex exec will use its configured default model.")
+        self._logging_resource = logging_resource
         if log_dir is not None:
-            os.makedirs(log_dir, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._log_prefix = os.path.join(log_dir, f"{logging_name}_{stamp}")
 
@@ -1395,7 +1398,7 @@ class CodexLLM(LLMCallBase):
 
     def _write_log(self, user_message: str, final_text: str, stream: str) -> None:
         prompt = user_message[:500] + ("..." if len(user_message) > 500 else "")
-        with open(f"{self._log_prefix}.log", "a") as f:
+        with io.StringIO() as f:
             f.write("=" * 80 + "\n")
             f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"Prompt #{self._call_counter} (codex)\n")
@@ -1404,6 +1407,7 @@ class CodexLLM(LLMCallBase):
             if stream and not stream.endswith("\n"):
                 f.write("\n")
             f.write("-" * 80 + "\n\n")
+            chia_log(f.getvalue(), f"{self._log_prefix}.log", self._logging_resource)
 
     @classmethod
     def _parse_jsonl_stream(

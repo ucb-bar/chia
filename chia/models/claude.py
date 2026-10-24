@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from uuid import uuid4
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction, ObjectRefCallback
+from chia.base.chia_log import chia_log
 from chia.base.llm_call import QueryResult, LLMCallBase, UNSET
 
 if TYPE_CHECKING:
@@ -357,6 +359,7 @@ class ClaudeCodeLLM(LLMCallBase):
         logging_name: str = "claude_code",
         logging_level: int = logging.DEBUG,
         log_dir: Optional[str] = None,
+        logging_resource: Optional[str] = None,
         resume_session: bool = False,
         projects_cwd: Optional[str] = "/home/ray/.claude/projects/-home-ray-llm-env",
         extra_cli_args: Optional[List[str]] = None,
@@ -433,8 +436,8 @@ class ClaudeCodeLLM(LLMCallBase):
         self._session_transcript_path: Optional[str] = None
 
         self._log_dir = log_dir
+        self._logging_resource = logging_resource
         if log_dir is not None:
-            os.makedirs(log_dir, exist_ok=True)
             session_tag = f"_{self._session_id[:8]}" if self._session_id else ""
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._log_prefix = os.path.join(log_dir, f"{logging_name}_{run_id}{session_tag}")
@@ -838,13 +841,14 @@ class ClaudeCodeLLM(LLMCallBase):
 
         if self._log_prefix is not None:
             truncated = user_message[:500] + ("..." if len(user_message) > 500 else "")
-            with open(f"{self._log_prefix}.log", "a") as f:
+            with io.StringIO() as f:
                 f.write("=" * 80 + "\n")
                 f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Prompt #{self._call_counter}\n")
                 f.write("=" * 80 + "\n\n")
                 f.write(f"[User Message]\n{truncated}\n\n")
                 f.write(f"[Response]\n{result.stdout}\n\n")
                 f.write("-" * 80 + "\n\n")
+                chia_log(f.getvalue(), f"{self._log_prefix}.log", self._logging_resource)
 
         return ClaudeCodeQueryResult(
             result=result.stdout,
@@ -872,7 +876,7 @@ class ClaudeCodeLLM(LLMCallBase):
         buffer (returned on ``ClaudeCodeQueryResult``) so callers can surface the
         event trace — tool calls, thinking, metadata — directly.  When
         ``log_dir`` was set on the constructor, the same entries are
-        also mirrored to ``<prefix>.log`` on disk.
+        also written to ``<prefix>.log`` with ``chia_log`` after the run.
         """
         cmd = self._build_cmd(tools)
         self.logger.info("Running: %s", " ".join(cmd[:6]) + " ...")
@@ -884,21 +888,15 @@ class ClaudeCodeLLM(LLMCallBase):
         lock = threading.Lock()
 
         class _TeeWriter:
-            """File-like wrapper that always mirrors to *accumulator* and
-            optionally writes through to *file* when one is provided."""
-            def __init__(self, file, accumulator: list[str]):
-                self._file = file
+            """File-like wrapper that mirrors writes to *accumulator*."""
+            def __init__(self, accumulator: list[str]):
                 self._accumulator = accumulator
             def write(self, s: str):
-                if self._file is not None:
-                    self._file.write(s)
                 self._accumulator.append(s)
             def flush(self):
-                if self._file is not None:
-                    self._file.flush()
+                pass
             def close(self):
-                if self._file is not None:
-                    self._file.close()
+                pass
 
         proc = subprocess.Popen(
             cmd,
@@ -912,14 +910,7 @@ class ClaudeCodeLLM(LLMCallBase):
         proc.stdin.write(user_message)
         proc.stdin.close()
 
-        # Only mirror the live event stream to disk when log_all is set.
-        # Without log_all we still accumulate stream_parts in memory but
-        # write a compact result-only entry to the log after the run.
-        file_handle = (
-            open(f"{self._log_prefix}.log", "a")
-            if self._log_prefix is not None and self.log_all else None
-        )
-        log_file = _TeeWriter(file_handle, stream_parts)
+        log_file = _TeeWriter(stream_parts)
 
         log_file.write("=" * 80 + "\n")
         log_file.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Prompt #{self._call_counter}\n")
@@ -959,14 +950,19 @@ class ClaudeCodeLLM(LLMCallBase):
         log_file.flush()
         log_file.close()
 
+        # With log_all the whole event stream goes to the log; without it, a compact
+        # result-only entry does.
+        if self._log_prefix is not None and self.log_all:
+            chia_log("".join(stream_parts), f"{self._log_prefix}.log", self._logging_resource)
         if self._log_prefix is not None and not self.log_all:
-            with open(f"{self._log_prefix}.log", "a") as f:
+            with io.StringIO() as f:
                 f.write("=" * 80 + "\n")
                 f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Prompt #{self._call_counter}\n")
                 f.write("=" * 80 + "\n\n")
                 f.write(f"[User Message]\n{truncated}\n\n")
                 f.write(f"[Response]\n{''.join(result_text_parts)}\n\n")
                 f.write("-" * 80 + "\n\n")
+                chia_log(f.getvalue(), f"{self._log_prefix}.log", self._logging_resource)
 
         if proc.returncode != 0:
             self.logger.warning("claude exited %d", proc.returncode)
@@ -1341,8 +1337,7 @@ class ClaudeCodeLLM(LLMCallBase):
 
         stream_parts.append("-" * 80 + "\n\n")
         if self._log_prefix is not None:
-            with open(f"{self._log_prefix}.log", "a") as f:
-                f.write("".join(stream_parts))
+            chia_log("".join(stream_parts), f"{self._log_prefix}.log", self._logging_resource)
 
         return ClaudeCodeQueryResult(
             result=final_text,

@@ -101,6 +101,23 @@ def get_active_bypass():
 
 
 # ---------------------------------------------------------------------------
+# Function-name lookup
+# ---------------------------------------------------------------------------
+
+def _lookup(mapping: dict, func_name: str, default=None):
+    """Value for *func_name*, trying the qualified name then the bare one.
+
+    ``ChiaFunction`` passes ``__qualname__`` ("ChiselBuildNode.build"), so a
+    YAML key or a registration may use either form. The qualified name wins,
+    which is what lets two nodes that both define ``build`` be configured
+    apart; the bare name keeps older configs working.
+    """
+    if func_name in mapping:
+        return mapping[func_name]
+    return mapping.get(func_name.rsplit(".", 1)[-1], default)
+
+
+# ---------------------------------------------------------------------------
 # File server actor
 # ---------------------------------------------------------------------------
 #
@@ -322,14 +339,15 @@ class Bypass:
         Functions not listed in the YAML return False (not bypassed).
         If no YAML was loaded, always returns False.
         """
-        if not self._bypass.get(func_name, False):
+        if not _lookup(self._bypass, func_name, False):
             return False
-        if func_name not in self._providers and func_name not in self._data_paths:
+        if (_lookup(self._providers, func_name) is None
+                and _lookup(self._data_paths, func_name) is None):
             return False
 
         # Tag filtering: if patterns are configured, the call must have a
         # tag that matches at least one pattern.
-        patterns = self._tag_patterns.get(func_name)
+        patterns = _lookup(self._tag_patterns, func_name)
         if patterns is not None:
             if tag is None:
                 return False
@@ -339,9 +357,9 @@ class Bypass:
 
         # Condition gate (last): runtime check after tag matching. Default
         # (no cond registered) is to bypass.
-        cond = self._conds.get(func_name)
+        cond = _lookup(self._conds, func_name)
         if cond is not None:
-            data_path = self._data_paths.get(func_name)
+            data_path = _lookup(self._data_paths, func_name)
             if not cond(tag, data_path, *args, **kwargs):
                 return False
 
@@ -358,8 +376,8 @@ class Bypass:
         The provider is executed on the worker, not here. This method only
         looks up what to dispatch.
         """
-        data_path = self._data_paths.get(func_name)
-        provider = self._providers.get(func_name)
+        data_path = _lookup(self._data_paths, func_name)
+        provider = _lookup(self._providers, func_name)
 
         logger.info("BYPASS %s (data=%s, provider=%s)",
                      func_name, data_path, provider is not None)

@@ -60,12 +60,13 @@ def cmd_down(args):
     if aws_result is not None:
         aws_nodes, aws_region = aws_result
         from chia.cluster.aws_nodes import discover_aws_nodes
-        aws_ip_map = discover_aws_nodes(cluster_name, aws_region)
+        aws_ip_map = discover_aws_nodes(cluster_name, aws_region, private=raw.get("connection") == "vpc")
 
     if gcp_result is not None:
         gcp_nodes, gcp_project, _zone, _net, _sub = gcp_result
         from chia.cluster.gcp_nodes import discover_gcp_nodes
-        gcp_ip_map = discover_gcp_nodes(cluster_name, gcp_project)
+        gcp_ip_map = discover_gcp_nodes(cluster_name, gcp_project,
+                                        private=raw.get("connection") == "vpc")
 
     ip_map = {**aws_ip_map, **gcp_ip_map}
     cloud_instance_count = sum(len(ips) for ips in ip_map.values())
@@ -110,7 +111,7 @@ def cmd_down(args):
         tear_down_cluster(config)
     except Exception as e:
         logger.error(f"Cluster teardown failed: {e}")
-        if aws_result is None and gcp_result is None:
+        if aws_result is None and gcp_result is None and "aws" not in raw:
             sys.exit(1)
         logger.warning("Proceeding with cloud instance termination anyway.")
 
@@ -125,6 +126,19 @@ def cmd_down(args):
             logger.error(f"AWS instance termination failed: {e}")
         try:
             cleanup_security_group(cluster_name, aws_region)
+        except Exception as e:
+            logger.error(f"Security group cleanup failed: {e}")
+    elif "aws" in raw:
+        # Instances that AWSManager launched at runtime carry the cluster's tag too.
+        from chia.cluster.aws_nodes import teardown_aws_nodes, cleanup_security_group
+        try:
+            terminated = teardown_aws_nodes(cluster_name, raw["aws"]["region"])
+            if terminated:
+                logger.info(f"Terminated {len(terminated)} AWS instance(s)")
+        except Exception as e:
+            logger.error(f"AWS instance termination failed: {e}")
+        try:
+            cleanup_security_group(cluster_name, raw["aws"]["region"])
         except Exception as e:
             logger.error(f"Security group cleanup failed: {e}")
 

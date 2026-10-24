@@ -5,7 +5,7 @@ on:
   workflow_call:
 
 env:
-  IMAGE: ghcr.io/ucb-bar/chia-vllm
+  OWNER: ghcr.io/ucb-bar
 
 jobs:
   build-and-push:
@@ -13,9 +13,19 @@ jobs:
     permissions:
       contents: read
       packages: write
+    # One image per GPU vendor, same Dockerfile — only the vLLM base differs.
+    # fail-fast off so an AMD failure doesn't cancel the NVIDIA push.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: chia-vllm
+            base: vllm/vllm-openai:latest
+          - name: chia-vllm-amd
+            base: vllm/vllm-openai-rocm:latest
 
     steps:
-      # The vllm/vllm-openai base (CUDA + torch + vllm) is large, plus the chia
+      # The vLLM base (CUDA/ROCm + torch + vllm) is large, plus the chia
       # install — so we evict everything not needed for this build. The build
       # itself needs no GPU (it only layers ray+chia onto the base).
       - name: Show disk before cleanup
@@ -49,15 +59,13 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # NVIDIA/CUDA build only. The AMD/ROCm base is a different image; add a
-      # matrix entry with VLLM_BASE=rocm/vllm:<tag> once that's validated.
       # On a tag push this adds the tag verbatim (v1.2.3), so every image
       # carries the same version string as the released chialoops.
       - name: Image tags
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.IMAGE }}
+          images: ${{ env.OWNER }}/${{ matrix.name }}
           tags: |
             type=raw,value=latest
             type=raw,value=build-${{ github.run_id }}
@@ -71,10 +79,11 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
+            VLLM_BASE=${{ matrix.base }}
             CHIA_REVISION=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=registry,ref=${{ env.IMAGE }}:buildcache
-          cache-to: type=registry,ref=${{ env.IMAGE }}:buildcache,mode=max
+          cache-from: type=registry,ref=${{ env.OWNER }}/${{ matrix.name }}:buildcache
+          cache-to: type=registry,ref=${{ env.OWNER }}/${{ matrix.name }}:buildcache,mode=max
 
       - name: Show runner resources
         run: |
@@ -87,11 +96,14 @@ jobs:
     needs: build-and-push
     permissions:
       packages: write
+    strategy:
+      matrix:
+        name: [chia-vllm, chia-vllm-amd]
     steps:
       - name: Delete build images older than 7 days
         uses: actions/delete-package-versions@v5
         with:
-          package-name: chia-vllm
+          package-name: ${{ matrix.name }}
           package-type: container
           min-versions-to-keep: 0
           delete-only-pre-release-versions: false

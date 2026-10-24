@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import os
 import json
 import re
 import shlex
@@ -15,12 +16,14 @@ from chia.cluster.ray_stop import build_address
 from chia.cluster.log import get_logger, log_phase
 from chia.cluster.ssh import SSHClient
 from chia.cluster.tailnet import (
-    TailnetWorkerAlloc, allocate_tailnet_workers, build_relay_spec,
-    ensure_tailscale, start_relay, stop_relay, stop_tailscaled, ts_hostname,
+    TailnetWorkerAlloc, allocate_added_tailnet_workers,
+    allocate_tailnet_workers, build_relay_spec, ensure_tailscale,
+    live_tailnet_workers, query_tailnet_ip, read_relay_spec, start_relay,
+    stop_relay, stop_tailscaled, ts_hostname, update_relay,
 )
 from chia.cluster.tunnel import TunnelManager
 
-from dataclasses import replace
+from dataclasses import dataclass, field, replace
 
 
 logger = get_logger("setup")
@@ -96,11 +99,17 @@ def query_ray_cluster_nodes(config: ClusterConfig) -> list[dict] | None:
     except Exception:
         return None
 
-    query_script = list(config.head_env_commands) + [
+    query_script = list(config.head_env_commands)
+    tn = config.tailnet_config
+    if tn is not None:
+        # A tailnet head's Ray is reached like any driver on it reaches
+        # it: at its advertise IP, with the grpc_proxy env.
+        query_script.extend(_grpc_proxy_exports(tn, tn.head_advertise_ip))
+    query_script += [
         "python3 << 'CHIA_QUERY_EOF'",
         "import ray, json",
-        f"ray.init(address='{config.head_ray_address}', ignore_reinit_error=True)",
-        "nodes = [{'NodeName': n['NodeName'], 'Alive': n['Alive'], 'Resources': n.get('Resources', {})} for n in ray.nodes()]",
+        f"ray.init(address='{_head_gcs_address(config)}', ignore_reinit_error=True)",
+        "nodes = [{'NodeName': n['NodeName'], 'Alive': n['Alive'], 'Resources': n.get('Resources', {}), 'NodeManagerPort': n.get('NodeManagerPort')} for n in ray.nodes()]",
         "print('CHIA_NODES:' + json.dumps(nodes))",
         "CHIA_QUERY_EOF",
     ]
@@ -161,9 +170,151 @@ def compute_new_assignments(
     return new_assignments
 
 
+@dataclass
+class TailnetAddPlan:
+    """What ``chia up --add`` adds to a running tailnet cluster.
+
+    *live* holds ``(cluster_ip, alloc)`` for the workers already running
+    (reconstructed from the live cluster), *new* the allocs for the
+    workers being added, and *tailnet_ip_map* the tailnet IPs of
+    CHIA-managed machines whose tailscaled was already running.
+    """
+    live: list[tuple[str, TailnetWorkerAlloc]]
+    new: dict[tuple[str, str, int], TailnetWorkerAlloc]
+    tailnet_ip_map: dict[str, str] = field(default_factory=dict)
+
+
+def plan_tailnet_add(
+    config: ClusterConfig,
+    desired: list[NodeAssignment],
+    existing_nodes: list[dict],
+) -> tuple[list[NodeAssignment], TailnetAddPlan]:
+    """Work out which of *desired* a running tailnet cluster lacks.
+
+    The tailnet counterpart of :func:`compute_new_assignments`. Tailnet
+    workers register in Ray under loopback advertise IPs, so each live
+    worker is first mapped back to its machine (see
+    :func:`live_tailnet_workers`), then matched against *desired* by
+    ``(machine, custom resources)``. The workers left over get allocs
+    that avoid everything already running.
+
+    Read-only: tailnet IPs are queried from the machines whose
+    tailscaled is already up; nothing is joined or started (safe for
+    ``--dry-run`` and before the confirmation prompt).
+    """
+    tn = config.tailnet_config
+    assert tn is not None
+
+    head_ssh = _make_ssh(config, config.head_ip)
+    if tn.manage_all and not tn.head_tailnet_ip:
+        tn.head_tailnet_ip = query_tailnet_ip(head_ssh, tn) or ""
+
+    managed_ips = sorted({
+        ip for ip in config.worker_ips
+        if config.is_tailnet(ip) and config.get_ssh_auth(ip).manage_tailscale})
+    tailnet_ip_map: dict[str, str] = {}
+    if managed_ips:
+        with ThreadPoolExecutor(max_workers=len(managed_ips)) as pool:
+            ts_ips = pool.map(
+                lambda ip: query_tailnet_ip(_make_ssh(config, ip), tn),
+                managed_ips)
+            tailnet_ip_map = {ip: ts_ip for ip, ts_ip in zip(managed_ips, ts_ips)
+                              if ts_ip}
+
+    head_spec = read_relay_spec(head_ssh, config.cluster_name) or {}
+    live = live_tailnet_workers(config, existing_nodes,
+                                head_spec.get("routes", {}), tailnet_ip_map)
+
+    # Matched by cluster address, just as compute_new_assignments
+    # matches direct workers by their IP.
+    new_assignments = compute_new_assignments(desired, [
+        {"NodeName": ip, "Alive": True, "Resources": resources}
+        for ip, resources, _ in live])
+    live_allocs = [(ip, alloc) for ip, _, alloc in live]
+    new_allocs = allocate_added_tailnet_workers(
+        config, new_assignments, live_allocs, tailnet_ip_map)
+    return new_assignments, TailnetAddPlan(live_allocs, new_allocs,
+                                           tailnet_ip_map)
+
+
+def _join_and_reload_tailnet(
+    config: ClusterConfig,
+    plan: TailnetAddPlan,
+) -> dict[tuple[str, str, int], TailnetWorkerAlloc]:
+    """Bring the tailnet up to date for the workers in *plan* and return
+    their allocs, ready for ``setup_worker_node``.
+
+    Joins the new workers' CHIA-managed machines to the tailnet (and the
+    head under manage_all, if its tailscaled wasn't up), then pushes the
+    full set of routes — live workers plus new — to every relay: a
+    running relay is hot-reloaded so existing workers keep their
+    connections; new machines get a fresh relay. All of this happens
+    before any new worker starts Ray, which dials the head GCS through
+    its machine's relay.
+    """
+    tn = config.tailnet_config
+    if tn.manage_all and not tn.head_tailnet_ip:
+        head_ssh = _make_ssh(config, config.head_ip)
+        head_ssh.wait_for_ssh()
+        with log_phase(logger, f"Joining head {config.head_ip} to the tailnet"):
+            tn.head_tailnet_ip = ensure_tailscale(
+                head_ssh, tn, hostname=ts_hostname(config.cluster_name,
+                                                   config.head_ip))
+
+    tailnet_ip_map = dict(plan.tailnet_ip_map)
+    join_ips = sorted({
+        key[0] for key in plan.new
+        if config.is_tailnet(key[0]) and config.get_ssh_auth(key[0]).manage_tailscale})
+    if join_ips:
+        def _join_tailnet(ip: str) -> tuple[str, str]:
+            ssh = _make_ssh(config, ip)
+            ssh.wait_for_ssh()
+            with log_phase(logger, f"Joining {ip} to the tailnet"):
+                ts_ip = ensure_tailscale(
+                    ssh, tn, hostname=ts_hostname(config.cluster_name, ip))
+            return ip, ts_ip
+
+        with ThreadPoolExecutor(max_workers=len(join_ips)) as pool:
+            futures = [pool.submit(_join_tailnet, ip) for ip in join_ips]
+            for fut in as_completed(futures):
+                ip, ts_ip = fut.result()  # raise loudly on join failure
+                tailnet_ip_map[ip] = ts_ip
+        logger.info(f"Tailnet joins: {tailnet_ip_map}")
+
+    # Allocs were planned before the joins: fill in the discovered
+    # tailnet IPs (and head_tailnet_ip for head-colocated workers).
+    new_allocs = {
+        key: replace(alloc, tailnet_ip=(
+            tn.head_tailnet_ip if key[0] == config.head_ip
+            else tailnet_ip_map.get(key[0], key[0])))
+        for key, alloc in plan.new.items()}
+
+    # Every relay routes to every participant, so all of them — not just
+    # the new machines' — must learn the new workers. build_relay_spec
+    # only reads each key's machine, so live workers get synthetic keys.
+    all_allocs: dict[tuple[str, str, int], TailnetWorkerAlloc] = {
+        (ip, "<live>", i): alloc for i, (ip, alloc) in enumerate(plan.live)}
+    all_allocs.update(new_allocs)
+    relay_ips = sorted({key[0] for key in all_allocs
+                        if key[0] in config.worker_ips} - {config.head_ip})
+    with log_phase(logger, f"Updating tailnet relay on head {config.head_ip}"):
+        update_relay(_make_ssh(config, config.head_ip),
+                     build_relay_spec(config, all_allocs, None),
+                     config.cluster_name)
+    for ip in relay_ips:
+        ssh = _make_ssh(config, ip)
+        ssh.wait_for_ssh()
+        with log_phase(logger, f"Updating tailnet relay on {ip}"):
+            update_relay(ssh, build_relay_spec(config, all_allocs, ip),
+                         config.cluster_name)
+    logger.info(f"Tailnet relays updated on head + {len(relay_ips)} machine(s)")
+    return new_allocs
+
+
 def add_nodes_to_cluster(
     config: ClusterConfig,
     new_assignments: list[NodeAssignment],
+    tailnet_plan: TailnetAddPlan | None = None,
 ) -> TunnelManager | None:
     """Add only the given worker assignments to an existing Ray cluster.
 
@@ -171,16 +322,19 @@ def add_nodes_to_cluster(
     already have running Ray processes (for bare-metal workers).
     Supports tunneled (EC2) workers by computing tunnel configs for ALL
     assignments (for consistent port allocation) and only starting
-    tunnels for the new ones.
+    tunnels for the new ones. Tailnet clusters need the *tailnet_plan*
+    from :func:`plan_tailnet_add`.
     """
     if not new_assignments:
         logger.info("No new assignments to add.")
         return None
 
+    tailnet_allocs: dict[tuple[str, str, int], TailnetWorkerAlloc] = {}
     if config.tailnet_config is not None:
-        raise RuntimeError(
-            "chia up --add is not yet supported for tailnet clusters — "
-            "run a full 'chia down' and 'chia up' instead")
+        if tailnet_plan is None:
+            raise ValueError("adding workers to a tailnet cluster needs the "
+                             "TailnetAddPlan from plan_tailnet_add()")
+        tailnet_allocs = _join_and_reload_tailnet(config, tailnet_plan)
 
     logger.info(f"Adding {len(new_assignments)} new worker(s) to cluster")
 
@@ -279,11 +433,13 @@ def add_nodes_to_cluster(
     def _setup_ip_workers(ip: str, ip_assignments: list[NodeAssignment]):
         failed_local = []
         for i, a in enumerate(ip_assignments):
-            tc = new_tunnel_configs.get((a.ip, a.node_type.name, a.worker_index))
+            key = (a.ip, a.node_type.name, a.worker_index)
+            tc = new_tunnel_configs.get(key)
             try:
                 setup_worker_node(config, a, tunnel_config=tc,
                                   skip_ray_stop=True,
-                                  head_ip=head_ip_resolved if tc else None)
+                                  head_ip=head_ip_resolved if tc else None,
+                                  tailnet_alloc=tailnet_allocs.get(key))
                 logger.info(
                     f"Worker {a.ip} ({a.node_type.name}-{a.worker_index}) ready")
             except Exception as e:
@@ -340,12 +496,21 @@ def allocate_worker_tunnels(
     # Tool listeners share head_ip, so advance by the full requested range.
     # The historical 100-port stride overlaps when a worker hosts >100 tools.
     tool_offset = 0
+    # Another cluster on this head allocates from the same ranges: skip what its tunnels hold.
+    foreign = _foreign_tunnel_binds(tunneled_ips)
+    head_addr = socket.gethostbyname(config.head_ip)
 
     for a in assignments:
         if a.ip not in tunneled_ips:
             continue
 
         base_tc = config.get_tunnel_config(a.ip) or TunnelConfig()
+        while any(addr == str(next_addr) for addr, _ in foreign):
+            next_addr += 1
+        while any((head_addr, port) in foreign for port in range(
+                base_tc.tool_port_min + tool_offset,
+                base_tc.tool_port_max + tool_offset + 1)):
+            tool_offset += _PORT_STEP_DEFAULT
         # Per-IP offset for Ray/GCS ports (bind on unique tun_ip per worker).
         ray_offset = ip_worker_count[a.ip] * _PORT_STEP_DEFAULT
         worker_offset = ip_worker_count[a.ip] * _PORT_STEP_WORKER
@@ -371,6 +536,24 @@ def allocate_worker_tunnels(
             next_addr += 1
 
     return result
+
+
+def _foreign_tunnel_binds(own_ips: set[str]) -> set[tuple[str, int]]:
+    """Head-side (address, port) binds of live ``ssh -N`` tunnels to machines outside *own_ips*."""
+    binds: set[tuple[str, int]] = set()
+    for pid in filter(str.isdigit, os.listdir("/proc")):
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                args = [a for a in f.read().decode().split("\0") if a]
+        except OSError:
+            continue
+        if args[:2] != ["ssh", "-N"] or args[-1].rsplit("@", 1)[-1] in own_ips:
+            continue
+        for flag, spec in zip(args, args[1:]):
+            if flag == "-L":
+                addr, port = spec.split(":")[:2]
+                binds.add((addr, int(port)))
+    return binds
 
 
 def _make_ssh(config: ClusterConfig, ip: str) -> SSHClient:
@@ -802,12 +985,14 @@ def bring_up_cluster(config: ClusterConfig) -> TunnelManager | None:
             {key[0] for key in tailnet_allocs} - {config.head_ip})
         with log_phase(logger, f"Starting tailnet relay on head {config.head_ip}"):
             start_relay(_make_ssh(config, config.head_ip),
-                        build_relay_spec(config, tailnet_allocs, None))
+                        build_relay_spec(config, tailnet_allocs, None),
+                        config.cluster_name)
         for ip in tailnet_host_ips:
             ssh = _make_ssh(config, ip)
             ssh.wait_for_ssh()
             with log_phase(logger, f"Starting tailnet relay on {ip}"):
-                start_relay(ssh, build_relay_spec(config, tailnet_allocs, ip))
+                start_relay(ssh, build_relay_spec(config, tailnet_allocs, ip),
+                            config.cluster_name)
         logger.info(f"Tailnet relays up on head + {len(tailnet_host_ips)} machine(s)")
 
     # Group assignments by IP so we set up workers on the same machine
@@ -1170,12 +1355,10 @@ def tear_down_cluster(
     else:
         # Kill any orphaned tunnels from a previous run
         from chia.cluster.tunnel import kill_orphaned_tunnels
-        kill_ips = [
-            ip for ip in config.worker_ips
-            if (tc := config.get_tunnel_config(ip)) is not None and tc.kill_orphaned_tunnels
-        ]
-        if kill_ips:
-            kill_orphaned_tunnels(kill_ips)
+        # The PID files are named by tunnel IP, so each tunnel's IP goes along.
+        for (ip, _, _), tc in worker_tunnel_configs.items():
+            if tc.kill_orphaned_tunnels:
+                kill_orphaned_tunnels([ip], tunnel_ip=tc.tunnel_ip)
 
     # Stop tailnet relays (workers + head) and any CHIA-managed
     # tailscaled daemons, best effort. The head's daemon goes strictly
@@ -1188,7 +1371,7 @@ def tear_down_cluster(
             try:
                 ssh = _make_ssh(config, ip)
                 with log_phase(logger, f"Stopping tailnet relay on {ip}"):
-                    stop_relay(ssh)
+                    stop_relay(ssh, config.cluster_name)
                 is_head = ip == config.head_ip
                 managed = (tn.manage_all if is_head
                            else config.get_ssh_auth(ip).manage_tailscale)

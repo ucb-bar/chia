@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, List, Optional
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.chia_log import chia_log
 from chia.base.llm_call import QueryResult, LLMCallBase, UNSET
 from chia.models.openai_compat import OpenAICompatLLM
 
@@ -211,6 +212,11 @@ class VertexGeminiLLM(LLMCallBase):
     Returns the same :class:`QueryResult` shape as the other backends so callers
     are interchangeable; ``returncode`` is synthesised (0 on success, -1 when
     every retry fails) and ``stderr`` is unused.
+
+    ``generation_config`` passes further ``GenerateContentConfig`` fields
+    (``temperature``, ``response_mime_type``, ``thinking_config``, ...); the
+    node's own arguments (``max_tokens``, ``system_message``, tools) take
+    precedence over it.
     """
 
     def __init__(
@@ -222,11 +228,13 @@ class VertexGeminiLLM(LLMCallBase):
         logging_name: str = "vertex_gemini",
         logging_level: int = logging.DEBUG,
         log_dir: Optional[str] = None,
+        logging_resource: Optional[str] = None,
         project: Optional[str] = None,
         location: Optional[str] = None,
         max_tokens: int = 16000,
         max_tool_iterations: int = 100,
         client_kwargs: Optional[dict] = None,
+        generation_config: Optional[dict] = None,
         dangerously_skip_permissions=UNSET,
         config=UNSET,
     ):
@@ -249,6 +257,7 @@ class VertexGeminiLLM(LLMCallBase):
         self.max_tokens = max_tokens
         self.max_tool_iterations = max_tool_iterations
         self.client_kwargs = client_kwargs or {}
+        self.generation_config = generation_config or {}
         self.logger = logging.getLogger(logging_name)
         self._last_metadata: dict = {}
 
@@ -258,8 +267,8 @@ class VertexGeminiLLM(LLMCallBase):
         )
 
         self._log_dir = log_dir
+        self._logging_resource = logging_resource
         if log_dir is not None:
-            os.makedirs(log_dir, exist_ok=True)
             run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             self._log_prefix = os.path.join(log_dir, f"{logging_name}_{run_id}")
         else:
@@ -444,6 +453,7 @@ class VertexGeminiLLM(LLMCallBase):
                     dispatch[api_name] = (session, fn.name)
 
             config_kwargs: dict = {
+                **self.generation_config,
                 "max_output_tokens": self.max_tokens,
                 # We run the loop ourselves; don't let the SDK auto-call.
                 "automatic_function_calling": types.AutomaticFunctionCallingConfig(
@@ -459,7 +469,7 @@ class VertexGeminiLLM(LLMCallBase):
             contents = [types.Content(
                 role="user", parts=[types.Part.from_text(text=user_message)]
             )]
-            meta = {"input_tokens": 0, "output_tokens": 0, "num_turns": 0}
+            meta = {"input_tokens": 0, "output_tokens": 0, "thinking_tokens": 0, "num_turns": 0}
             final_text = ""
 
             for _ in range(self.max_tool_iterations):
@@ -479,8 +489,10 @@ class VertexGeminiLLM(LLMCallBase):
                 meta["num_turns"] += 1
                 usage = getattr(resp, "usage_metadata", None)
                 if usage is not None:
+                    thoughts = getattr(usage, "thoughts_token_count", 0) or 0
                     meta["input_tokens"] += getattr(usage, "prompt_token_count", 0) or 0
-                    meta["output_tokens"] += getattr(usage, "candidates_token_count", 0) or 0
+                    meta["output_tokens"] += (getattr(usage, "candidates_token_count", 0) or 0) + thoughts
+                    meta["thinking_tokens"] += thoughts
 
                 candidate = (resp.candidates or [None])[0]
                 if candidate is None or candidate.content is None:
@@ -581,8 +593,7 @@ class VertexGeminiLLM(LLMCallBase):
 
         stream_parts.append("-" * 80 + "\n\n")
         if self._log_prefix is not None:
-            with open(f"{self._log_prefix}.log", "a") as f:
-                f.write("".join(stream_parts))
+            chia_log("".join(stream_parts), f"{self._log_prefix}.log", self._logging_resource)
 
         return QueryResult(
             result=final_text,

@@ -1,5 +1,6 @@
 
 cluster_name: chia-vllm-opencode
+connection: tunnel   # SSH tunnels, so the head can be outside AWS
 
 provider:
     # On-prem head (where you invoke the wrapper). The AWS worker connects back

@@ -283,6 +283,26 @@ def test_parse_cache_prefetch_counters():
     assert l2c.prefetch.useless == 50, "useless prefetch mismatch"
 
 
+def test_run_champsim_returns_the_raw_record(monkeypatch, tmp_path):
+    """The parsed --json record travels beside the typed stats."""
+    pytest.importorskip("ray")
+    from chia.simulators import champsim as champsim_module
+    from chia.simulators.champsim import ChampSimNode
+
+    def fake_run(cmd, cwd, timeout_s, env=None):
+        with open(cmd[cmd.index("--json") + 1], "w") as stats_file:
+            json.dump(_CANNED_JSON, stats_file)
+        return 0, "", "", False, 0.01
+
+    monkeypatch.setattr(champsim_module, "_run_logged", fake_run)
+    trace = tmp_path / "t.champsimtrace.xz"
+    trace.write_bytes(b"")
+    result = ChampSimNode.run_champsim(b"not a binary", str(trace))
+    assert result.success is True
+    assert result.raw_stats == _CANNED_JSON
+    assert result.ipc == 2.0
+
+
 # ---------------------------------------------------------------------------
 # Tier 0: _compute_derived_metrics tests
 # ---------------------------------------------------------------------------

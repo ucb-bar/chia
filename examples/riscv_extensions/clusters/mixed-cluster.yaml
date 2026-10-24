@@ -17,6 +17,7 @@
 # =============================================================================
 
 cluster_name: mixed-prem-aws-no-synth
+connection: tunnel   # SSH tunnels, so the head can be outside AWS
 
 provider:
     head_ip: &head_ip ${HEAD_IP}

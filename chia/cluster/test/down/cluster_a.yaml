@@ -1,4 +1,5 @@
 cluster_name: down_cluster_a
+connection: tunnel   # SSH tunnels, so the head can be outside AWS
 
 available_node_types:
     worker:

@@ -1,5 +1,15 @@
+Profiling and Logging
+=====================
+
+CHIA records two things for a loop: a profile of its ``ChiaFunction`` calls, and
+the logs that its nodes write.
+
+.. contents::
+   :local:
+   :depth: 2
+
 Profiling
-=========
+---------
 
 CHIA can profile a loop's execution (how long each ``ChiaFunction`` call
 took, which worker ran it, and how calls depend on one another) and render the
@@ -10,12 +20,8 @@ is built around ``ChiaProfiler``, a singleton that instruments every
 Start the collector on the driver, run your loop, then point
 the **``chia viz-profile``** CLI at the JSONL log it wrote.
 
-.. contents::
-   :local:
-   :depth: 1
-
 Enabling profiling
-------------------
+~~~~~~~~~~~~~~~~~~
 
 Start the ``ChiaProfileCollector`` from the driver, after ``ray.init()`` and before any
 profiled ``@ChiaFunction`` calls:
@@ -41,8 +47,13 @@ can also stop it explicitly:
 
    stop_collector()   # idempotent
 
+``stop_collector()`` first waits for the events already sent to reach the log, then
+kills the actor. Events travel to the collector as fire-and-forget calls, so a script
+that reads the log while the loop is still running should call
+``ray.get(get_collector().get_events.remote())`` first.
+
 What gets recorded
-------------------
+~~~~~~~~~~~~~~~~~~
 
 Once the collector is running, ``ChiaFunction`` instruments itself with no
 changes to your code. Every call emits events keyed by a globally unique
@@ -57,7 +68,7 @@ changes to your code. Every call emits events keyed by a globally unique
   than on a worker. ``local_end`` also carries ``exec_time_s``.
 
 Dependency edges
-~~~~~~~~~~~~~~~~~
+^^^^^^^^^^^^^^^^
 
 The profiler reconstructs the task graph by tracking object identity: when a call
 returns a value, it records ``id(value) -> call_id``; when a later call receives
@@ -66,7 +77,7 @@ Small interned values (``int``, ``float``, ``str``, ``bytes``, ``bool``,
 ``None``) are deliberately skipped to avoid false-positive edges.
 
 Attaching custom metadata
--------------------------
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 From inside any ``@ChiaFunction`` body, call ``add_info`` to merge extra fields
 into that call's ``complete`` (or ``local_end``) event. It is thread-local, so
@@ -96,7 +107,7 @@ Each custom event is timestamped and tagged with the current ``worker_id``
 automatically.
 
 Visualizing a profile
----------------------
+~~~~~~~~~~~~~~~~~~~~~
 
 Render a recorded log with the ``chia viz-profile`` CLI — a dependency graph
 (``svg``/``png``/``pdf``), an interactive HTML timeline, or an aggregated CSV
@@ -121,3 +132,39 @@ formats and flags.
 .. - **One run per graph.** Graph and HTML formats render a single run (use
 ..   ``--run`` / ``--gap-threshold`` to pick it); only ``--format table`` aggregates
 ..   across runs and logs.
+
+Logging
+-------
+
+A node writes its logs with ``chia_log``. It adds data to the end of a file, on the
+head by default, so the logs stay after the node's machine goes down.
+
+.. code-block:: python
+
+   from chia.base.chia_log import chia_log
+
+   msg = "iteration 3: score 0.82\n"
+   chia_log(msg, "/data/logs/loop.log")                     # a file on the head
+   chia_log(msg, "s3://my-bucket/logs/loop.log")            # an S3 object
+   chia_log(msg, "/data/logs/loop.log", resource="LOG_DISK")  # the machine with LOG_DISK
+
+Nodes that log, such as the model nodes and the bitstream build node, take two inputs:
+
+- ``log_dir``: the folder, or ``s3://`` prefix, for the node's logs. ``None`` writes none.
+- ``logging_resource``: the resource of the machine that writes them. ``None`` means the head.
+
+.. code-block:: python
+
+   from chia.firesim.bitstream_build_node import BitstreamBuildNode
+   from chia.models.claude import ClaudeCodeLLM
+
+   llm = ClaudeCodeLLM(log_dir="/data/logs/llm")                  # on the head
+   builder = BitstreamBuildNode(log_dir="s3://my-bucket/builds")  # in S3
+
+Each node puts the time in its file names, so a new run never mixes with an old one.
+An ``s3://`` path uses the AWS credentials of the machine that writes.
+
+.. note::
+
+   Do not pass a resource that the calling task holds: the write would wait for that
+   task to end. ``chia_log`` cannot yet write on the caller's own machine.

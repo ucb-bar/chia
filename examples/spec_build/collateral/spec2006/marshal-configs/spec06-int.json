@@ -1,0 +1,53 @@
+{
+  "name": "spec06-int",
+  "jobs": [
+    {
+      "name": "400.perlbench",
+      "command": "./cint.sh 400.perlbench"
+    },
+    {
+      "name": "401.bzip2",
+      "command": "./cint.sh 401.bzip2"
+    },
+    {
+      "name": "403.gcc",
+      "command": "./cint.sh 403.gcc"
+    },
+    {
+      "name": "429.mcf",
+      "command": "./cint.sh 429.mcf"
+    },
+    {
+      "name": "445.gobmk",
+      "command": "./cint.sh 445.gobmk"
+    },
+    {
+      "name": "456.hmmer",
+      "command": "./cint.sh 456.hmmer"
+    },
+    {
+      "name": "458.sjeng",
+      "command": "./cint.sh 458.sjeng"
+    },
+    {
+      "name": "462.libquantum",
+      "command": "./cint.sh 462.libquantum"
+    },
+    {
+      "name": "464.h264ref",
+      "command": "./cint.sh 464.h264ref"
+    },
+    {
+      "name": "471.omnetpp",
+      "command": "./cint.sh 471.omnetpp"
+    },
+    {
+      "name": "473.astar",
+      "command": "./cint.sh 473.astar"
+    },
+    {
+      "name": "483.xalancbmk",
+      "command": "./cint.sh 483.xalancbmk"
+    }
+  ]
+}

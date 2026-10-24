@@ -42,6 +42,7 @@ The system prompt is folded into the user message (print mode has no
 
 from __future__ import annotations
 
+import io
 import json
 import logging
 import os
@@ -58,6 +59,7 @@ from uuid import uuid4
 import ray
 
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.chia_log import chia_log
 from chia.base.llm_call import QueryResult, LLMCallBase, UNSET
 from chia.models.claude import _session_tracked
 
@@ -241,6 +243,7 @@ class AntigravityLLM(LLMCallBase):
         logging_name: str = "antigravity",
         logging_level: int = logging.DEBUG,
         log_dir: str | None = None,
+        logging_resource: str | None = None,
         agy_bin: str = "agy",
         work_dir: str | None = None,
         add_dirs: list[str] | None = None,
@@ -249,6 +252,7 @@ class AntigravityLLM(LLMCallBase):
         sandbox: bool = False,
         extra_cli_args: list[str] | None = None,
         resume_session: bool = False,
+        mcp_timeout_seconds: int | None = None,
         config=UNSET,
     ):
         super().__init__(system_message=system_message,
@@ -267,6 +271,7 @@ class AntigravityLLM(LLMCallBase):
         # self.dangerously_skip_permissions is set by LLMCallBase.__init__.
         self.sandbox = sandbox
         self.extra_cli_args = extra_cli_args or []
+        self.mcp_timeout_seconds = mcp_timeout_seconds
         self.logger = logging.getLogger(logging_name)
         self._call_counter = 0
         self._last_metadata: dict = {}
@@ -283,8 +288,8 @@ class AntigravityLLM(LLMCallBase):
             self.logger.info(
                 "AntigravityLLM model is unset; agy will use its configured default model."
             )
+        self._logging_resource = logging_resource
         if log_dir is not None:
-            os.makedirs(log_dir, exist_ok=True)
             stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             session_tag = f"_{self._session_id[:8]}" if self._session_id else ""
             self._log_prefix = os.path.join(log_dir, f"{logging_name}_{stamp}{session_tag}")
@@ -492,6 +497,8 @@ class AntigravityLLM(LLMCallBase):
                 "serverUrl": f"http://{tool.hostname}:{port}/{tool.name}/mcp",
                 "disabled": False,
             }
+            if self.mcp_timeout_seconds is not None:
+                servers[tool.name]["timeoutSeconds"] = self.mcp_timeout_seconds
         return {"mcpServers": servers}
 
     def _prepare_run_home(self, tools: list[ChiaTool]) -> str:
@@ -703,7 +710,7 @@ class AntigravityLLM(LLMCallBase):
         return "".join(parts)
 
     def _write_log(self, user_message: str, stream: str) -> None:
-        with open(f"{self._log_prefix}.log", "a") as f:
+        with io.StringIO() as f:
             f.write("=" * 80 + "\n")
             f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] "
                     f"Prompt #{self._call_counter} (antigravity)\n")
@@ -712,6 +719,7 @@ class AntigravityLLM(LLMCallBase):
             if stream and not stream.endswith("\n"):
                 f.write("\n")
             f.write("-" * 80 + "\n\n")
+            chia_log(f.getvalue(), f"{self._log_prefix}.log", self._logging_resource)
 
     def _classify_error(self, cli: QueryResult) -> None:
         """Raise a typed error if *cli* describes a failed run.

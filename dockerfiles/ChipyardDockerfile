@@ -101,6 +101,32 @@ else:
     print("No glibc detection block to patch in build-setup.sh; skipping")
 PY
 
+# build-setup.sh creates its own conda-lock env with no Python bound:
+#
+#   conda create -y -p $CYDIR/.conda-lock-env -c conda-forge conda-lock=2.5.7
+#
+# conda-forge now resolves Python 3.15 into it, and conda-lock 2.5.7's vendored
+# lark still does "import sre_parse", removed in Python 3.13 — so step 1 dies
+# before it solves anything. Bound that env's Python. Hard failure if the line
+# moves: a silent skip would only fail the build again, 25 minutes later.
+RUN python - <<'PYEOF'
+import re, sys
+from pathlib import Path
+
+path = Path("/home/ray/chipyard/scripts/build-setup.sh")
+text = path.read_text()
+text, hits = re.subn(
+    r"(conda create -y -p \$CONDA_LOCK_ENV_PATH -c conda-forge [^\n]*?)( &&\n)",
+    r"""\1 "python<3.13"\2""",
+    text,
+    count=1,
+)
+if hits != 1:
+    sys.exit("::error::could not bound the conda-lock env's python in build-setup.sh")
+path.write_text(text)
+print("Bounded the conda-lock env to python<3.13")
+PYEOF
+
 # Install conda to ray's home directory (no sudo needed).
 # Inspired by chipyard's CI Dockerfile (.github/scripts/install-conda.sh).
 #
@@ -114,8 +140,8 @@ RUN /tmp/install-conda.sh --prefix /home/ray/conda
 
 SHELL ["/bin/bash", "-cl"]
 
-# Stub vivado binary to pass hdk_setup.sh checks during FireSim setup.
-# Vivado runs natively on the FPGA AMI host, never inside this container.
+# Stub vivado binary to pass hdk_setup.sh checks during FireSim setup. F2_VIVADO
+# mounts the instance's Vivado and puts it before this stub on the PATH.
 USER root
 RUN printf '#!/bin/bash\necho "Vivado v2024.2 (64-bit)"\n' > /usr/local/bin/vivado \
     && chmod +x /usr/local/bin/vivado
@@ -124,6 +150,10 @@ USER ray
 # Run build-setup.sh with FireSim support. The public chipyard's submodules are
 # also public, so no auth is needed for submodule init.
 RUN ./build-setup.sh -s 4 -s 9
+
+# FireSim's build-setup-nolog.sh pip-installs fab-classic with deps, replacing the lock's cryptography 40.0.2 with one pyOpenSSL 23.2 (and so `aws`) can't load.
+# TODO: Remove when FireSim gets the proper fix to avoid this.
+RUN source env.sh && pip install --no-deps "cryptography==40.0.2"
 
 # Pre-build the MacroCompiler classpath jar (tapeout.jar) so SRAM remapping
 # (chia.chipyard.macrocompiler.remap_with_macrocompiler, which runs
@@ -148,12 +178,6 @@ RUN if [ ! -f sims/firesim/platforms/f2/aws-fpga-firesim-f2/sdk_setup.sh ]; then
     && cd sims/firesim/platforms/f2/aws-fpga-firesim-f2 \
     && source sdk_setup.sh
 
-# At runtime, containers get SSH agent forwarding (not a PAT). Rewrite
-# HTTPS GitHub URLs to SSH so that git pull / submodule update uses the
-# forwarded agent instead of trying unauthenticated HTTPS.
-RUN git config --global url."git@github.com:".insteadOf "https://github.com/" \
-    && mkdir -p ~/.ssh && ssh-keyscan github.com >> ~/.ssh/known_hosts
-
 # Source chipyard and firesim env.sh in .bashrc so that
 # subprocess.run(shell=True) in ChiselBuildNode inherits the full
 # environment (Java, SBT, Verilator, RISCV toolchain, CIRCT firtool,
@@ -163,6 +187,15 @@ RUN echo 'source /home/ray/chipyard/env.sh' >> ~/.bashrc \
     && echo 'cd /home/ray/chipyard/sims/firesim/platforms/f2/aws-fpga-firesim-f2' >> ~/.bashrc \
     && echo 'cd /home/ray' >> ~/.bashrc
 
+# The F2 build runs here with the instance's Vivado. Vivado forces
+# LC_ALL=en_US.UTF-8 and, on Ubuntu 22.04, loads the system's libtinfo.so.5.
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends locales libtinfo5 \
+    && locale-gen en_US.UTF-8 && rm -rf /var/lib/apt/lists/*
+
 USER ray
+# The HDK checks out its IP with git LFS, through chipyard's conda git, which
+# reads ray's git config but not the system's.
+RUN git lfs install
 ENV HOME=/home/ray
 WORKDIR /home/ray

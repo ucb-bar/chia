@@ -22,7 +22,7 @@ Key differences from AWS, all contained in this module:
   ``authorized_keys``.  The SSH *client* reuses ``ssh_private_key`` unchanged.
   ``use_os_login`` flips to OS Login (registration left as a documented stub).
 * **Firewall rules vs security groups.**  Rules live on the VPC network and
-  target instances by network *tag*; see :func:`ensure_ssh_firewall`.
+  target instances by network *tag*; see :func:`ensure_firewall`.
 * **Labels.**  Discovery tags are GCP labels (lowercase ``[a-z0-9_-]``).
 * **``extra_args`` is structured.**  boto3 splats flat kwargs; compute_v1 takes
   an ``Instance`` proto, so ``extra_args`` is deep-merged onto the built
@@ -47,7 +47,6 @@ from chia.cluster.log import get_logger
 # aws_nodes is cheap — its boto3 import is lazy, so this does not require boto3.
 from chia.cluster.aws_nodes import (
     DEFAULT_AWS_SETUP_COMMANDS as DEFAULT_SETUP_COMMANDS,
-    _intra_vpc_enabled,
     _resolve_head_ssh_cidrs,
     run_aws_setup as run_gcp_setup,  # provider-agnostic; re-exported for symmetry
 )
@@ -59,7 +58,7 @@ __all__ = [
     "GCPNodeConfig", "DEFAULT_IMAGE", "DEFAULT_ZONE",
     "provision_gcp_nodes", "provision_missing_gcp_nodes",
     "discover_gcp_nodes", "teardown_gcp_nodes",
-    "ensure_ssh_firewall", "cleanup_firewall", "run_gcp_setup",
+    "ensure_firewall", "cleanup_firewall", "check_names", "run_gcp_setup",
 ]
 
 
@@ -122,13 +121,18 @@ class GCPNodeConfig:
 def _sanitize_name(s: str) -> str:
     """Sanitize *s* into a valid GCP resource name / network tag.
 
-    GCP instance names and network tags must match
-    ``[a-z]([-a-z0-9]*[a-z0-9])?`` and be <= 63 chars (no underscores).
+    GCP instance names, firewall rule names and network tags must match
+    ``[a-z]([-a-z0-9]*[a-z0-9])?`` and be <= 63 chars (no underscores). A longer
+    name raises instead of being cut, because a cut name could clash with another
+    cluster's.
     """
     out = re.sub(r"[^a-z0-9-]", "-", s.lower()).strip("-")
     if not out or not out[0].isalpha():
         out = "c" + out
-    return out[:63].rstrip("-")
+    if len(out) > 63:
+        raise ValueError(f"the GCP name {out!r} is longer than 63 characters; "
+                         f"use a shorter cluster_name or node type name")
+    return out
 
 
 def _sanitize_label(s: str) -> str:
@@ -137,8 +141,35 @@ def _sanitize_label(s: str) -> str:
 
 
 def _network_tag(cluster_name: str) -> str:
-    """Network tag applied to a cluster's instances (firewall target)."""
+    """Network tag of a cluster's workers (firewall target)."""
     return _sanitize_name(f"chia-{cluster_name}")
+
+
+def _head_tag(cluster_name: str) -> str:
+    """Network tag that ``connection: vpc`` adds to the cluster's head VM."""
+    return _sanitize_name(f"chia-{cluster_name}-head")
+
+
+def _instance_name(cluster_name: str, name: str, index: int) -> str:
+    return _sanitize_name(f"chia-{cluster_name}-{name}-{index}")
+
+
+# The cluster's firewall rules, by the suffix of their names (see ensure_firewall).
+_RULES = ("members", "ssh", "deny")
+
+
+def _rule_name(cluster_name: str, rule: str) -> str:
+    return _sanitize_name(f"chia-{cluster_name}-{rule}")
+
+
+def check_names(cluster_name: str, gcp_nodes: dict[str, GCPNodeConfig]) -> None:
+    """Raise ValueError if a network tag, firewall rule or instance name of the
+    cluster would be longer than GCP allows."""
+    for rule in _RULES:
+        _rule_name(cluster_name, rule)
+    _head_tag(cluster_name)
+    for name, cfg in gcp_nodes.items():
+        _instance_name(cluster_name, name, max(cfg.count - 1, 0))
 
 
 def _network_url(network: str | None) -> str:
@@ -147,6 +178,14 @@ def _network_url(network: str | None) -> str:
     if "/" in net:
         return net
     return f"global/networks/{net}"
+
+
+def _network_path(network: str | None, project: str) -> str:
+    """*network* (a name, a path or a URL) as ``projects/<project>/global/networks/<name>``."""
+    net = network or DEFAULT_NETWORK
+    if "projects/" in net:
+        return net[net.index("projects/"):]
+    return f"projects/{project}/global/networks/{net.rsplit('/', 1)[-1]}"
 
 
 def _region_of(zone: str) -> str:
@@ -231,161 +270,230 @@ def _gcp_ssh_metadata(
 
 
 # ---------------------------------------------------------------------------
-# Firewall (the GCP analog of the SSH security group)
+# Firewall (the GCP analog of the cluster's security group)
 # ---------------------------------------------------------------------------
 
-def _subnet_cidrs(project: str, network: str | None) -> list[str]:
-    """Return the IPv4 CIDR ranges of all subnets in *network* (intra-VPC source)."""
-    cv = _compute()
-    client = cv.SubnetworksClient()
-    net_url = _network_url(network)
-    net_name = net_url.rsplit("/", 1)[-1]
-    cidrs: list[str] = []
-    for _scope, scoped in client.aggregated_list(
-        request=cv.AggregatedListSubnetworksRequest(project=project)
-    ):
-        for sn in (scoped.subnetworks or []):
-            if sn.network.rsplit("/", 1)[-1] == net_name and sn.ip_cidr_range:
-                cidrs.append(sn.ip_cidr_range)
-    return cidrs
-
-
-def _ensure_firewall_rule(
-    client,
-    project: str,
-    name: str,
-    network: str,
-    allowed,                       # list[compute_v1.Allowed]
-    source_ranges: list[str],
-    target_tags: list[str],
-    description: str,
-) -> None:
-    """Idempotently create-or-update a firewall rule to the desired spec."""
-    cv = _compute()
-    fw = cv.Firewall(
-        name=name,
-        network=network,
-        direction="INGRESS",
-        allowed=allowed,
-        source_ranges=source_ranges,
-        target_tags=target_tags,
-        description=description,
-    )
+def _ensure_firewall_rule(client, project: str, fw) -> None:
+    """Create the firewall rule *fw*, or update the rule of that name to match it."""
     from google.api_core.exceptions import NotFound
     try:
-        client.get(project=project, firewall=name)
-        op = client.patch(project=project, firewall=name, firewall_resource=fw)
-        _wait_global_op(op)
-        logger.info(f"Updated firewall rule {name} (sources={source_ranges})")
+        client.get(project=project, firewall=fw.name)
+        _wait_global_op(client.patch(project=project, firewall=fw.name, firewall_resource=fw))
+        logger.info(f"Updated firewall rule {fw.name}")
     except NotFound:
-        op = client.insert(project=project, firewall_resource=fw)
-        _wait_global_op(op)
-        logger.info(f"Created firewall rule {name} (sources={source_ranges})")
+        _wait_global_op(client.insert(project=project, firewall_resource=fw))
+        logger.info(f"Created firewall rule {fw.name}")
 
 
-def ensure_ssh_firewall(
-    cluster_name: str,
-    project: str,
-    network: str | None = None,
-    allow_intra_vpc: bool = True,
-) -> str:
-    """Create/update the cluster's firewall rules and return its network tag.
+def ensure_firewall(cluster_name: str, project: str, network: str, ssh_from_head: bool) -> None:
+    """Create or update the cluster's firewall rules on *network*.
 
-    Mirrors :func:`chia.cluster.aws_nodes.ensure_ssh_security_group`:
+    * ``members``: all traffic between the cluster's workers (tag ``chia-<cluster>``)
+      and its head (tag ``chia-<cluster>-head``, which ``connection: vpc`` adds to the
+      head VM).
+    * ``ssh``, with *ssh_from_head*: tcp 22 to the workers from the head's public IP,
+      for a head that reaches them over the internet (``tunnel``, ``ts_user``).
+    * ``deny``: all other incoming traffic to the workers. It also overrides the open
+      rules of GCP's ``default`` network, such as ``default-allow-internal``.
 
-    * Ingress SSH (22) is locked to the head's public IP
-      (:func:`_resolve_head_ssh_cidrs`, reused from ``aws_nodes``), targeting
-      only this cluster's instances via the network tag.
-    * When *allow_intra_vpc* is True (overridable via ``CHIA_ALLOW_INTRA_VPC``),
-      an all-traffic rule from the network's own subnet CIDRs is added.
-
-    Note: GCP's default network ships a broad ``default-allow-ssh`` (tcp:22 from
-    ``0.0.0.0/0``, all targets) that our targeted rule does not remove.  Set
-    ``CHIA_GCP_LOCKDOWN_DEFAULT_SSH=1`` to delete that world-open rule (the
-    analog of the AWS 0.0.0.0/0 revoke); otherwise we log a warning.
+    GCP applies the matching rule with the lowest priority number: the members and ssh
+    rules (1000) win over the deny rule (65000), which wins over the ``default``
+    network's rules (65534).
     """
     cv = _compute()
+    workers, head = _network_tag(cluster_name), _head_tag(cluster_name)
+    rules = [cv.Firewall(
+        name=_rule_name(cluster_name, "members"), network=network, direction="INGRESS",
+        priority=1000, allowed=[cv.Allowed(I_p_protocol="all")],
+        source_tags=[workers, head], target_tags=[workers, head],
+        description=f"chia: all traffic between the machines of cluster {cluster_name}",
+    )]
+    if ssh_from_head:
+        rules.append(cv.Firewall(
+            name=_rule_name(cluster_name, "ssh"), network=network, direction="INGRESS",
+            priority=1000, allowed=[cv.Allowed(I_p_protocol="tcp", ports=["22"])],
+            source_ranges=[c for c, _ in _resolve_head_ssh_cidrs()], target_tags=[workers],
+            description=f"chia: SSH from the head to the workers of cluster {cluster_name}",
+        ))
+    rules.append(cv.Firewall(
+        name=_rule_name(cluster_name, "deny"), network=network, direction="INGRESS",
+        priority=65000, denied=[cv.Denied(I_p_protocol="all")],
+        source_ranges=["0.0.0.0/0"], target_tags=[workers],
+        description=f"chia: no other incoming traffic to the workers of cluster {cluster_name}",
+    ))
     client = cv.FirewallsClient()
-    net_url = _network_url(network)
-    tag = _network_tag(cluster_name)
-    base = _sanitize_name(f"chia-{cluster_name}")
-
-    desired_cidrs = _resolve_head_ssh_cidrs()
-    _ensure_firewall_rule(
-        client, project, f"{base}-ssh", net_url,
-        allowed=[cv.Allowed(I_p_protocol="tcp", ports=["22"])],
-        source_ranges=[c for c, _ in desired_cidrs],
-        target_tags=[tag],
-        description=f"chia SSH access for cluster {cluster_name}",
-    )
-
-    if _intra_vpc_enabled(allow_intra_vpc):
-        cidrs = _subnet_cidrs(project, network)
-        if cidrs:
-            _ensure_firewall_rule(
-                client, project, f"{base}-internal", net_url,
-                allowed=[
-                    cv.Allowed(I_p_protocol="tcp", ports=["0-65535"]),
-                    cv.Allowed(I_p_protocol="udp", ports=["0-65535"]),
-                    cv.Allowed(I_p_protocol="icmp"),
-                ],
-                source_ranges=cidrs,
-                target_tags=[tag],
-                description=f"chia intra-VPC access for cluster {cluster_name}",
-            )
-        else:
-            logger.warning(
-                f"No subnet CIDRs found for network {net_url}; "
-                "skipping intra-VPC firewall rule"
-            )
-
-    _maybe_lockdown_default_ssh(client, project)
-    return tag
-
-
-def _maybe_lockdown_default_ssh(client, project: str) -> None:
-    """Delete the default network's world-open ``default-allow-ssh`` rule.
-
-    Gated by ``CHIA_GCP_LOCKDOWN_DEFAULT_SSH`` (the analog of revoking the AWS
-    0.0.0.0/0 SSH rule).  When unset, only warns if such a rule is present.
-    """
-    from google.api_core.exceptions import NotFound
-    try:
-        rule = client.get(project=project, firewall="default-allow-ssh")
-    except NotFound:
-        return
-
-    if "0.0.0.0/0" not in list(rule.source_ranges):
-        return
-
-    enabled = os.environ.get("CHIA_GCP_LOCKDOWN_DEFAULT_SSH", "").strip().lower()
-    if enabled in ("1", "true", "yes", "on"):
-        op = client.delete(project=project, firewall="default-allow-ssh")
-        _wait_global_op(op)
-        logger.info("Deleted world-open default-allow-ssh firewall rule")
-    else:
-        logger.warning(
-            "Network has a world-open 'default-allow-ssh' rule (tcp:22 from "
-            "0.0.0.0/0, all instances). chia's targeted rule does not remove it. "
-            "Set CHIA_GCP_LOCKDOWN_DEFAULT_SSH=1 to delete it."
-        )
+    for fw in rules:
+        _ensure_firewall_rule(client, project, fw)
 
 
 def cleanup_firewall(cluster_name: str, project: str) -> None:
-    """Delete the cluster's firewall rules if they exist (idempotent)."""
+    """Delete the cluster's firewall rules, and remove its tag from the head VM (idempotent)."""
     cv = _compute()
     client = cv.FirewallsClient()
-    base = _sanitize_name(f"chia-{cluster_name}")
     from google.api_core.exceptions import NotFound
-    for name in (f"{base}-ssh", f"{base}-internal"):
+    for rule in _RULES:
+        name = _rule_name(cluster_name, rule)
         try:
-            op = client.delete(project=project, firewall=name)
-            _wait_global_op(op)
+            _wait_global_op(client.delete(project=project, firewall=name))
             logger.info(f"Deleted firewall rule {name}")
         except NotFound:
             continue
         except Exception as exc:
             logger.warning(f"Could not delete firewall rule {name}: {exc}")
+    tag = _head_tag(cluster_name)
+    req = cv.AggregatedListInstancesRequest(project=project)
+    for scope, scoped in cv.InstancesClient().aggregated_list(request=req):
+        for inst in (scoped.instances or []):
+            if tag in inst.tags.items:
+                _set_tag(project, scope.rsplit("/", 1)[-1], inst, tag, add=False)
+
+
+# ---------------------------------------------------------------------------
+# The cluster's network (the head's, with connection "vpc")
+# ---------------------------------------------------------------------------
+
+def _find_head(project: str, head_ip: str, network: str | None):
+    """``(zone, instance, network interface)`` of the head with ``connection: vpc``: the
+    VM in *project* whose internal IP is *head_ip*, in *network* if it is set."""
+    cv = _compute()
+    matches = []
+    req = cv.AggregatedListInstancesRequest(project=project)
+    for scope, scoped in cv.InstancesClient().aggregated_list(request=req):
+        for inst in (scoped.instances or []):
+            for nic in inst.network_interfaces:
+                if nic.network_i_p == head_ip:
+                    matches.append((scope.rsplit("/", 1)[-1], inst, nic))
+    if network:
+        in_network = [m for m in matches if _network_path(m[2].network, project) == network]
+        if matches and not in_network:
+            _, inst, nic = matches[0]
+            ips = [n.network_i_p for n in inst.network_interfaces
+                   if _network_path(n.network, project) == network]
+            raise RuntimeError(
+                f"gcp_nodes.network {network} is not the network of the head's IP {head_ip} "
+                f"({_network_path(nic.network, project)}); with connection: vpc the workers go "
+                f"in the network of provider.head_ip"
+                + (f", so set provider.head_ip to the head's IP in {network}, {ips[0]}" if ips else ""))
+        matches = in_network
+    if not matches:
+        raise RuntimeError(
+            f"connection: vpc, the default, needs the head on a GCP VM in project {project}, "
+            f"and provider.head_ip ({head_ip}) set to its internal IP; for a head outside GCP, "
+            f"set connection: tunnel"
+        )
+    if len(matches) > 1:
+        raise RuntimeError(
+            f"{len(matches)} VMs in project {project} have the internal IP {head_ip}; set "
+            f"gcp_nodes.network to the head's network")
+    return matches[0]
+
+
+def _set_tag(project: str, zone: str, inst, tag: str, add: bool) -> None:
+    """Add the network tag *tag* to the VM *inst*, or remove it; keep its other tags."""
+    items = list(inst.tags.items)
+    if (tag in items) == add:
+        return
+    items = items + [tag] if add else [t for t in items if t != tag]
+    cv = _compute()
+    _wait_op(cv.InstancesClient().set_tags(
+        project=project, zone=zone, instance=inst.name,
+        tags_resource=cv.Tags(items=items, fingerprint=inst.tags.fingerprint)))
+    logger.info(f"{'Added' if add else 'Removed'} network tag {tag} on {inst.name}")
+
+
+def _check_internet_route(project: str, network: str) -> None:
+    """Raise if *network* has no route for 0.0.0.0/0, without which its machines cannot
+    download images or packages."""
+    cv = _compute()
+    for route in cv.RoutesClient().list(project=project):
+        if route.dest_range == "0.0.0.0/0" and _network_path(route.network, project) == network:
+            return
+    raise RuntimeError(
+        f"network {network} has no route to the internet (0.0.0.0/0), so its machines "
+        f"cannot download images or packages; add one, or use another network"
+    )
+
+
+def _pick_subnets(project: str, network: str, zones: set[str], subnetwork: str | None,
+                  head_subnet: str | None) -> dict[str, str]:
+    """The subnet for each zone's machines: *subnetwork* if set, else the head's subnet
+    in the head's region, else the network's only subnet in the zone's region."""
+    if subnetwork:
+        return dict.fromkeys(zones, subnetwork)
+    cv = _compute()
+    client = cv.SubnetworksClient()
+    picked: dict[str, str] = {}
+    for z in sorted(zones):
+        region = _region_of(z)
+        if head_subnet and f"/regions/{region}/" in head_subnet:
+            picked[z] = head_subnet
+            continue
+        # Only subnets that can hold VMs: not proxy-only, Private Service Connect, etc.
+        subnets = [s for s in client.list(project=project, region=region)
+                   if _network_path(s.network, project) == network
+                   and s.purpose in ("", "PRIVATE", "PRIVATE_RFC_1918")]
+        if not subnets:
+            raise RuntimeError(
+                f"network {network} has no subnet in region {region}, the region of "
+                f"zone {z}; use a zone in a region where it has one")
+        if len(subnets) > 1:
+            raise RuntimeError(
+                f"network {network} has {len(subnets)} subnets in region {region} "
+                f"({', '.join(s.name for s in subnets)}); set gcp_nodes.subnetwork to one of them")
+        picked[z] = subnets[0].self_link
+    return picked
+
+
+def _warn_open_head(project: str, network: str, head) -> None:
+    """Warn about rules that let IP ranges reach every port of the head: Ray's ports on
+    the head are then open to them, because the cluster's rules protect only its workers."""
+    cv = _compute()
+    tags = set(head.tags.items)
+    accounts = {sa.email for sa in head.service_accounts}
+    for fw in cv.FirewallsClient().list(project=project):
+        if (fw.disabled or fw.direction != "INGRESS" or not fw.source_ranges
+                or _network_path(fw.network, project) != network):
+            continue
+        targets_head = ((not fw.target_tags and not fw.target_service_accounts)
+                        or tags & set(fw.target_tags)
+                        or accounts & set(fw.target_service_accounts))
+        # GCP's own rules write "every port" as 0-65535, others leave the ports out.
+        if targets_head and any(a.I_p_protocol == "all"
+                                or (a.I_p_protocol in ("tcp", "udp")
+                                    and (not a.ports or "0-65535" in a.ports))
+                                for a in fw.allowed):
+            logger.warning(f"Firewall rule {fw.name} lets {', '.join(fw.source_ranges)} "
+                           f"reach every port of the head, Ray's ports included")
+
+
+def _prepare_network(cluster_name: str, gcp_nodes: dict[str, GCPNodeConfig], project: str,
+                     zone: str, network: str | None, subnetwork: str | None,
+                     vpc_head_ip: str | None) -> tuple[str, dict[str, str]]:
+    """Check the cluster's network and create its firewall rules. Return the network and
+    the subnet for each zone of the cluster's machines.
+
+    With *vpc_head_ip* (``connection: vpc``), the network is the head's, and the head VM
+    gets the cluster's head tag.
+    """
+    head_subnet = None
+    if vpc_head_ip:
+        head_zone, head, nic = _find_head(project, vpc_head_ip,
+                                          _network_path(network, project) if network else None)
+        network, head_subnet = _network_path(nic.network, project), nic.subnetwork
+        if not network.startswith(f"projects/{project}/"):
+            raise RuntimeError(
+                f"the head's network {network} belongs to another project (a Shared VPC), "
+                f"which connection: vpc does not support; set connection: tunnel")
+    else:
+        network = _network_path(network, project)
+    _check_internet_route(project, network)
+    subnets = _pick_subnets(project, network, {cfg.zone or zone for cfg in gcp_nodes.values()},
+                            subnetwork, head_subnet)
+    ensure_firewall(cluster_name, project, network, ssh_from_head=vpc_head_ip is None)
+    if vpc_head_ip:
+        _set_tag(project, head_zone, head, _head_tag(cluster_name), add=True)
+        _warn_open_head(project, network, head)
+    return network, subnets
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +528,7 @@ def _build_instance(
     """Build a fully-specified ``compute_v1.Instance`` for one node."""
     cv = _compute()
 
-    instance_name = _sanitize_name(f"chia-{cluster_name}-{name}-{index}")
+    instance_name = _instance_name(cluster_name, name, index)
 
     disk = cv.AttachedDisk(
         boot=True,
@@ -486,15 +594,19 @@ def provision_gcp_nodes(
     subnetwork: str | None = None,
     default_ssh_user: str | None = None,
     default_ssh_private_key: str | None = None,
+    vpc_head_ip: str | None = None,
 ) -> dict[str, list[str]]:
     """Launch Compute Engine instances for each node type.
 
-    Returns ``{node_name: [external_ip_0, external_ip_1, ...]}``, ordered by
-    index.  Instances are labeled for discovery by :func:`discover_gcp_nodes`.
+    Returns ``{node_name: [ip_0, ip_1, ...]}``, ordered by index: external IPs, or
+    internal IPs with *vpc_head_ip* (``connection: vpc``: the head's internal IP, and
+    the instances go in the head's network).  Instances are labeled for discovery
+    by :func:`discover_gcp_nodes`.
     """
     cv = _compute()
     client = cv.InstancesClient()
-    ensure_ssh_firewall(cluster_name, project, network=network)
+    network, subnets = _prepare_network(cluster_name, gcp_nodes, project, zone,
+                                        network, subnetwork, vpc_head_ip)
 
     # node_name -> [(index, zone, instance_name)]
     entries_by_node: dict[str, list[tuple[int, str, str]]] = {}
@@ -512,7 +624,7 @@ def provision_gcp_nodes(
             entries_by_node[name] = []
             for i in range(cfg.count):
                 inst = _build_instance(
-                    cluster_name, name, cfg, i, z, network, subnetwork,
+                    cluster_name, name, cfg, i, z, network, subnets[z],
                     ssh_user, default_ssh_private_key,
                 )
                 op = client.insert(project=project, zone=z, instance_resource=inst)
@@ -531,7 +643,7 @@ def provision_gcp_nodes(
             _delete_instances(client, project, launched)
         raise
 
-    return _collect_ips(client, project, entries_by_node)
+    return _collect_ips(client, project, entries_by_node, private=vpc_head_ip is not None)
 
 
 def provision_missing_gcp_nodes(
@@ -543,15 +655,18 @@ def provision_missing_gcp_nodes(
     subnetwork: str | None = None,
     default_ssh_user: str | None = None,
     default_ssh_private_key: str | None = None,
+    vpc_head_ip: str | None = None,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     """Launch only the instances missing to reach each node type's count.
 
     Mirrors :func:`chia.cluster.aws_nodes.provision_missing_aws_nodes`.
-    Returns ``(full_ip_map, new_ip_map)``.
+    Returns ``(full_ip_map, new_ip_map)``, with internal IPs with *vpc_head_ip*
+    (see :func:`provision_gcp_nodes`).
     """
     cv = _compute()
     client = cv.InstancesClient()
-    existing = _discover_gcp_nodes_with_indexes(cluster_name, project)
+    private = vpc_head_ip is not None
+    existing = _discover_gcp_nodes_with_indexes(cluster_name, project, private)
 
     indexes_to_launch: dict[str, list[int]] = {}
     for name, cfg in gcp_nodes.items():
@@ -569,7 +684,8 @@ def provision_missing_gcp_nodes(
 
     new_entries_by_node: dict[str, list[tuple[int, str, str]]] = {}
     if indexes_to_launch:
-        ensure_ssh_firewall(cluster_name, project, network=network)
+        network, subnets = _prepare_network(cluster_name, gcp_nodes, project, zone,
+                                            network, subnetwork, vpc_head_ip)
         launched: list[tuple[str, str]] = []
         pending: list[tuple[Any, str, str, int, str]] = []
         try:
@@ -584,7 +700,7 @@ def provision_missing_gcp_nodes(
                 new_entries_by_node[name] = []
                 for i in indexes:
                     inst = _build_instance(
-                        cluster_name, name, cfg, i, z, network, subnetwork,
+                        cluster_name, name, cfg, i, z, network, subnets[z],
                         ssh_user, default_ssh_private_key,
                     )
                     op = client.insert(project=project, zone=z, instance_resource=inst)
@@ -601,7 +717,7 @@ def provision_missing_gcp_nodes(
             raise
 
     new_ip_map = (
-        _collect_ips(client, project, new_entries_by_node)
+        _collect_ips(client, project, new_entries_by_node, private)
         if new_entries_by_node else {}
     )
 
@@ -623,8 +739,11 @@ def provision_missing_gcp_nodes(
     return full_ip_map, new_ip_map
 
 
-def _external_ip(instance) -> str | None:
+def _ip(instance, private: bool) -> str | None:
+    """The instance's internal IP if *private*, else its external IP."""
     for nic in (instance.network_interfaces or []):
+        if private:
+            return nic.network_i_p or None
         for ac in (nic.access_configs or []):
             if ac.nat_i_p:
                 return ac.nat_i_p
@@ -635,21 +754,24 @@ def _collect_ips(
     client,
     project: str,
     entries_by_node: dict[str, list[tuple[int, str, str]]],
+    private: bool,
 ) -> dict[str, list[str]]:
-    """Fetch each instance and return ``{node_name: [external_ip, ...]}``."""
+    """Fetch each instance and return ``{node_name: [ip, ...]}``: internal IPs if
+    *private*, else external IPs."""
+    kind = "internal" if private else "external"
     ip_map: dict[str, list[str]] = {}
     for name, entries in entries_by_node.items():
         ips: list[str] = []
         for (_idx, zone, inst_name) in sorted(entries, key=lambda e: e[0]):
             inst = client.get(project=project, zone=zone, instance=inst_name)
-            ip = _external_ip(inst)
+            ip = _ip(inst, private)
             if not ip:
                 raise RuntimeError(
-                    f"Instance {inst_name} has no external IP. Ensure the node "
-                    "has an access config (ONE_TO_ONE_NAT)."
+                    f"Instance {inst_name} has no {kind} IP." + ("" if private else
+                    " Ensure the node has an access config (ONE_TO_ONE_NAT).")
                 )
             ips.append(ip)
-            logger.info(f"  {inst_name}: external_ip={ip}")
+            logger.info(f"  {inst_name}: {kind}_ip={ip}")
         ip_map[name] = ips
     return ip_map
 
@@ -661,8 +783,10 @@ def _collect_ips(
 def _discover_gcp_nodes_with_indexes(
     cluster_name: str,
     project: str,
+    private: bool = False,
 ) -> dict[str, list[tuple[int, str]]]:
-    """Find running instances and return ``{name: [(index, ip), ...]}``."""
+    """Find running instances and return ``{name: [(index, ip), ...]}``, with
+    internal IPs if *private*, else external IPs."""
     cv = _compute()
     client = cv.InstancesClient()
     label = _sanitize_label(cluster_name)
@@ -678,7 +802,7 @@ def _discover_gcp_nodes_with_indexes(
             labels = dict(inst.labels)
             node_type = labels.get("chia-node-type")
             node_index = labels.get("chia-node-index")
-            ip = _external_ip(inst)
+            ip = _ip(inst, private)
             if node_type and node_index is not None and ip:
                 nodes[node_type].append((int(node_index), ip))
 
@@ -688,16 +812,18 @@ def _discover_gcp_nodes_with_indexes(
 def discover_gcp_nodes(
     cluster_name: str,
     project: str,
+    private: bool = False,
 ) -> dict[str, list[str]]:
-    """Find running instances for this cluster and return their external IPs.
+    """Find running instances for this cluster and return their IPs: internal IPs
+    if *private* (``connection: vpc``), else external IPs.
 
-    Returns ``{node_name: [external_ip_0, ...]}``, same format as
+    Returns ``{node_name: [ip_0, ...]}``, same format as
     :func:`provision_gcp_nodes`.
 
     Caveat: ``{node_name}`` is recovered from the ``chia-node-type`` *label*, so
     node-type names must be valid label values (enforced in ``parse_gcp_nodes``).
     """
-    entries_by_node = _discover_gcp_nodes_with_indexes(cluster_name, project)
+    entries_by_node = _discover_gcp_nodes_with_indexes(cluster_name, project, private)
     ip_map: dict[str, list[str]] = {
         name: [ip for _, ip in entries] for name, entries in entries_by_node.items()
     }

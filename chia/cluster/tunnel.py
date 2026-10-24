@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 import signal
 import subprocess
 import time
@@ -17,6 +18,12 @@ def _pid_file(key: str) -> str:
     # Replace dots with dashes for safe filenames (e.g. 127.0.0.2 -> 127-0-0-2)
     safe_key = key.replace(".", "-")
     return os.path.join(_PID_DIR, f"chia_tunnel_{safe_key}.pid")
+
+
+def _is_tunnel(pid: int) -> bool:
+    # A PID file can outlive its tunnel, and the PID can then belong to another process.
+    args = subprocess.run(["ps", "-o", "args=", "-p", str(pid)], capture_output=True, text=True).stdout
+    return args.startswith("ssh -N")
 
 
 def _kill_orphaned_tunnel(ip: str, tunnel_ip: str | None = None,
@@ -39,7 +46,7 @@ def _kill_orphaned_tunnel(ip: str, tunnel_ip: str | None = None,
             try:
                 with open(pid_path) as f:
                     pid = int(f.read().strip())
-                if pid not in killed_pids:
+                if pid not in killed_pids and _is_tunnel(pid):
                     os.kill(pid, signal.SIGTERM)
                     killed_pids.add(pid)
                     logger.info(f"Killed orphaned tunnel (pid {pid}) for {key} via PID file")
@@ -50,21 +57,8 @@ def _kill_orphaned_tunnel(ip: str, tunnel_ip: str | None = None,
             except OSError:
                 pass
 
-    # Fallback: find ssh -N processes targeting this IP or binding to tunnel_ip.
-    # When *gcs_port* is provided, anchor the pattern on the GCS reverse-forward
-    # spec ("<ip>:<gcs_port>:") so the sweep matches ONLY chia worker tunnels —
-    # a bare "ssh -N.*<tunnel_ip>" also matches unrelated tunnels whose command
-    # lines merely mention the address (e.g. the vext Cadence license loops,
-    # which bind 127.0.0.{1,2,3}:5280 on the EC2 side and were being killed at
-    # every bring-up by this sweep).
-    if gcs_port is not None:
-        patterns = [f"ssh -N.*{ip}:{gcs_port}:"]
-        if tunnel_ip:
-            patterns.append(f"ssh -N.*{tunnel_ip}:{gcs_port}:")
-    else:
-        patterns = [f"ssh -N.*{ip}"]
-        if tunnel_ip:
-            patterns.append(f"ssh -N.*{tunnel_ip}")
+    end = f":{gcs_port}:" if gcs_port is not None else "([^0-9]|$)"
+    patterns = [f"^ssh -N.*{re.escape(addr)}{end}" for addr in (ip, tunnel_ip) if addr]
 
     for pattern in patterns:
         try:

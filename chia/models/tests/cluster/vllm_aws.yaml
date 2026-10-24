@@ -24,6 +24,7 @@
 # since the AWS instance pulls it (pull_before_run: true).
 
 cluster_name: chia-vllm-aws
+connection: tunnel   # SSH tunnels, so the head can be outside AWS
 
 provider:
     # On-prem head (where you invoke the wrapper). The AWS worker connects back

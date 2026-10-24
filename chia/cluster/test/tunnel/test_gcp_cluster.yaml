@@ -1,4 +1,5 @@
 cluster_name: gcp_test
+connection: tunnel   # SSH tunnels, so the head can be outside AWS
 
 # GCP analog of test_ec2_cluster.yaml. Provisions Compute Engine instances and
 # reverse-tunnels them into the head's Ray cluster exactly like the AWS path.

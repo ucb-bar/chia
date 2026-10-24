@@ -318,8 +318,8 @@ twice in ``compatible_ips`` biases more workers onto it.
 Cloud machines fold into the same mechanism: declare instances under
 ``aws_nodes`` / ``gcp_nodes`` and reference them in ``compatible_ips`` with
 ``@<node_type>:<index>`` placeholders. CHIA provisions the instances, joins
-them to the cluster over tailscale by default (the recommended path; SSH
-reverse tunnels are an opt-in fallback), and pins the worker's Ray ports
+them to the cluster as the ``connection`` setting says (directly over the VPC,
+over tailscale, or over SSH tunnels), and pins the worker's Ray ports
 automatically — the logical-worker definition itself is unchanged. See
 `Cloud nodes <cluster_config_reference.html#cloud-nodes>`_.
 

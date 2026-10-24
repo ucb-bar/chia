@@ -21,7 +21,7 @@ from chia.chipyard.state_def import ProgramBuildArtifact
 WORK_DIR = "/tmp/spec_build"
 BUILD_TIMEOUT_S = 4 * 60 * 60
 
-COLLATERAL = Path(__file__).parent / "collateral"
+COLLATERAL = Path(__file__).parent / "collateral" / "spec2006"
 
 
 def main() -> int:
