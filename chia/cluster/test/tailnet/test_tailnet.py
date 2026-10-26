@@ -45,7 +45,7 @@ def _make_raw(**overrides):
         ],
         "worker_start_ray_commands": [
             "ray stop",
-            "ray start --address=$RAY_HEAD_IP:6379",
+            "ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT",
         ],
     }
     base.update(overrides)
@@ -321,7 +321,8 @@ class TestScripts(unittest.TestCase):
         script = build_worker_script(config, a, tailnet_alloc=alloc)
         self.assertIn(f"export RAY_HEAD_IP={tn.head_advertise_ip}", script)
         start = [l for l in script if "ray start" in l][0]
-        self.assertIn(f"--address={tn.head_advertise_ip}:{tn.gcs_port}", start)
+        self.assertIn(f"export RAY_HEAD_PORT={tn.gcs_port}", script)
+        self.assertIn("--address=$RAY_HEAD_IP:$RAY_HEAD_PORT", start)
         self.assertIn(f"--node-ip-address={alloc.advertise_ip}", start)
         self.assertIn(f"--min-worker-port={alloc.worker_port_min}", start)
         self.assertNotIn("CHIA_TOOL_RELAY_HOST", "\n".join(script))
@@ -430,7 +431,8 @@ class TestHeadColocated(unittest.TestCase):
         self.assertNotIn("ray stop", joined)
         # Full tailnet branch: advertise IP, pinned ports, head-adv GCS dial.
         start = [l for l in script if "ray start" in l][0]
-        self.assertIn(f"--address={tn.head_advertise_ip}:{tn.gcs_port}", start)
+        self.assertIn(f"export RAY_HEAD_PORT={tn.gcs_port}", script)
+        self.assertIn("--address=$RAY_HEAD_IP:$RAY_HEAD_PORT", start)
         self.assertIn(f"--node-ip-address={alloc.advertise_ip}", start)
         self.assertIn(f"--node-manager-port={alloc.node_manager_port}", start)
         # Both local advertise IPs are excluded from the CONNECT proxy.
@@ -556,7 +558,7 @@ def _make_cloud_raw(join_tailnet=None, with_tailnet_section=True):
                    "compatible_ips": ["203.0.113.1", "203.0.113.2"]},
         },
         "head_start_ray_commands": ["ray start --head --port=6379"],
-        "worker_start_ray_commands": ["ray start --address=$RAY_HEAD_IP:6379"],
+        "worker_start_ray_commands": ["ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT"],
     }
     if with_tailnet_section:
         raw["tailnet"] = {"head_tailnet_ip": "100.64.0.1",
