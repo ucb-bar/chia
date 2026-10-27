@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 # The PyPI distribution is "chialoops" — "chia" is taken by an unrelated
 # project. The import package, and the console script, stay "chia".
 name = "chialoops"
-version = "2.0.1"
+version = "2.1.0"
 description = "The Chia agentic AI flow for hardware"
 readme = "README.md"
 requires-python = ">=3.10"
