@@ -22,6 +22,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
+    "argcomplete>=3.0",
     "google-genai>=1.64.0",
     "ray[default]==2.54.0",
     "mcp==1.27.1",
