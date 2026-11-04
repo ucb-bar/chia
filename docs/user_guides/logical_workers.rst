@@ -66,7 +66,7 @@ Anatomy of a worker definition
 
    worker_start_ray_commands:
        - ray stop
-       - ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0
+       - ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT --dashboard-agent-listen-port=0
 
 CHIA injects ``--resources`` (and, for tailnet or tunneled workers, pinned
 ports) into the ``ray start`` line automatically — you never write the resources
@@ -198,7 +198,7 @@ correct" means putting the right commands in the right hooks, in this order
       │ <type>.worker_env_commands      per-type env activation       │
       │ setup_commands                  global, all nodes             │
       │ <type>.worker_setup_commands    per-type one-time setup       │
-      │ export RAY_HEAD_IP=...                                        │
+      │ export RAY_HEAD_IP=... RAY_HEAD_PORT=...                      │
       │ worker_start_ray_commands       (--resources injected)        │
       └───────────────────────────────────────────────────────────────┘
 

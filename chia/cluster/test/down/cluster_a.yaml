@@ -68,4 +68,4 @@ head_start_ray_commands:
     - ulimit -c unlimited && ray start --head --port=6379 --include-dashboard=False --dashboard-agent-listen-port=0 --temp-dir=/tmp/${USER}/down_a
 
 worker_start_ray_commands:
-    - ray start --address=$RAY_HEAD_IP:6379 --temp-dir=/tmp/${USER}/down_a
+    - ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT --temp-dir=/tmp/${USER}/down_a

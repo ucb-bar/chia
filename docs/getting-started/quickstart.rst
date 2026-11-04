@@ -158,7 +158,7 @@ In general, the these commands should source your shell environment scripts (lik
 
     worker_start_ray_commands:
         - "ray stop"
-        - "ray start --address=$RAY_HEAD_IP:6379 --dashboard-agent-listen-port=0"
+        - "ray start --address=$RAY_HEAD_IP:$RAY_HEAD_PORT --dashboard-agent-listen-port=0"
 
 That's our cluster! With all of these keys in our ``cluster.yaml``, we can now run the following command to create the cluster.
 
