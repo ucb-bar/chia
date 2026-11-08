@@ -239,7 +239,7 @@ def get_dispatch_proxy():
             # both collide on the shared host and are unreachable from tunneled worker
             # (only the head raylet's pinned 40000-40099 are tunneled+DNAT'd).
             resources={"node:__internal_head__": 0.001},
-            max_concurrency=64,
+            max_concurrency=256,
             # Parity with chia's normal tasks (ray default max_retries=3):
             # ride out a proxy restart instead of surfacing ACTOR_UNAVAILABLE.
             max_task_retries=3,
