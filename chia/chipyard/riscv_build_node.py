@@ -11,12 +11,12 @@ import logging
 import os
 import shutil
 import stat
-import subprocess
 import uuid
 from pathlib import Path
 from typing import Literal
 
 from chia.base.ChiaFunction import ChiaFunction
+from chia.base.bounded_subprocess import run_bounded
 from chia.chipyard.state_def import ProgramBuildArtifact, RiscvBuildArtifact
 
 
@@ -136,7 +136,7 @@ class RiscvBuildNode:
         cmd = [
             "make", "-f", HARNESS_MAKEFILE,
             f"TARGET={target}", f"PROGRAM={program_name}", f"SRCS={source_filename}",
-            f"EXTRA_CFLAGS={extra_cflags}", f"EXTRA_LDFLAGS={extra_ldflags}",
+            f"EXTRA_CFLAGS={extra_cflags} -fno-diagnostics-show-caret", f"EXTRA_LDFLAGS={extra_ldflags}",
         ]
         outputs = [binary_name]
         if include_dump:
@@ -174,17 +174,7 @@ class RiscvBuildNode:
 
     def _run(self, command: "list[str] | str", cwd: str) -> tuple[str, str, int]:
         """Run ``command`` (str -> shell) with the node's timeout; rc=-1 on timeout."""
-        try:
-            proc = subprocess.run(
-                command, cwd=cwd, capture_output=True, text=True,
-                timeout=self.timeout_seconds, shell=isinstance(command, str),
-            )
-            return proc.stdout, proc.stderr, proc.returncode
-        except subprocess.TimeoutExpired as e:
-            stdout = self._to_text(e.stdout)
-            stderr = self._to_text(e.stderr) + \
-                f"\n[RiscvBuildNode] timeout after {self.timeout_seconds}s"
-            return stdout, stderr, -1
+        return run_bounded(command, cwd, self.timeout_seconds)
 
     @staticmethod
     def _collect(task_dir: str, outputs: list[str]) -> "tuple[dict[str, bytes], dict[str, int]]":

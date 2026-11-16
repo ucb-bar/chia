@@ -36,11 +36,12 @@ Costs and limits:
     executor cannot reach that owner and the inner task will hang. Pass values,
     not refs, into nested dispatches from tunneled worker-resident tasks.
   * The proxy inherits the creating job's runtime_env, so it is per-job
-    (``chia_dispatch_proxy_<job_id>``) and detached; it idles at num_cpus=0
-    until the cluster is torn down.
+    (``chia_dispatch_proxy_<job_id>``) and detached. Drivers release it on
+    exit; periodic cleanup can reclaim it after a driver crash.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -209,17 +210,46 @@ def should_proxy(opts: dict | None = None) -> bool:
 class DispatchProxy:
     """Head-pinned relay: re-dispatches chia trampolines so the head owns them."""
 
+    def __init__(self):
+        self._active = set()
+        self._closing = False
+
     async def submit(self, func, opts, bypass_state, hooks, profile, args, kwargs):
         from chia.base.ChiaFunction import _chia_trampoline, _chia_trampoline_profiled
+        from chia.base.pid_registry import chia_cancel
+        if self._closing:
+            raise RuntimeError('Dispatch relay is shutting down')
         if profile is not None:
             call_id, dispatch_meta = profile
             remote = ray.remote(_chia_trampoline_profiled).options(**opts)
             # The _ProfiledResult passes through unchanged; the caller's get()
             # unwraps it exactly as it would for a direct dispatch.
-            return await remote.remote(func, call_id, dispatch_meta,
-                                       bypass_state, hooks, *args, **kwargs)
-        remote = ray.remote(_chia_trampoline).options(**opts)
-        return await remote.remote(func, bypass_state, hooks, *args, **kwargs)
+            ref = remote.remote(func, call_id, dispatch_meta,
+                                bypass_state, hooks, *args, **kwargs)
+        else:
+            remote = ray.remote(_chia_trampoline).options(**opts)
+            ref = remote.remote(func, bypass_state, hooks, *args, **kwargs)
+        self._active.add(ref)
+        try:
+            return await ref
+        except asyncio.CancelledError:
+            await asyncio.to_thread(chia_cancel, ref, force=True)
+            raise
+        finally:
+            self._active.discard(ref)
+
+    async def shutdown(self):
+        """Reject new calls and cancel this relay's child tasks/process groups."""
+        from chia.base.pid_registry import chia_cancel
+        self._closing = True
+        refs = list(self._active)
+        # Signal every task immediately; PID cleanup can then run concurrently.
+        for ref in refs:
+            ray.cancel(ref, recursive=True)
+        results = await asyncio.gather(*(asyncio.to_thread(chia_cancel, ref, force=True) for ref in refs), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
 
 
 def get_dispatch_proxy():
@@ -245,3 +275,40 @@ def get_dispatch_proxy():
             max_task_retries=3,
         ).remote()
     return _proxy_handle
+
+
+def release_dispatch_proxy(job_id=None):
+    """Cancel a job's relay children, then kill its detached relay permanently."""
+    global _proxy_handle
+    job_id = str(job_id or ray.get_runtime_context().get_job_id())
+    try:
+        actor = ray.get_actor(f'chia_dispatch_proxy_{job_id}', namespace=_PROXY_NAMESPACE)
+    except ValueError:
+        return False
+    # Legacy actors lack child tracking: inspect/drain those before removal.
+    shutdown = actor.shutdown
+    try:
+        ray.get(shutdown.remote(), timeout=60)
+    finally:
+        ray.kill(actor, no_restart=True)
+        if job_id == str(ray.get_runtime_context().get_job_id()):
+            _proxy_handle = None
+    return True
+
+
+def reap_dead_dispatch_proxies():
+    """Release only relays whose owning drivers are confirmed dead by this GCS."""
+    dead = {str(job['JobID']) for job in ray._private.state.jobs() if job.get('IsDead') is True}
+    released = []
+    for actor in ray.util.list_named_actors(all_namespaces=True):
+        name = actor['name']
+        if actor['namespace'] != _PROXY_NAMESPACE or not name.startswith('chia_dispatch_proxy_'):
+            continue
+        job_id = name.removeprefix('chia_dispatch_proxy_')
+        if job_id in dead:
+            try:
+                if release_dispatch_proxy(job_id):
+                    released.append(job_id)
+            except Exception:
+                logger.exception('Relay cleanup failed for dead job %s', job_id)
+    return released

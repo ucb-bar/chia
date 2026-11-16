@@ -11,6 +11,21 @@ lean on, then walks through every mode of execution a ``ChiaFunction`` supports.
    :local:
    :depth: 2
 
+Dispatch relay cleanup
+----------------------
+
+For tunneled jobs, call ``chia.base.dispatch_proxy.release_dispatch_proxy()``
+in the driver's ``finally`` block before ``ray.shutdown()``. It cancels the
+job's in-flight relay children and tracked subprocesses, then removes its
+detached relay without restarting it. ``reap_dead_dispatch_proxies()`` provides
+the same cleanup for confirmed-dead drivers; live and unknown owners are left
+alone. Legacy relays without ``shutdown`` require a separate drain check.
+
+RISC-V build logs retain at most 1 MiB per stream (2 MiB combined), including
+the beginning and end with an omission marker. Excess output is drained, and
+timeouts stop the build's process group. Compiler source/caret echoes are
+disabled; diagnostic text and locations, binaries, and dump files are preserved.
+
 A few Ray concepts
 ------------------
 
