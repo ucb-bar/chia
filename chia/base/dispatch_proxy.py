@@ -211,23 +211,26 @@ class DispatchProxy:
     """Head-pinned relay: re-dispatches chia trampolines so the head owns them."""
 
     def __init__(self):
+        from chia.base.ChiaFunction import _chia_trampoline, _chia_trampoline_profiled
+        # Reuse wrappers: each new ray.remote wrapper exports fresh GCS metadata.
+        self._remote = ray.remote(_chia_trampoline)
+        self._profiled_remote = ray.remote(_chia_trampoline_profiled)
         self._active = set()
         self._closing = False
 
     async def submit(self, func, opts, bypass_state, hooks, profile, args, kwargs):
-        from chia.base.ChiaFunction import _chia_trampoline, _chia_trampoline_profiled
         from chia.base.pid_registry import chia_cancel
         if self._closing:
             raise RuntimeError('Dispatch relay is shutting down')
         if profile is not None:
             call_id, dispatch_meta = profile
-            remote = ray.remote(_chia_trampoline_profiled).options(**opts)
+            remote = self._profiled_remote.options(**opts)
             # The _ProfiledResult passes through unchanged; the caller's get()
             # unwraps it exactly as it would for a direct dispatch.
             ref = remote.remote(func, call_id, dispatch_meta,
                                 bypass_state, hooks, *args, **kwargs)
         else:
-            remote = ray.remote(_chia_trampoline).options(**opts)
+            remote = self._remote.options(**opts)
             ref = remote.remote(func, bypass_state, hooks, *args, **kwargs)
         self._active.add(ref)
         try:
